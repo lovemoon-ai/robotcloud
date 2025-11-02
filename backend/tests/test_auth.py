@@ -1,19 +1,27 @@
-from app.main import RobotCloudAPI
+from fastapi.testclient import TestClient
 
 
-def test_auth_flow(api: RobotCloudAPI) -> None:
-    send_resp = api.send_code("13800000000")
-    code = send_resp["data"]["code"]
+def test_auth_flow(client: TestClient) -> None:
+    send_resp = client.post("/api/v1/auth/send_code", json={"phone": "13800000000"})
+    assert send_resp.status_code == 200
+    code = send_resp.json()["data"]["code"]
 
-    register_resp = api.register("13800000000", "123456", code)
-    user_id = register_resp["data"]["user_id"]
-    assert user_id > 0
+    register_resp = client.post(
+        "/api/v1/auth/register",
+        json={"phone": "13800000000", "password": "123456", "code": code},
+    )
+    assert register_resp.status_code == 200
+    user_id = register_resp.json()["data"]["user_id"]
+    assert user_id > 1
 
-    login_resp = api.login("13800000000", "123456")
-    token = login_resp["data"]["token"]
-    assert token
+    login_resp = client.post(
+        "/api/v1/auth/login", json={"phone": "13800000000", "password": "123456"}
+    )
+    assert login_resp.status_code == 200
+    token = login_resp.json()["data"]["token"]
 
-    verify_resp = api.verify_token(token)
-    payload = verify_resp["data"]
+    verify_resp = client.get("/api/v1/auth/verify_token", headers={"Authorization": f"Bearer {token}"})
+    assert verify_resp.status_code == 200
+    payload = verify_resp.json()["data"]
     assert payload["user_id"] == user_id
     assert payload["role"] == "free"

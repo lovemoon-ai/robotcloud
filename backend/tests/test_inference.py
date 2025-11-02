@@ -1,19 +1,47 @@
-from app.main import RobotCloudAPI
+from fastapi.testclient import TestClient
 
 
-def _prepare_user_dataset(api: RobotCloudAPI):
-    code = api.send_code("13900000002")["data"]["code"]
-    api.register("13900000002", "inferpw", code)
-    token = api.login("13900000002", "inferpw")["data"]["token"]
-    dataset_id = api.upload_dataset(token, "infer", "desc", "private", "/d/infer.zip")["data"]["dataset_id"]
+def _prepare_dataset(client: TestClient) -> tuple[str, int]:
+    send_resp = client.post("/api/v1/auth/send_code", json={"phone": "13900000002"})
+    code = send_resp.json()["data"]["code"]
+    client.post(
+        "/api/v1/auth/register",
+        json={"phone": "13900000002", "password": "inferpw", "code": code},
+    )
+    login_resp = client.post(
+        "/api/v1/auth/login", json={"phone": "13900000002", "password": "inferpw"}
+    )
+    token = login_resp.json()["data"]["token"]
+
+    files = {"file": ("infer.zip", b"content", "application/zip")}
+    data = {"name": "infer", "description": "desc", "visibility": "private"}
+    dataset_resp = client.post(
+        "/api/v1/dataset/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files=files,
+        data=data,
+    )
+    dataset_id = dataset_resp.json()["data"]["dataset_id"]
     return token, dataset_id
 
 
-def test_inference_flow(api: RobotCloudAPI) -> None:
-    token, dataset_id = _prepare_user_dataset(api)
-    create_resp = api.create_inference_task(token, model_id=1, dataset_id=dataset_id)
-    task_id = create_resp["data"]["task_id"]
+def test_inference_flow(client: TestClient) -> None:
+    token, dataset_id = _prepare_dataset(client)
 
-    result = api.inference_result(token, task_id)["data"]
+    create_resp = client.post(
+        "/api/v1/inference/create",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"model_id": 1, "dataset_id": dataset_id},
+    )
+    assert create_resp.status_code == 200
+    task_id = create_resp.json()["data"]["task_id"]
+
+    result_resp = client.get(
+        f"/api/v1/inference/{task_id}/result",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert result_resp.status_code == 200
+    result = result_resp.json()["data"]
+    assert result["task_id"] == task_id
     assert result["status"] == "completed"
     assert result["results"][0]["sample_id"] == "00001"

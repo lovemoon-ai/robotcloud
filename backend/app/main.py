@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
+
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 
 from .database import (
     AdminLog,
@@ -113,7 +115,7 @@ class RobotCloudAPI:
         name: str,
         description: str,
         visibility: str,
-        storage_path: str,
+        storage_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         if visibility not in {"private", "public"}:
             raise ValueError("Invalid visibility")
@@ -125,7 +127,7 @@ class RobotCloudAPI:
             name=name,
             description=description,
             owner_id=user.id,
-            storage_path=storage_path,
+            storage_path=storage_path or f"/storage/datasets/{dataset_id}/{name}",
             visibility=visibility,
             status="processing",
             created_at=now,
@@ -411,8 +413,219 @@ class RobotCloudAPI:
         }
 
 
-def create_app() -> RobotCloudAPI:
-    return RobotCloudAPI()
+def _execute(action: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
+    try:
+        return action()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _extract_token(authorization: str = Header(...)) -> str:
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Invalid Authorization header")
+    return token
+
+
+def create_app(api: Optional[RobotCloudAPI] = None) -> FastAPI:
+    fastapi_app = FastAPI(title="RobotCloud API", version="1.0.0")
+    service = api or RobotCloudAPI()
+
+    def get_api() -> RobotCloudAPI:
+        return service
+
+    @fastapi_app.post("/api/v1/auth/send_code")
+    def send_code(phone: str, api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
+        return _execute(lambda: api.send_code(phone))
+
+    @fastapi_app.post("/api/v1/auth/register")
+    def register(
+        phone: str,
+        password: str,
+        code: str,
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.register(phone, password, code))
+
+    @fastapi_app.post("/api/v1/auth/login")
+    def login(phone: str, password: str, api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
+        return _execute(lambda: api.login(phone, password))
+
+    @fastapi_app.get("/api/v1/auth/verify_token")
+    def verify_token(token: str = Depends(_extract_token), api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
+        return _execute(lambda: api.verify_token(token))
+
+    @fastapi_app.get("/api/v1/user/profile")
+    def profile(token: str = Depends(_extract_token), api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
+        return _execute(lambda: api.profile(token))
+
+    @fastapi_app.post("/api/v1/user/upgrade")
+    def upgrade(
+        target_role: str,
+        payment_id: str,
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.upgrade(token, target_role, payment_id))
+
+    @fastapi_app.get("/api/v1/user/usage")
+    def usage(token: str = Depends(_extract_token), api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
+        return _execute(lambda: api.usage(token))
+
+    @fastapi_app.post("/api/v1/dataset/upload")
+    def upload_dataset(
+        token: str = Depends(_extract_token),
+        file: UploadFile = File(...),
+        name: str = Form(...),
+        description: str = Form(""),
+        visibility: str = Form("private"),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        storage_path = f"/storage/datasets/{file.filename}"
+        return _execute(lambda: api.upload_dataset(token, name, description, visibility, storage_path))
+
+    @fastapi_app.get("/api/v1/dataset/list")
+    def list_datasets(
+        visibility: Optional[str] = None,
+        page: int = 1,
+        size: int = 20,
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.list_datasets(visibility, page, size))
+
+    @fastapi_app.get("/api/v1/dataset/{dataset_id}")
+    def dataset_detail(dataset_id: int, api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
+        return _execute(lambda: api.get_dataset(dataset_id))
+
+    @fastapi_app.get("/api/v1/dataset/{dataset_id}/stats")
+    def dataset_stats(dataset_id: int, api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
+        return _execute(lambda: api.dataset_stats(dataset_id))
+
+    @fastapi_app.get("/api/v1/dataset/{dataset_id}/preview")
+    def dataset_preview(dataset_id: int, api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
+        return _execute(lambda: api.dataset_preview(dataset_id))
+
+    @fastapi_app.post("/api/v1/training/create")
+    def create_training(
+        dataset_id: int,
+        model_type: str,
+        params: Dict[str, Any],
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.create_training_task(token, dataset_id, model_type, params))
+
+    @fastapi_app.get("/api/v1/training/list")
+    def list_training(
+        token: str = Depends(_extract_token),
+        page: int = 1,
+        size: int = 20,
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.list_training_tasks(token, page, size))
+
+    @fastapi_app.get("/api/v1/training/{task_id}/status")
+    def training_status(
+        task_id: int,
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.training_status(token, task_id))
+
+    @fastapi_app.post("/api/v1/training/{task_id}/stop")
+    def stop_training(
+        task_id: int,
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.stop_training(token, task_id))
+
+    @fastapi_app.get("/api/v1/training/{task_id}/download")
+    def download_training_model(
+        task_id: int,
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.download_model(token, task_id))
+
+    @fastapi_app.post("/api/v1/inference/create")
+    def create_inference(
+        model_id: int,
+        dataset_id: int,
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.create_inference_task(token, model_id, dataset_id))
+
+    @fastapi_app.get("/api/v1/inference/{task_id}/result")
+    def inference_result(
+        task_id: int,
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.inference_result(token, task_id))
+
+    @fastapi_app.post("/api/v1/sim/create")
+    def create_simulation(
+        scene_file: str,
+        model_id: int,
+        robot_type: str,
+        training_mode: str,
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(
+            lambda: api.create_simulation_task(
+                token,
+                scene_file,
+                model_id,
+                robot_type,
+                training_mode,
+            )
+        )
+
+    @fastapi_app.get("/api/v1/sim/{task_id}/status")
+    def simulation_status(
+        task_id: int,
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.simulation_status(token, task_id))
+
+    @fastapi_app.post("/api/v1/sim/bind_device")
+    def bind_device(
+        device_sn: str,
+        model_id: int,
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.bind_device(token, device_sn, model_id))
+
+    @fastapi_app.get("/api/v1/admin/users")
+    def admin_users(
+        token: str = Depends(_extract_token),
+        page: int = 1,
+        role: Optional[str] = None,
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.admin_users(token, page, role))
+
+    @fastapi_app.post("/api/v1/admin/dataset/{dataset_id}/review")
+    def admin_review_dataset(
+        dataset_id: int,
+        status: str,
+        token: str = Depends(_extract_token),
+        api: RobotCloudAPI = Depends(get_api),
+    ) -> Dict[str, Any]:
+        return _execute(lambda: api.admin_review_dataset(token, dataset_id, status))
+
+    @fastapi_app.get("/api/v1/admin/overview")
+    def admin_overview(token: str = Depends(_extract_token), api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
+        return _execute(lambda: api.admin_overview(token))
+
+    return fastapi_app
 
 
 def main() -> None:

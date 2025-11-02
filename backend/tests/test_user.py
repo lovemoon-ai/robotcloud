@@ -1,29 +1,52 @@
-from app.main import RobotCloudAPI
+from fastapi.testclient import TestClient
 
 
-def _create_user(api: RobotCloudAPI) -> str:
-    code = api.send_code("13800000001")["data"]["code"]
-    api.register("13800000001", "abcdef", code)
-    return api.login("13800000001", "abcdef")["data"]["token"]
-
-
-def test_profile(api: RobotCloudAPI) -> None:
-    token = _create_user(api)
-    profile = api.profile(token)["data"]
-    assert profile["phone"] == "13800000001"
+def test_profile(client: TestClient, create_user_token, auth_header) -> None:
+    token = create_user_token()
+    profile_resp = client.get("/api/v1/user/profile", headers=auth_header(token))
+    assert profile_resp.status_code == 200
+    profile = profile_resp.json()["data"]
+    assert profile["phone"] == "13800000000"
     assert profile["role"] == "free"
 
 
-def test_upgrade_and_usage(api: RobotCloudAPI) -> None:
-    token = _create_user(api)
-    upgraded = api.upgrade(token, "plus", "pay_123")
-    assert upgraded["data"]["role"] == "plus"
+def test_upgrade_and_usage(client: TestClient, create_user_token, auth_header) -> None:
+    token = create_user_token("13800000001", "abcdef")
+    upgrade_resp = client.post(
+        "/api/v1/user/upgrade",
+        headers=auth_header(token),
+        json={"target_role": "plus", "payment_id": "pay_123"},
+    )
+    assert upgrade_resp.status_code == 200
+    assert upgrade_resp.json()["data"]["role"] == "plus"
 
-    dataset_resp = api.upload_dataset(token, "sample", "desc", "private", "/tmp/sample.zip")
-    dataset_id = dataset_resp["data"]["dataset_id"]
-    api.create_training_task(token, dataset_id, "yolov8", {"epochs": 1})
-    api.create_inference_task(token, 1, dataset_id)
+    files = {"file": ("sample.zip", b"data", "application/zip")}
+    data = {"name": "sample", "description": "desc", "visibility": "private"}
+    upload_resp = client.post(
+        "/api/v1/dataset/upload",
+        headers=auth_header(token),
+        files=files,
+        data=data,
+    )
+    assert upload_resp.status_code == 200
+    dataset_id = upload_resp.json()["data"]["dataset_id"]
 
-    usage = api.usage(token)["data"]
+    train_resp = client.post(
+        "/api/v1/training/create",
+        headers=auth_header(token),
+        json={"dataset_id": dataset_id, "model_type": "yolov8", "params": {"epochs": 1}},
+    )
+    assert train_resp.status_code == 200
+
+    infer_resp = client.post(
+        "/api/v1/inference/create",
+        headers=auth_header(token),
+        json={"model_id": 1, "dataset_id": dataset_id},
+    )
+    assert infer_resp.status_code == 200
+
+    usage_resp = client.get("/api/v1/user/usage", headers=auth_header(token))
+    assert usage_resp.status_code == 200
+    usage = usage_resp.json()["data"]
     assert usage["training"] == 1
     assert usage["inference"] == 1
