@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robotcloud-backend"
+version = "0.1.0"
+description = "In-memory backend implementation for RobotCloud"
+authors = [
+    { name = "RobotCloud Contributors" }
+]
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "backend"}
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+addopts = "-q"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.4",
+]
