@@ -9,8 +9,10 @@ import { TrainingConfig } from "@/types";
 import { useAuthStore } from "@/store/useAuthStore";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useLocaleStore } from "@/store/useLocaleStore";
 
 export default function TrainPage() {
+  const locale = useLocaleStore((state) => state.locale);
   const client = useQueryClient();
   const token = useAuthStore((state) => state.token);
   const router = useRouter();
@@ -23,6 +25,50 @@ export default function TrainPage() {
   const form = useForm<TrainingConfig>({
     defaultValues: { model: "YOLO", datasetId: "", learningRate: 0.001, epochs: 50, batchSize: 16 }
   });
+  const isZh = locale === "zh";
+  const copy = isZh
+    ? {
+        title: "模型训练",
+        subtitle: "配置训练参数，实时查看任务状态与进度。",
+        formHeading: "创建训练任务",
+        modelLabel: "模型模板",
+        datasetLabel: "数据集 ID",
+        datasetRequired: "请输入数据集 ID",
+        learningRateLabel: "学习率",
+        batchSizeLabel: "Batch Size",
+        epochsLabel: "Epochs",
+        submit: "提交训练",
+        submitting: "创建中...",
+        queueHeading: "训练任务队列",
+        loginNotice: "请先登录后创建训练任务，正在跳转至登录页...",
+        loginPrompt: "登录后可查看我的训练任务。",
+        loginLink: "前往登录",
+        loading: "加载中...",
+        progress: (datasetId: string, progress: number) => `数据集 ID：${datasetId}，进度：${progress}%`,
+        logs: (url: string) => `日志：${url}`,
+        empty: "暂无训练任务。"
+      }
+    : {
+        title: "Model Training",
+        subtitle: "Configure training parameters and monitor progress in real time.",
+        formHeading: "Create Training Job",
+        modelLabel: "Model Template",
+        datasetLabel: "Dataset ID",
+        datasetRequired: "Enter a dataset ID",
+        learningRateLabel: "Learning Rate",
+        batchSizeLabel: "Batch Size",
+        epochsLabel: "Epochs",
+        submit: "Submit Training",
+        submitting: "Creating...",
+        queueHeading: "Training Queue",
+        loginNotice: "Log in before creating training jobs. Redirecting to the login page...",
+        loginPrompt: "Log in to view your training jobs.",
+        loginLink: "Go to login",
+        loading: "Loading...",
+        progress: (datasetId: string, progress: number) => `Dataset ID: ${datasetId}, progress: ${progress}%`,
+        logs: (url: string) => `Logs: ${url}`,
+        empty: "No training jobs yet."
+      };
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.createTrainingJob,
@@ -33,7 +79,7 @@ export default function TrainPage() {
 
   const onSubmit = form.handleSubmit(async (values) => {
     if (!token) {
-      setLoginNotice("请先登录后创建训练任务，正在跳转至登录页...");
+      setLoginNotice(copy.loginNotice);
       router.push("/login");
       return;
     }
@@ -44,14 +90,14 @@ export default function TrainPage() {
   return (
     <main className="space-y-6">
       <header className="space-y-2">
-        <h1 className="text-3xl font-bold">模型训练</h1>
-        <p className="text-sm text-slate-300">配置训练参数，实时查看任务状态与进度。</p>
+        <h1 className="text-3xl font-bold">{copy.title}</h1>
+        <p className="text-sm text-slate-300">{copy.subtitle}</p>
       </header>
       <section className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         <form onSubmit={onSubmit} className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-          <h2 className="text-xl font-semibold text-teal-300">创建训练任务</h2>
+          <h2 className="text-xl font-semibold text-teal-300">{copy.formHeading}</h2>
           <label className="block text-sm">
-            <span className="text-slate-300">模型模板</span>
+            <span className="text-slate-300">{copy.modelLabel}</span>
             <select {...form.register("model")} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2">
               <option value="YOLO">YOLO</option>
               <option value="OccupancyNet">OccupancyNet</option>
@@ -59,15 +105,15 @@ export default function TrainPage() {
             </select>
           </label>
           <label className="block text-sm">
-            <span className="text-slate-300">数据集 ID</span>
+            <span className="text-slate-300">{copy.datasetLabel}</span>
             <input
-              {...form.register("datasetId", { required: "请输入数据集 ID" })}
+              {...form.register("datasetId", { required: copy.datasetRequired })}
               className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
             />
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block text-sm">
-              <span className="text-slate-300">学习率</span>
+              <span className="text-slate-300">{copy.learningRateLabel}</span>
               <input
                 type="number"
                 step="0.0001"
@@ -76,7 +122,7 @@ export default function TrainPage() {
               />
             </label>
             <label className="block text-sm">
-              <span className="text-slate-300">Batch Size</span>
+              <span className="text-slate-300">{copy.batchSizeLabel}</span>
               <input
                 type="number"
                 {...form.register("batchSize", { valueAsNumber: true })}
@@ -85,7 +131,7 @@ export default function TrainPage() {
             </label>
           </div>
           <label className="block text-sm">
-            <span className="text-slate-300">Epochs</span>
+            <span className="text-slate-300">{copy.epochsLabel}</span>
             <input
               type="number"
               {...form.register("epochs", { valueAsNumber: true })}
@@ -97,21 +143,21 @@ export default function TrainPage() {
             className="w-full rounded-md bg-teal-500 py-2 font-semibold text-slate-950 transition hover:bg-teal-400"
             disabled={mutation.isPending}
           >
-            {mutation.isPending ? "创建中..." : "提交训练"}
+            {mutation.isPending ? copy.submitting : copy.submit}
           </button>
         </form>
         <div className="space-y-3">
-          <h2 className="text-xl font-semibold text-teal-300">训练任务队列</h2>
+          <h2 className="text-xl font-semibold text-teal-300">{copy.queueHeading}</h2>
           {loginNotice ? <p className="text-sm text-teal-200">{loginNotice}</p> : null}
           {!token ? (
             <p className="text-sm text-slate-400">
-              登录后可查看我的训练任务。
+              {copy.loginPrompt}
               <Link href="/login" className="ml-1 text-teal-300 hover:text-teal-200">
-                前往登录
+                {copy.loginLink}
               </Link>
             </p>
           ) : null}
-          {token && isLoading ? <p>加载中...</p> : null}
+          {token && isLoading ? <p>{copy.loading}</p> : null}
           {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
           {token ? (
             <div className="grid gap-3">
@@ -119,15 +165,15 @@ export default function TrainPage() {
                 <Card
                   key={job.id}
                   title={`${job.model} · ${job.status}`}
-                  description={`数据集 ID：${job.datasetId}，进度：${job.progress}%`}
+                  description={copy.progress(job.datasetId, job.progress)}
                 >
                   <div className="h-2 rounded-full bg-slate-800">
                     <div className="h-full rounded-full bg-teal-400" style={{ width: `${job.progress}%` }} />
                   </div>
-                  <p className="mt-2 text-[11px] text-slate-500">日志：{job.logsUrl}</p>
+                  <p className="mt-2 text-[11px] text-slate-500">{copy.logs(job.logsUrl)}</p>
                 </Card>
               ))}
-              {!data?.length ? <p className="text-sm text-slate-400">暂无训练任务。</p> : null}
+              {!data?.length ? <p className="text-sm text-slate-400">{copy.empty}</p> : null}
             </div>
           ) : null}
         </div>

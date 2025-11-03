@@ -7,8 +7,10 @@ import { useState } from "react";
 import { useAuthStore } from "@/store/useAuthStore";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useLocaleStore } from "@/store/useLocaleStore";
 
 export default function InferencePage() {
+  const locale = useLocaleStore((state) => state.locale);
   const client = useQueryClient();
   const token = useAuthStore((state) => state.token);
   const router = useRouter();
@@ -20,6 +22,52 @@ export default function InferencePage() {
   const [datasetId, setDatasetId] = useState("");
   const [modelId, setModelId] = useState("");
   const [loginNotice, setLoginNotice] = useState<string | null>(null);
+  const isZh = locale === "zh";
+  const copy = isZh
+    ? {
+        title: "云端推理",
+        subtitle: "选择数据集快速执行推理任务，查看结果准确率。",
+        formHeading: "启动推理",
+        datasetIdLabel: "数据集 ID",
+        datasetPlaceholder: "例如：42",
+        modelIdLabel: "模型 ID",
+        modelPlaceholder: "例如：1",
+        submit: "执行推理",
+        submitting: "提交中...",
+        jobsHeading: "推理任务记录",
+        loginNotice: "请先登录后执行推理任务，正在跳转至登录页...",
+        loginPrompt: "登录后可查看推理记录。",
+        loginLink: "前往登录",
+        loading: "加载中...",
+        modelTitle: (id: number) => `模型 ${id}`,
+        datasetLabel: (id: number) => `数据集：${id}`,
+        statusLabel: (status: string) => `状态：${status}`,
+        resultLabel: (path: string) => `结果：${path}`,
+        pending: "等待云端完成",
+        empty: "暂无推理记录。"
+      }
+    : {
+        title: "Cloud Inference",
+        subtitle: "Select a dataset to launch inference jobs and review accuracy.",
+        formHeading: "Start Inference",
+        datasetIdLabel: "Dataset ID",
+        datasetPlaceholder: "e.g. 42",
+        modelIdLabel: "Model ID",
+        modelPlaceholder: "e.g. 1",
+        submit: "Run Inference",
+        submitting: "Submitting...",
+        jobsHeading: "Inference Jobs",
+        loginNotice: "Log in before running inference jobs. Redirecting to the login page...",
+        loginPrompt: "Log in to see inference history.",
+        loginLink: "Go to login",
+        loading: "Loading...",
+        modelTitle: (id: number) => `Model ${id}`,
+        datasetLabel: (id: number) => `Dataset: ${id}`,
+        statusLabel: (status: string) => `Status: ${status}`,
+        resultLabel: (path: string) => `Result: ${path}`,
+        pending: "Waiting for cloud completion",
+        empty: "No inference jobs found."
+      };
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.runInference,
@@ -32,7 +80,7 @@ export default function InferencePage() {
 
   const runJob = async () => {
     if (!token) {
-      setLoginNotice("请先登录后执行推理任务，正在跳转至登录页...");
+      setLoginNotice(copy.loginNotice);
       router.push("/login");
       return;
     }
@@ -44,28 +92,28 @@ export default function InferencePage() {
   return (
     <main className="space-y-6">
       <header className="space-y-2">
-        <h1 className="text-3xl font-bold">云端推理</h1>
-        <p className="text-sm text-slate-300">选择数据集快速执行推理任务，查看结果准确率。</p>
+        <h1 className="text-3xl font-bold">{copy.title}</h1>
+        <p className="text-sm text-slate-300">{copy.subtitle}</p>
       </header>
       <section className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-          <h2 className="text-xl font-semibold text-teal-300">启动推理</h2>
+          <h2 className="text-xl font-semibold text-teal-300">{copy.formHeading}</h2>
           <label className="block text-sm">
-            <span className="text-slate-300">数据集 ID</span>
+            <span className="text-slate-300">{copy.datasetIdLabel}</span>
             <input
               value={datasetId}
               onChange={(event) => setDatasetId(event.target.value)}
               className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
-              placeholder="例如：42"
+              placeholder={copy.datasetPlaceholder}
             />
           </label>
           <label className="block text-sm">
-            <span className="text-slate-300">模型 ID</span>
+            <span className="text-slate-300">{copy.modelIdLabel}</span>
             <input
               value={modelId}
               onChange={(event) => setModelId(event.target.value)}
               className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
-              placeholder="例如：1"
+              placeholder={copy.modelPlaceholder}
             />
           </label>
           <button
@@ -73,31 +121,33 @@ export default function InferencePage() {
             className="w-full rounded-md bg-teal-500 py-2 font-semibold text-slate-950 transition hover:bg-teal-400"
             disabled={!datasetId || !modelId || mutation.isPending}
           >
-            {mutation.isPending ? "提交中..." : "执行推理"}
+            {mutation.isPending ? copy.submitting : copy.submit}
           </button>
         </div>
         <div className="space-y-3">
-          <h2 className="text-xl font-semibold text-teal-300">推理任务记录</h2>
+          <h2 className="text-xl font-semibold text-teal-300">{copy.jobsHeading}</h2>
           {loginNotice ? <p className="text-sm text-teal-200">{loginNotice}</p> : null}
           {!token ? (
             <p className="text-sm text-slate-400">
-              登录后可查看推理记录。{" "}
+              {copy.loginPrompt}{" "}
               <Link href="/login" className="text-teal-300 hover:text-teal-200">
-                前往登录
+                {copy.loginLink}
               </Link>
             </p>
           ) : null}
-          {token && isLoading ? <p>加载中...</p> : null}
+          {token && isLoading ? <p>{copy.loading}</p> : null}
           {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
           {token ? (
             <div className="grid gap-3">
               {data?.map((job) => (
-                <Card key={job.id} title={`模型 ${job.modelId}`} description={`数据集：${job.datasetId}`}>
-                  <p className="text-xs text-slate-300">状态：{job.status}</p>
-                  <p className="text-[11px] text-slate-500">{job.resultPath ? `结果：${job.resultPath}` : "等待云端完成"}</p>
+                <Card key={job.id} title={copy.modelTitle(job.modelId)} description={copy.datasetLabel(job.datasetId)}>
+                  <p className="text-xs text-slate-300">{copy.statusLabel(job.status)}</p>
+                  <p className="text-[11px] text-slate-500">
+                    {job.resultPath ? copy.resultLabel(job.resultPath) : copy.pending}
+                  </p>
                 </Card>
               ))}
-              {!data?.length ? <p className="text-sm text-slate-400">暂无推理记录。</p> : null}
+              {!data?.length ? <p className="text-sm text-slate-400">{copy.empty}</p> : null}
             </div>
           ) : null}
         </div>
