@@ -4,13 +4,15 @@ import { useQuery } from "@tanstack/react-query";
 import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useTierGuard } from "@/hooks/useTierGuard";
+import { useAuthStore } from "@/store/useAuthStore";
 
 export default function SimulatorPage() {
   const hasAccess = useTierGuard("pro");
+  const token = useAuthStore((state) => state.token);
   const { data, isLoading, error } = useQuery({
     queryKey: ["simulator-sessions"],
     queryFn: robotCloudApi.fetchSimulatorSessions,
-    enabled: hasAccess
+    enabled: hasAccess && Boolean(token)
   });
 
   if (!hasAccess) {
@@ -28,16 +30,27 @@ export default function SimulatorPage() {
         <h1 className="text-3xl font-bold">仿真与硬件控制台</h1>
         <p className="text-sm text-slate-300">管理仿真场景与已绑定的真实机器人设备。</p>
       </header>
-      {isLoading ? <p>加载中...</p> : null}
-      {error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
-      <div className="grid gap-4 md:grid-cols-2">
-        {data?.map((session) => (
-          <Card key={session.id} title={session.environment} description={`状态：${session.status}`}>
-            <p className="text-xs text-slate-300">会话 ID：{session.id}</p>
-          </Card>
-        ))}
-        {!data?.length ? <p className="text-sm text-slate-400">暂无仿真会话。</p> : null}
-      </div>
+      {!token ? <p className="text-sm text-slate-400">请登录后查看仿真任务。</p> : null}
+      {token && isLoading ? <p>加载中...</p> : null}
+      {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
+      {token ? (
+        <div className="grid gap-4 md:grid-cols-2">
+          {data?.map((session) => (
+            <Card
+              key={session.id}
+              title={session.sceneFile}
+              description={`状态：${session.status} · 机器人：${session.robotType}`}
+            >
+              <p className="text-xs text-slate-300">任务 ID：{session.id}</p>
+              <p className="text-[11px] text-slate-500">
+                模型：{session.modelId} / 模式：{session.trainingMode}
+              </p>
+              <p className="text-[11px] text-slate-500">创建时间：{new Date(session.createdAt).toLocaleString()}</p>
+            </Card>
+          ))}
+          {!data?.length ? <p className="text-sm text-slate-400">暂无仿真会话。</p> : null}
+        </div>
+      ) : null}
     </main>
   );
 }

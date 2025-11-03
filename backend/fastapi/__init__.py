@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, get_type_hints
+
+try:
+    from pydantic import BaseModel as _PydanticBaseModel
+    from pydantic import ValidationError as _PydanticValidationError
+except Exception:
+    _PydanticBaseModel = None
+
+    class _PydanticValidationError(Exception):
+        pass
 
 
 class HTTPException(Exception):
@@ -138,10 +147,14 @@ class FastAPI:
 
     def _resolve(self, func: Callable[..., Any], request: Request) -> Any:
         signature = inspect.signature(func)
+        try:
+            type_hints = get_type_hints(func)
+        except Exception:
+            type_hints = {}
         kwargs: Dict[str, Any] = {}
         for name, parameter in signature.parameters.items():
             default = parameter.default
-            annotation = self._normalize_annotation(parameter.annotation)
+            annotation = self._normalize_annotation(type_hints.get(name, parameter.annotation))
             if isinstance(default, Depends):
                 value = self._resolve(default.dependency, request)
             elif isinstance(default, Header):
@@ -168,12 +181,17 @@ class FastAPI:
                 else:
                     value = default.default
             else:
-                value = self._extract_value(name, parameter, request)
+                value = self._extract_value(name, parameter, request, annotation)
             kwargs[name] = value
         return func(**kwargs)
 
-    def _extract_value(self, name: str, parameter: inspect.Parameter, request: Request) -> Any:
-        annotation = self._normalize_annotation(parameter.annotation)
+    def _extract_value(
+        self,
+        name: str,
+        parameter: inspect.Parameter,
+        request: Request,
+        annotation: Any,
+    ) -> Any:
         if name in request.path_params:
             return self._convert(request.path_params[name], annotation)
         if request.method == "GET":
@@ -182,8 +200,20 @@ class FastAPI:
             if parameter.default is not inspect._empty:
                 return parameter.default
             raise HTTPException(400, f"Missing query parameter: {name}")
-        if request.json and name in request.json:
-            return self._convert(request.json[name], annotation)
+        if request.json is not None:
+            if name in request.json:
+                return self._convert(request.json[name], annotation)
+            if (
+                _PydanticBaseModel
+                and isinstance(annotation, type)
+                and issubclass(annotation, _PydanticBaseModel)
+            ):
+                try:
+                    return annotation(**request.json)
+                except _PydanticValidationError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+            if annotation in (dict, Any, inspect._empty):
+                return request.json
         if name in request.form:
             return self._convert(request.form[name], annotation)
         if parameter.default is not inspect._empty:

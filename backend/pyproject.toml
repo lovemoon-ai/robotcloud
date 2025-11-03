@@ -13,12 +13,12 @@ requires-python = ">=3.9"
 dependencies = []
 
 [tool.setuptools]
-package-dir = {"" = "backend"}
+package-dir = {"" = "."}
 packages = ["app"]
 
 [tool.pytest.ini_options]
-testpaths = ["backend/tests"]
-pythonpath = ["backend"]
+testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q"
 
 [tool.uv]

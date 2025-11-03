@@ -5,10 +5,16 @@ import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useForm } from "react-hook-form";
 import { TrainingConfig } from "@/types";
+import { useAuthStore } from "@/store/useAuthStore";
 
 export default function TrainPage() {
   const client = useQueryClient();
-  const { data, isLoading, error } = useQuery({ queryKey: ["training-jobs"], queryFn: robotCloudApi.fetchTrainingJobs });
+  const token = useAuthStore((state) => state.token);
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["training-jobs"],
+    queryFn: robotCloudApi.fetchTrainingJobs,
+    enabled: Boolean(token)
+  });
   const form = useForm<TrainingConfig>({
     defaultValues: { model: "YOLO", datasetId: "", learningRate: 0.001, epochs: 50, batchSize: 16 }
   });
@@ -85,18 +91,26 @@ export default function TrainPage() {
         </form>
         <div className="space-y-3">
           <h2 className="text-xl font-semibold text-teal-300">训练任务队列</h2>
-          {isLoading ? <p>加载中...</p> : null}
-          {error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
-          <div className="grid gap-3">
-            {data?.map((job) => (
-              <Card key={job.id} title={`${job.model} · ${job.status}`} description={`进度：${job.progress}%`}>
-                <div className="h-2 rounded-full bg-slate-800">
-                  <div className="h-full rounded-full bg-teal-400" style={{ width: `${job.progress}%` }} />
-                </div>
-              </Card>
-            ))}
-            {!data?.length ? <p className="text-sm text-slate-400">暂无训练任务。</p> : null}
-          </div>
+          {!token ? <p className="text-sm text-slate-400">登录后可查看我的训练任务。</p> : null}
+          {token && isLoading ? <p>加载中...</p> : null}
+          {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
+          {token ? (
+            <div className="grid gap-3">
+              {data?.map((job) => (
+                <Card
+                  key={job.id}
+                  title={`${job.model} · ${job.status}`}
+                  description={`数据集 ID：${job.datasetId}，进度：${job.progress}%`}
+                >
+                  <div className="h-2 rounded-full bg-slate-800">
+                    <div className="h-full rounded-full bg-teal-400" style={{ width: `${job.progress}%` }} />
+                  </div>
+                  <p className="mt-2 text-[11px] text-slate-500">日志：{job.logsUrl}</p>
+                </Card>
+              ))}
+              {!data?.length ? <p className="text-sm text-slate-400">暂无训练任务。</p> : null}
+            </div>
+          ) : null}
         </div>
       </section>
     </main>

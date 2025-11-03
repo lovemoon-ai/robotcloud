@@ -4,13 +4,15 @@ import { useQuery } from "@tanstack/react-query";
 import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useTierGuard } from "@/hooks/useTierGuard";
+import { useAuthStore } from "@/store/useAuthStore";
 
 export default function AdminPage() {
   const hasAccess = useTierGuard("pro");
+  const token = useAuthStore((state) => state.token);
   const { data, isLoading, error } = useQuery({
     queryKey: ["admin-users"],
     queryFn: robotCloudApi.fetchAdminUsers,
-    enabled: hasAccess
+    enabled: hasAccess && Boolean(token)
   });
 
   if (!hasAccess) {
@@ -28,16 +30,19 @@ export default function AdminPage() {
         <h1 className="text-3xl font-bold">后台管理</h1>
         <p className="text-sm text-slate-300">查看平台用户、套餐与活跃度，辅助运维决策。</p>
       </header>
-      {isLoading ? <p>加载中...</p> : null}
-      {error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
-      <div className="space-y-3">
-        {data?.map((user) => (
-          <Card key={user.id} title={user.name} description={`套餐：${user.tier}`}>
-            <p className="text-xs text-slate-300">最近活跃：{user.lastActive}</p>
-          </Card>
-        ))}
-        {!data?.length ? <p className="text-sm text-slate-400">暂无用户数据。</p> : null}
-      </div>
+      {!token ? <p className="text-sm text-slate-400">请登录后查看管理员数据。</p> : null}
+      {token && isLoading ? <p>加载中...</p> : null}
+      {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
+      {token ? (
+        <div className="space-y-3">
+          {data?.map((user) => (
+            <Card key={user.id} title={user.phone} description={`角色：${user.role}`}>
+              <p className="text-xs text-slate-300">创建时间：{new Date(user.createdAt).toLocaleString()}</p>
+            </Card>
+          ))}
+          {!data?.length ? <p className="text-sm text-slate-400">暂无用户数据。</p> : null}
+        </div>
+      ) : null}
     </main>
   );
 }

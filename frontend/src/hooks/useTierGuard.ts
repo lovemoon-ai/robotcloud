@@ -1,13 +1,14 @@
 import { useAuthStore } from "@/store/useAuthStore";
-import { UserTier } from "@/types";
+import { UserRole } from "@/types";
 
-const tierRank: Record<UserTier, number> = {
+const roleRank: Record<UserRole, number> = {
   free: 0,
   plus: 1,
-  pro: 2
+  pro: 2,
+  admin: 3
 };
 
-export function useTierGuard(required: UserTier) {
-  const tier = useAuthStore((state) => state.tier ?? "free");
-  return tierRank[tier] >= tierRank[required];
+export function useTierGuard(required: UserRole) {
+  const role = useAuthStore((state) => state.role ?? "free");
+  return roleRank[role] >= roleRank[required];
 }

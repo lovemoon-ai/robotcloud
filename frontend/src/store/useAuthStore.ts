@@ -1,23 +1,36 @@
 import { create } from "zustand";
-import { AuthResponse, UserTier } from "@/types";
+import { AuthSession, UserRole } from "@/types";
 
 interface AuthState {
   token?: string;
-  tier?: UserTier;
-  name?: string;
-  setAuth: (response: AuthResponse) => void;
+  role?: UserRole;
+  phone?: string;
+  userId?: number;
+  expireAt?: string | null;
+  setAuth: (session: AuthSession) => void;
   reset: () => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   token: undefined,
-  tier: undefined,
-  name: undefined,
-  setAuth: (response) =>
+  role: undefined,
+  phone: undefined,
+  userId: undefined,
+  expireAt: undefined,
+  setAuth: (session) =>
     set({
-      token: response.token,
-      tier: response.user.tier,
-      name: response.user.name
+      token: session.token,
+      role: session.role,
+      phone: session.phone,
+      userId: session.userId,
+      expireAt: session.expireAt
     }),
-  reset: () => set({ token: undefined, tier: undefined, name: undefined })
+  reset: () =>
+    set({
+      token: undefined,
+      role: undefined,
+      phone: undefined,
+      userId: undefined,
+      expireAt: undefined
+    })
 }));

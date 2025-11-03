@@ -21,7 +21,7 @@ export default function LoginPage() {
     try {
       const result = await robotCloudApi.loginWithPassword(values);
       setAuth(result);
-      setMessage(`欢迎回来，${result.user.name}！`);
+      setMessage(`欢迎回来，${result.phone}！`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败");
     }

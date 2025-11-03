@@ -1,5 +1,3 @@
-export type UserTier = "free" | "plus" | "pro";
-
 export interface AuthCredentials {
   phone: string;
   password: string;
@@ -7,38 +5,50 @@ export interface AuthCredentials {
 
 export interface OtpPayload {
   phone: string;
+  password: string;
   code: string;
 }
 
-export interface AuthResponse {
+export type UserRole = "free" | "plus" | "pro" | "admin";
+
+export interface AuthSession {
   token: string;
-  user: {
-    id: string;
-    name: string;
-    tier: UserTier;
-  };
+  userId: number;
+  phone: string;
+  role: UserRole;
+  expireAt: string | null;
 }
 
 export interface DashboardSummary {
   activeJobs: number;
   datasets: number;
-  tier: UserTier;
+  tier: UserRole;
   gpuHours: number;
 }
 
 export interface DatasetSummary {
-  id: string;
+  id: number;
   name: string;
-  modality: string;
-  samples: number;
+  description: string;
+  visibility: "public" | "private";
+  status: string;
+  createdAt: string;
+}
+
+export interface DatasetUploadInput {
+  file: File;
+  name: string;
+  description: string;
   visibility: "public" | "private";
 }
 
 export interface TrainingJob {
-  id: string;
+  id: number;
   model: string;
-  status: "pending" | "running" | "succeeded" | "failed";
+  status: string;
   progress: number;
+  datasetId: number;
+  logsUrl: string;
 }
 
 export interface TrainingConfig {
@@ -50,21 +60,26 @@ export interface TrainingConfig {
 }
 
 export interface InferenceJob {
-  id: string;
-  datasetId: string;
-  status: "queued" | "processing" | "done" | "error";
-  accuracy?: number;
+  id: number;
+  datasetId: number;
+  modelId: number;
+  status: string;
+  resultPath?: string | null;
 }
 
 export interface SimulatorSession {
-  id: string;
-  environment: string;
-  status: "idle" | "running" | "error";
+  id: number;
+  sceneFile: string;
+  modelId: number;
+  robotType: string;
+  trainingMode: string;
+  status: string;
+  createdAt: string;
 }
 
 export interface AdminUser {
-  id: string;
-  name: string;
-  tier: UserTier;
-  lastActive: string;
+  id: number;
+  phone: string;
+  role: UserRole;
+  createdAt: string;
 }
