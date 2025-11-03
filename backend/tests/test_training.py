@@ -1,12 +1,21 @@
 from fastapi.testclient import TestClient
 
+from app.sms import InMemorySmsGateway
 
-def _setup_user_and_dataset(client: TestClient, phone: str) -> tuple[str, int]:
+
+def _setup_user_and_dataset(client: TestClient, sms_gateway: InMemorySmsGateway, create_invitation, phone: str) -> tuple[str, int]:
     send_resp = client.post("/api/v1/auth/send_code", json={"phone": phone})
-    code = send_resp.json()["data"]["code"]
+    assert send_resp.status_code == 200
+    code = sms_gateway.get_code(phone)
+    invitation_code = create_invitation()
     client.post(
         "/api/v1/auth/register",
-        json={"phone": phone, "password": "trainpw", "code": code},
+        json={
+            "phone": phone,
+            "password": "trainpw",
+            "code": code,
+            "invitation_code": invitation_code,
+        },
     )
     login_resp = client.post(
         "/api/v1/auth/login", json={"phone": phone, "password": "trainpw"}
@@ -25,8 +34,8 @@ def _setup_user_and_dataset(client: TestClient, phone: str) -> tuple[str, int]:
     return token, dataset_id
 
 
-def test_training_lifecycle(client: TestClient) -> None:
-    token, dataset_id = _setup_user_and_dataset(client, "13900000001")
+def test_training_lifecycle(client: TestClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, create_invitation, "13900000001")
 
     create_resp = client.post(
         "/api/v1/training/create",

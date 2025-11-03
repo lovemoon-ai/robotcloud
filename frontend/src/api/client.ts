@@ -7,6 +7,7 @@ import {
   DatasetSummary,
   DatasetUploadInput,
   InferenceJob,
+  InviteRegistrationPayload,
   OtpPayload,
   SimulatorSession,
   TrainingConfig,
@@ -100,8 +101,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed with status ${response.status}`);
+    const raw = await response.text();
+    let message = raw.trim();
+    if (message) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed.detail === "string" && parsed.detail) {
+          message = parsed.detail;
+        } else if (typeof parsed.message === "string" && parsed.message) {
+          message = parsed.message;
+        }
+      } catch {
+        // ignore JSON parse failure and use raw string
+      }
+    }
+    if (!message) {
+      message = `Request failed with status ${response.status}`;
+    }
+    throw new Error(message);
   }
 
   const payload = (await response.json()) as ApiResponse<T>;
@@ -127,14 +144,28 @@ export const robotCloudApi = {
     };
   },
   requestOtp: (phone: string) =>
-    request<{ code: string }>("/auth/send_code", {
+    request<{ sent: boolean }>("/auth/send_code", {
       method: "POST",
       body: JSON.stringify({ phone })
     }),
   verifyOtp: (payload: OtpPayload) =>
     request<{ user_id: number }>("/auth/register", {
       method: "POST",
-      body: JSON.stringify({ phone: payload.phone, password: payload.password, code: payload.code })
+      body: JSON.stringify({
+        phone: payload.phone,
+        password: payload.password,
+        code: payload.code,
+        invitation_code: payload.invitationCode
+      })
+    }),
+  registerWithInvitation: (payload: InviteRegistrationPayload) =>
+    request<{ user_id: number }>("/auth/register_invite", {
+      method: "POST",
+      body: JSON.stringify({
+        phone: payload.phone,
+        password: payload.password,
+        invitation_code: payload.invitationCode
+      })
     }),
   fetchDashboard: async (): Promise<DashboardSummary> => {
     const data = await request<BackendDashboardResponse>("/dashboard/summary");

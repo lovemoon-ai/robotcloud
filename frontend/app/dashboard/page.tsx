@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useAuthStore } from "@/store/useAuthStore";
+import Link from "next/link";
 
 export default function DashboardPage() {
   const token = useAuthStore((state) => state.token);
@@ -20,7 +21,14 @@ export default function DashboardPage() {
         <h1 className="text-3xl font-bold">个人控制面板</h1>
         <p className="text-sm text-slate-300">了解账号套餐、GPU 使用与任务运行情况。</p>
       </header>
-      {!token ? <p className="text-sm text-slate-400">请登录后查看控制面板数据。</p> : null}
+      {!token ? (
+        <p className="text-sm text-slate-400">
+          请登录后查看控制面板数据。
+          <Link href="/login" className="ml-1 text-teal-300 hover:text-teal-200">
+            前往登录
+          </Link>
+        </p>
+      ) : null}
       {token && isLoading ? <p>加载中...</p> : null}
       {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
       {token && data ? (

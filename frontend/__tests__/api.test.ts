@@ -92,10 +92,36 @@ describe("robotCloudApi", () => {
   });
 
   it("verifyOtp forwards payload to register endpoint", async () => {
-    await robotCloudApi.verifyOtp({ phone: "138", password: "pwd", code: "1234" });
+    await robotCloudApi.verifyOtp({ phone: "138", password: "pwd", code: "1234", invitationCode: "INV-001" });
     const [url, init] = mockedFetch.mock.calls[0];
     expect(url).toBe(`${API_BASE}/auth/register`);
-    expect(JSON.parse(init?.body as string)).toEqual({ phone: "138", password: "pwd", code: "1234" });
+    expect(JSON.parse(init?.body as string)).toEqual({
+      phone: "138",
+      password: "pwd",
+      code: "1234",
+      invitation_code: "INV-001"
+    });
+  });
+
+  it("registerWithInvitation posts invite payload", async () => {
+    await robotCloudApi.registerWithInvitation({ phone: "138", password: "pwd", invitationCode: "INV-ABC" });
+    const [url, init] = mockedFetch.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/auth/register_invite`);
+    expect(JSON.parse(init?.body as string)).toEqual({
+      phone: "138",
+      password: "pwd",
+      invitation_code: "INV-ABC"
+    });
+  });
+
+  it("surfaces backend error messages from JSON responses", async () => {
+    mockedFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: jest.fn().mockResolvedValue('{"detail":"Phone not registered"}')
+    } as unknown as Response);
+
+    await expect(robotCloudApi.requestOtp("13800000000")).rejects.toThrow("Phone not registered");
   });
 
   it("fetchDashboard maps backend data", async () => {

@@ -1,10 +1,5 @@
 export const sections = [
   {
-    title: "登录与账号",
-    description: "通过手机号与验证码安全登录平台，管理身份信息。",
-    href: "/login"
-  },
-  {
     title: "控制面板",
     description: "快速查看数据、任务与套餐状态，洞察研发效率。",
     href: "/dashboard"
@@ -28,10 +23,5 @@ export const sections = [
     title: "仿真与硬件",
     description: "连接 IsaacSim / Gazebo 仿真与真实机器人。",
     href: "/simulator"
-  },
-  {
-    title: "后台管理",
-    description: "管理用户、套餐与资源调度，保障平台稳定运行。",
-    href: "/admin"
   }
 ] as const;

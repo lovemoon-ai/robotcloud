@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional
@@ -20,6 +21,7 @@ from .database import (
     User,
     create_database,
 )
+from .sms import ConsoleSmsGateway, SmsGateway
 
 
 def hash_password(password: str) -> str:
@@ -34,6 +36,13 @@ class RegisterRequest(BaseModel):
     phone: str
     password: str
     code: str
+    invitation_code: str
+
+
+class InviteRegisterRequest(BaseModel):
+    phone: str
+    password: str
+    invitation_code: str
 
 
 class LoginRequest(BaseModel):
@@ -73,25 +82,43 @@ class AdminReviewRequest(BaseModel):
     status: str
 
 
+PHONE_PATTERN = re.compile(r"^1\d{10}$")
+
+
+def is_valid_phone(phone: str) -> bool:
+    return bool(PHONE_PATTERN.fullmatch(phone))
+
+
 class RobotCloudAPI:
-    def __init__(self, db: Optional[InMemoryDatabase] = None) -> None:
+    def __init__(self, db: Optional[InMemoryDatabase] = None, sms_gateway: Optional[SmsGateway] = None) -> None:
         self.db = db or create_database()
+        self.sms_gateway = sms_gateway or ConsoleSmsGateway()
 
     # -------------------- Auth Module --------------------
     def send_code(self, phone: str) -> Dict[str, Any]:
         if not phone:
             raise ValueError("Phone required")
+        if not is_valid_phone(phone):
+            raise ValueError("Invalid phone number")
         code = f"{secrets.randbelow(10000):04d}"
         self.db.verification_codes[phone] = code
-        return self._response({"code": code})
+        self.sms_gateway.send_verification_code(phone, code)
+        return self._response({"sent": True})
 
-    def register(self, phone: str, password: str, code: str) -> Dict[str, Any]:
-        if not phone or not password or not code:
+    def register(self, phone: str, password: str, code: str, invitation_code: str) -> Dict[str, Any]:
+        if not phone or not password or not code or not invitation_code:
             raise ValueError("Missing fields")
+        if not is_valid_phone(phone):
+            raise ValueError("Invalid phone number")
         if self.db.verification_codes.get(phone) != code:
             raise ValueError("Invalid verification code")
-        if any(user.phone == phone for user in self.db.users.values()):
+        if self._find_user_by_phone(phone) is not None:
             raise ValueError("Phone already registered")
+        invitation = self.db.get_invitation_code(invitation_code)
+        if invitation is None:
+            raise ValueError("Invalid invitation code")
+        if invitation.used:
+            raise ValueError("Invitation code already used")
         user_id = self.db.next_user_id()
         now = datetime.utcnow()
         user = User(
@@ -104,14 +131,45 @@ class RobotCloudAPI:
         )
         self.db.users[user_id] = user
         self.db.verification_codes.pop(phone, None)
+        self.db.mark_invitation_used(invitation_code, user_id, phone)
+        return self._response({"user_id": user_id})
+
+    def register_with_invitation(self, phone: str, password: str, invitation_code: str) -> Dict[str, Any]:
+        if not phone or not password or not invitation_code:
+            raise ValueError("Missing fields")
+        if not is_valid_phone(phone):
+            raise ValueError("Invalid phone number")
+        if self._find_user_by_phone(phone) is not None:
+            raise ValueError("Phone already registered")
+        invitation = self.db.get_invitation_code(invitation_code)
+        if invitation is None:
+            raise ValueError("Invalid invitation code")
+        if invitation.used:
+            raise ValueError("Invitation code already used")
+        user_id = self.db.next_user_id()
+        now = datetime.utcnow()
+        user = User(
+            id=user_id,
+            phone=phone,
+            password_hash=hash_password(password),
+            role="free",
+            expire_at=now + timedelta(days=30),
+            created_at=now,
+        )
+        self.db.users[user_id] = user
+        self.db.mark_invitation_used(invitation_code, user_id, phone)
         return self._response({"user_id": user_id})
 
     def login(self, phone: str, password: str) -> Dict[str, Any]:
         if not phone or not password:
             raise ValueError("Missing credentials")
-        user = next((u for u in self.db.users.values() if u.phone == phone), None)
-        if user is None or user.password_hash != hash_password(password):
-            raise ValueError("Invalid phone or password")
+        if not is_valid_phone(phone):
+            raise ValueError("Invalid phone number")
+        user = self._find_user_by_phone(phone)
+        if user is None:
+            raise ValueError("Phone not registered")
+        if user.password_hash != hash_password(password):
+            raise ValueError("Incorrect password")
         token = secrets.token_urlsafe(16)
         self.db.tokens[token] = user.id
         return self._response({
@@ -524,6 +582,9 @@ class RobotCloudAPI:
             "created_at": user.created_at.isoformat(),
         }
 
+    def _find_user_by_phone(self, phone: str) -> Optional[User]:
+        return next((u for u in self.db.users.values() if u.phone == phone), None)
+
 
 def _execute(action: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
     try:
@@ -541,9 +602,10 @@ def _extract_token(authorization: str = Header(...)) -> str:
     return token
 
 
-def create_app(api: Optional[RobotCloudAPI] = None) -> FastAPI:
+def create_app(api: Optional[RobotCloudAPI] = None, sms_gateway: Optional[SmsGateway] = None) -> FastAPI:
     fastapi_app = FastAPI(title="RobotCloud API", version="1.0.0")
-    service = api or RobotCloudAPI()
+    service = api or RobotCloudAPI(sms_gateway=sms_gateway)
+    fastapi_app.state.service = service
 
     fastapi_app.add_middleware(
         CORSMiddleware,
@@ -565,7 +627,11 @@ def create_app(api: Optional[RobotCloudAPI] = None) -> FastAPI:
 
     @fastapi_app.post("/api/v1/auth/register")
     def register(payload: RegisterRequest, api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
-        return _execute(lambda: api.register(payload.phone, payload.password, payload.code))
+        return _execute(lambda: api.register(payload.phone, payload.password, payload.code, payload.invitation_code))
+
+    @fastapi_app.post("/api/v1/auth/register_invite")
+    def register_invite(payload: InviteRegisterRequest, api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:
+        return _execute(lambda: api.register_with_invitation(payload.phone, payload.password, payload.invitation_code))
 
     @fastapi_app.post("/api/v1/auth/login")
     def login(payload: LoginRequest, api: RobotCloudAPI = Depends(get_api)) -> Dict[str, Any]:

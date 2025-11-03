@@ -4,13 +4,18 @@ PYTHON := $(CURDIR)/.venv/bin/python
 PIP := $(CURDIR)/.venv/bin/pip
 UVICORN := $(CURDIR)/.venv/bin/uvicorn
 
-.PHONY: test run backend-deps frontend-test
+.PHONY: test run backend-deps frontend-test invite-codes
 
 backend-deps:
 	$(PIP) install -r backend/requirements-dev.txt
 
 frontend-test:
 	cd frontend && npm test
+
+INVITE_ARGS ?= list
+
+invite-codes:
+	$(PYTHON) -m backend.tools.invite_codes $(INVITE_ARGS)
 
 test: backend-deps
 	cd backend && $(PYTHON) -m pytest

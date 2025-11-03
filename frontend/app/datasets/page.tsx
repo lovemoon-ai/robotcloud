@@ -6,6 +6,8 @@ import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useForm } from "react-hook-form";
 import { useAuthStore } from "@/store/useAuthStore";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 interface DatasetForm {
   name: string;
@@ -17,6 +19,7 @@ interface DatasetForm {
 export default function DatasetsPage() {
   const client = useQueryClient();
   const token = useAuthStore((state) => state.token);
+  const router = useRouter();
   const [formError, setFormError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const { data, isLoading, error } = useQuery({
@@ -44,7 +47,8 @@ export default function DatasetsPage() {
 
   const onSubmit = form.handleSubmit(async (values) => {
     if (!token) {
-      setFormError("请先登录后再上传数据集。");
+      setFormError("请先登录后再上传数据集，正在跳转至登录页...");
+      router.push("/login");
       return;
     }
     const file = values.file?.[0];
@@ -109,6 +113,15 @@ export default function DatasetsPage() {
               <option value="public">公开</option>
             </select>
           </label>
+          {!token ? (
+            <p className="rounded-md border border-teal-500/30 bg-teal-500/10 p-3 text-sm text-teal-200">
+              当前未登录，上传前请
+              <Link href="/login" className="mx-1 text-teal-100 underline underline-offset-4">
+                前往登录
+              </Link>
+              并获取必要权限。
+            </p>
+          ) : null}
           <button
             type="submit"
             className="w-full rounded-md bg-teal-500 py-2 font-semibold text-slate-950 transition hover:bg-teal-400"
@@ -121,7 +134,14 @@ export default function DatasetsPage() {
         </form>
         <div className="space-y-4">
           <h2 className="text-xl font-semibold text-teal-300">数据集列表</h2>
-          {!token ? <p className="text-sm text-slate-400">登录后可查看个人数据集列表。</p> : null}
+          {!token ? (
+            <p className="text-sm text-slate-400">
+              登录后可查看个人数据集列表。
+              <Link href="/login" className="ml-1 text-teal-300 hover:text-teal-200">
+                前往登录
+              </Link>
+            </p>
+          ) : null}
           {token && isLoading ? <p>加载中...</p> : null}
           {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
           {token ? (

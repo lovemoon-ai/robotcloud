@@ -1,15 +1,20 @@
 "use client";
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useForm } from "react-hook-form";
 import { TrainingConfig } from "@/types";
 import { useAuthStore } from "@/store/useAuthStore";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 export default function TrainPage() {
   const client = useQueryClient();
   const token = useAuthStore((state) => state.token);
+  const router = useRouter();
+  const [loginNotice, setLoginNotice] = useState<string | null>(null);
   const { data, isLoading, error } = useQuery({
     queryKey: ["training-jobs"],
     queryFn: robotCloudApi.fetchTrainingJobs,
@@ -27,6 +32,12 @@ export default function TrainPage() {
   });
 
   const onSubmit = form.handleSubmit(async (values) => {
+    if (!token) {
+      setLoginNotice("请先登录后创建训练任务，正在跳转至登录页...");
+      router.push("/login");
+      return;
+    }
+    setLoginNotice(null);
     await mutation.mutateAsync(values);
   });
 
@@ -91,7 +102,15 @@ export default function TrainPage() {
         </form>
         <div className="space-y-3">
           <h2 className="text-xl font-semibold text-teal-300">训练任务队列</h2>
-          {!token ? <p className="text-sm text-slate-400">登录后可查看我的训练任务。</p> : null}
+          {loginNotice ? <p className="text-sm text-teal-200">{loginNotice}</p> : null}
+          {!token ? (
+            <p className="text-sm text-slate-400">
+              登录后可查看我的训练任务。
+              <Link href="/login" className="ml-1 text-teal-300 hover:text-teal-200">
+                前往登录
+              </Link>
+            </p>
+          ) : null}
           {token && isLoading ? <p>加载中...</p> : null}
           {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
           {token ? (

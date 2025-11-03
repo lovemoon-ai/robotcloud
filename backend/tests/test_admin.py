@@ -1,12 +1,25 @@
 from fastapi.testclient import TestClient
 
+from app.sms import InMemorySmsGateway
 
-def _create_user_with_dataset(client: TestClient) -> int:
+
+def _create_user_with_dataset(
+    client: TestClient,
+    sms_gateway: InMemorySmsGateway,
+    create_invitation,
+) -> int:
     send_resp = client.post("/api/v1/auth/send_code", json={"phone": "13900000004"})
-    code = send_resp.json()["data"]["code"]
+    assert send_resp.status_code == 200
+    code = sms_gateway.get_code("13900000004")
+    invitation_code = create_invitation()
     client.post(
         "/api/v1/auth/register",
-        json={"phone": "13900000004", "password": "adminpw", "code": code},
+        json={
+            "phone": "13900000004",
+            "password": "adminpw",
+            "code": code,
+            "invitation_code": invitation_code,
+        },
     )
     login_resp = client.post(
         "/api/v1/auth/login", json={"phone": "13900000004", "password": "adminpw"}
@@ -26,13 +39,13 @@ def _create_user_with_dataset(client: TestClient) -> int:
 
 def _admin_token(client: TestClient) -> str:
     login_resp = client.post(
-        "/api/v1/auth/login", json={"phone": "00000000000", "password": "admin"}
+        "/api/v1/auth/login", json={"phone": "19900000000", "password": "admin"}
     )
     return login_resp.json()["data"]["token"]
 
 
-def test_admin_endpoints(client: TestClient) -> None:
-    dataset_id = _create_user_with_dataset(client)
+def test_admin_endpoints(client: TestClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
+    dataset_id = _create_user_with_dataset(client, sms_gateway, create_invitation)
     admin_token = _admin_token(client)
     headers = {"Authorization": f"Bearer {admin_token}"}
 

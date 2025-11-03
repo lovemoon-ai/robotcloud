@@ -5,6 +5,7 @@ import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useTierGuard } from "@/hooks/useTierGuard";
 import { useAuthStore } from "@/store/useAuthStore";
+import Link from "next/link";
 
 export default function AdminPage() {
   const hasAccess = useTierGuard("pro");
@@ -30,7 +31,14 @@ export default function AdminPage() {
         <h1 className="text-3xl font-bold">后台管理</h1>
         <p className="text-sm text-slate-300">查看平台用户、套餐与活跃度，辅助运维决策。</p>
       </header>
-      {!token ? <p className="text-sm text-slate-400">请登录后查看管理员数据。</p> : null}
+      {!token ? (
+        <p className="text-sm text-slate-400">
+          请登录后查看管理员数据。
+          <Link href="/login" className="ml-1 text-teal-300 hover:text-teal-200">
+            前往登录
+          </Link>
+        </p>
+      ) : null}
       {token && isLoading ? <p>加载中...</p> : null}
       {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
       {token ? (

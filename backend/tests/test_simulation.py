@@ -1,12 +1,21 @@
 from fastapi.testclient import TestClient
 
+from app.sms import InMemorySmsGateway
 
-def _user_token(client: TestClient) -> str:
+
+def _user_token(client: TestClient, sms_gateway: InMemorySmsGateway, create_invitation) -> str:
     send_resp = client.post("/api/v1/auth/send_code", json={"phone": "13900000003"})
-    code = send_resp.json()["data"]["code"]
+    assert send_resp.status_code == 200
+    code = sms_gateway.get_code("13900000003")
+    invitation_code = create_invitation()
     client.post(
         "/api/v1/auth/register",
-        json={"phone": "13900000003", "password": "simpw", "code": code},
+        json={
+            "phone": "13900000003",
+            "password": "simpw",
+            "code": code,
+            "invitation_code": invitation_code,
+        },
     )
     login_resp = client.post(
         "/api/v1/auth/login", json={"phone": "13900000003", "password": "simpw"}
@@ -14,8 +23,8 @@ def _user_token(client: TestClient) -> str:
     return login_resp.json()["data"]["token"]
 
 
-def test_simulation_flow(client: TestClient) -> None:
-    token = _user_token(client)
+def test_simulation_flow(client: TestClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
+    token = _user_token(client, sms_gateway, create_invitation)
 
     create_resp = client.post(
         "/api/v1/sim/create",

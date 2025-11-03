@@ -1,12 +1,21 @@
 from fastapi.testclient import TestClient
 
+from app.sms import InMemorySmsGateway
 
-def _prepare_dataset(client: TestClient) -> tuple[str, int]:
+
+def _prepare_dataset(client: TestClient, sms_gateway: InMemorySmsGateway, create_invitation) -> tuple[str, int]:
     send_resp = client.post("/api/v1/auth/send_code", json={"phone": "13900000002"})
-    code = send_resp.json()["data"]["code"]
+    assert send_resp.status_code == 200
+    code = sms_gateway.get_code("13900000002")
+    invitation_code = create_invitation()
     client.post(
         "/api/v1/auth/register",
-        json={"phone": "13900000002", "password": "inferpw", "code": code},
+        json={
+            "phone": "13900000002",
+            "password": "inferpw",
+            "code": code,
+            "invitation_code": invitation_code,
+        },
     )
     login_resp = client.post(
         "/api/v1/auth/login", json={"phone": "13900000002", "password": "inferpw"}
@@ -25,8 +34,8 @@ def _prepare_dataset(client: TestClient) -> tuple[str, int]:
     return token, dataset_id
 
 
-def test_inference_flow(client: TestClient) -> None:
-    token, dataset_id = _prepare_dataset(client)
+def test_inference_flow(client: TestClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
+    token, dataset_id = _prepare_dataset(client, sms_gateway, create_invitation)
 
     create_resp = client.post(
         "/api/v1/inference/create",

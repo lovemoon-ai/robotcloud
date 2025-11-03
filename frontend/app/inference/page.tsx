@@ -5,10 +5,13 @@ import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useState } from "react";
 import { useAuthStore } from "@/store/useAuthStore";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 export default function InferencePage() {
   const client = useQueryClient();
   const token = useAuthStore((state) => state.token);
+  const router = useRouter();
   const { data, isLoading, error } = useQuery({
     queryKey: ["inference-jobs"],
     queryFn: robotCloudApi.fetchInferenceJobs,
@@ -16,6 +19,7 @@ export default function InferencePage() {
   });
   const [datasetId, setDatasetId] = useState("");
   const [modelId, setModelId] = useState("");
+  const [loginNotice, setLoginNotice] = useState<string | null>(null);
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.runInference,
@@ -27,6 +31,12 @@ export default function InferencePage() {
   });
 
   const runJob = async () => {
+    if (!token) {
+      setLoginNotice("请先登录后执行推理任务，正在跳转至登录页...");
+      router.push("/login");
+      return;
+    }
+    setLoginNotice(null);
     if (!datasetId || !modelId) return;
     await mutation.mutateAsync({ datasetId: Number.parseInt(datasetId, 10), modelId: Number.parseInt(modelId, 10) });
   };
@@ -68,7 +78,15 @@ export default function InferencePage() {
         </div>
         <div className="space-y-3">
           <h2 className="text-xl font-semibold text-teal-300">推理任务记录</h2>
-          {!token ? <p className="text-sm text-slate-400">登录后可查看推理记录。</p> : null}
+          {loginNotice ? <p className="text-sm text-teal-200">{loginNotice}</p> : null}
+          {!token ? (
+            <p className="text-sm text-slate-400">
+              登录后可查看推理记录。{" "}
+              <Link href="/login" className="text-teal-300 hover:text-teal-200">
+                前往登录
+              </Link>
+            </p>
+          ) : null}
           {token && isLoading ? <p>加载中...</p> : null}
           {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
           {token ? (

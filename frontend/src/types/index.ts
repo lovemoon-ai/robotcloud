@@ -7,6 +7,13 @@ export interface OtpPayload {
   phone: string;
   password: string;
   code: string;
+  invitationCode: string;
+}
+
+export interface InviteRegistrationPayload {
+  phone: string;
+  password: string;
+  invitationCode: string;
 }
 
 export type UserRole = "free" | "plus" | "pro" | "admin";
