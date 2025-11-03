@@ -1,54 +1,59 @@
-from fastapi.testclient import TestClient
+from django.core.files.uploadedfile import SimpleUploadedFile
+from rest_framework.test import APIClient
 
-from app.sms import InMemorySmsGateway
+from robotcloud_backend.sms import InMemorySmsGateway
 
 
-def _setup_user_and_dataset(client: TestClient, sms_gateway: InMemorySmsGateway, create_invitation, phone: str) -> tuple[str, int]:
-    send_resp = client.post("/api/v1/auth/send_code", json={"phone": phone})
+def _setup_user_and_dataset(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation, phone: str) -> tuple[str, int]:
+    send_resp = client.post("/api/v1/auth/send_code", {"phone": phone}, format="json")
     assert send_resp.status_code == 200
     code = sms_gateway.get_code(phone)
     invitation_code = create_invitation()
     client.post(
         "/api/v1/auth/register",
-        json={
+        {
             "phone": phone,
             "password": "trainpw",
             "code": code,
             "invitation_code": invitation_code,
         },
+        format="json",
     )
     login_resp = client.post(
-        "/api/v1/auth/login", json={"phone": phone, "password": "trainpw"}
+        "/api/v1/auth/login",
+        {"phone": phone, "password": "trainpw"},
+        format="json",
     )
     token = login_resp.json()["data"]["token"]
 
-    files = {"file": ("train.zip", b"content", "application/zip")}
-    data = {"name": "train", "description": "desc", "visibility": "private"}
+    upload_file = SimpleUploadedFile("train.zip", b"content", content_type="application/zip")
+    data = {"name": "train", "description": "desc", "visibility": "private", "file": upload_file}
     dataset_resp = client.post(
         "/api/v1/dataset/upload",
-        headers={"Authorization": f"Bearer {token}"},
-        files=files,
         data=data,
+        format="multipart",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
     )
     dataset_id = dataset_resp.json()["data"]["dataset_id"]
     return token, dataset_id
 
 
-def test_training_lifecycle(client: TestClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
+def test_training_lifecycle(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
     token, dataset_id = _setup_user_and_dataset(client, sms_gateway, create_invitation, "13900000001")
 
     create_resp = client.post(
         "/api/v1/training/create",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"dataset_id": dataset_id, "model_type": "yolov8", "params": {"epochs": 10}},
+        {"dataset_id": dataset_id, "model_type": "yolov8", "params": {"epochs": 10}},
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
     )
     assert create_resp.status_code == 200
     task_id = create_resp.json()["data"]["task_id"]
 
     list_resp = client.get(
         "/api/v1/training/list",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"page": 1, "size": 10},
+        {"page": 1, "size": 10},
+        HTTP_AUTHORIZATION=f"Bearer {token}",
     )
     assert list_resp.status_code == 200
     data = list_resp.json()["data"]
@@ -57,21 +62,21 @@ def test_training_lifecycle(client: TestClient, sms_gateway: InMemorySmsGateway,
 
     status_resp = client.get(
         f"/api/v1/training/{task_id}/status",
-        headers={"Authorization": f"Bearer {token}"},
+        HTTP_AUTHORIZATION=f"Bearer {token}",
     )
     assert status_resp.status_code == 200
     assert status_resp.json()["data"]["task_id"] == task_id
 
     stop_resp = client.post(
         f"/api/v1/training/{task_id}/stop",
-        headers={"Authorization": f"Bearer {token}"},
+        HTTP_AUTHORIZATION=f"Bearer {token}",
     )
     assert stop_resp.status_code == 200
     assert stop_resp.json()["data"]["status"] == "failed"
 
     download_resp = client.get(
         f"/api/v1/training/{task_id}/download",
-        headers={"Authorization": f"Bearer {token}"},
+        HTTP_AUTHORIZATION=f"Bearer {token}",
     )
     assert download_resp.status_code == 200
     assert download_resp.json()["data"]["model_path"].endswith(f"{task_id}.pt")

@@ -25,4 +25,6 @@
 
 ## Environment & Configuration Tips
 - Store local secrets in `.env` files ignored by git; the frontend reads `NEXT_PUBLIC_API_BASE_URL` while the backend uses an in-memory database—no extra services required.
+- Local tooling (e.g., `make run`) sets `USE_SQLITE=1` and `USE_IN_MEMORY_CACHE=1` so the stack boots without Postgres or Redis; unset them if you need external services.
+- Set `USE_POSTGRES=1` when you want Django to talk to your Postgres instance; otherwise it defaults to sqlite.
 - When running both apps manually, export the same base URL to keep API clients pointed at your backend instance.

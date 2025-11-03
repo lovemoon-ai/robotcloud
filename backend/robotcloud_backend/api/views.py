@@ -1,0 +1,307 @@
+"""Django REST views implementing the RobotCloud API."""
+from __future__ import annotations
+
+from typing import Callable, Dict
+
+from rest_framework import status
+from rest_framework.parsers import JSONParser, MultiPartParser
+from rest_framework.request import Request
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from .services import RobotCloudService
+from ..sms import ConsoleSmsGateway, SmsGateway
+
+
+_sms_gateway: SmsGateway = ConsoleSmsGateway()
+_service: RobotCloudService | None = None
+
+
+def set_sms_gateway_for_tests(gateway: SmsGateway) -> None:
+    """Allow tests to override the SMS gateway and reset the service cache."""
+    global _sms_gateway, _service
+    _sms_gateway = gateway
+    _service = None
+
+
+def reset_service_cache() -> None:
+    global _service
+    _service = None
+
+
+def get_service() -> RobotCloudService:
+    global _service
+    if _service is None:
+        _service = RobotCloudService(sms_gateway=_sms_gateway)
+    return _service
+
+
+class RobotCloudAPIView(APIView):
+    """Base APIView with shared helpers."""
+
+    def _service(self) -> RobotCloudService:
+        return get_service()
+
+    def _execute(self, action: Callable[[], Dict]) -> Response:
+        try:
+            payload = action()
+            return Response(payload, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    def _get_token(self, request: Request) -> str:
+        header = request.headers.get("Authorization", "")
+        scheme, _, token = header.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise ValueError("Invalid Authorization header")
+        return token
+
+    def _execute_with_token(self, request: Request, handler: Callable[[str], Dict]) -> Response:
+        return self._execute(lambda: handler(self._get_token(request)))
+
+
+class SendCodeView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        phone = request.data.get("phone", "")
+        return self._execute(lambda: self._service().send_code(phone))
+
+
+class RegisterView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute(
+            lambda: self._service().register(
+                payload.get("phone", ""),
+                payload.get("password", ""),
+                payload.get("code", ""),
+                payload.get("invitation_code", ""),
+            )
+        )
+
+
+class RegisterInviteView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute(
+            lambda: self._service().register_with_invitation(
+                payload.get("phone", ""),
+                payload.get("password", ""),
+                payload.get("invitation_code", ""),
+            )
+        )
+
+
+class LoginView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute(lambda: self._service().login(payload.get("phone", ""), payload.get("password", "")))
+
+
+class VerifyTokenView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().verify_token(token))
+
+
+class ProfileView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().profile(token))
+
+
+class UpgradeView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute_with_token(
+            request,
+            lambda token: self._service().upgrade(token, payload.get("target_role", ""), payload.get("payment_id", "")),
+        )
+
+
+class UsageView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().usage(token))
+
+
+class DashboardSummaryView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().dashboard_summary(token))
+
+
+class DatasetUploadView(RobotCloudAPIView):
+    parser_classes = [MultiPartParser]
+
+    def post(self, request: Request) -> Response:
+        name = request.data.get("name", "")
+        description = request.data.get("description", "")
+        visibility = request.data.get("visibility", "private")
+        uploaded = request.data.get("file")
+        filename = getattr(uploaded, "name", name)
+        storage_path = f"/storage/datasets/{filename}"
+        return self._execute_with_token(
+            request,
+            lambda token: self._service().upload_dataset(token, name, description, visibility, storage_path),
+        )
+
+
+class DatasetListView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        visibility = request.query_params.get("visibility")
+        page = int(request.query_params.get("page", 1))
+        size = int(request.query_params.get("size", 20))
+        return self._execute(lambda: self._service().list_datasets(visibility, page, size))
+
+
+class DatasetDetailView(RobotCloudAPIView):
+    def get(self, request: Request, dataset_id: int) -> Response:
+        return self._execute(lambda: self._service().get_dataset(dataset_id))
+
+
+class DatasetStatsView(RobotCloudAPIView):
+    def get(self, request: Request, dataset_id: int) -> Response:
+        return self._execute(lambda: self._service().dataset_stats(dataset_id))
+
+
+class DatasetPreviewView(RobotCloudAPIView):
+    def get(self, request: Request, dataset_id: int) -> Response:
+        return self._execute(lambda: self._service().dataset_preview(dataset_id))
+
+
+class TrainingCreateView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute_with_token(
+            request,
+            lambda token: self._service().create_training_task(
+                token,
+                payload.get("dataset_id"),
+                payload.get("model_type", ""),
+                payload.get("params", {}) or {},
+            ),
+        )
+
+
+class TrainingListView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        page = int(request.query_params.get("page", 1))
+        size = int(request.query_params.get("size", 20))
+        return self._execute_with_token(request, lambda token: self._service().list_training_tasks(token, page, size))
+
+
+class TrainingStatusView(RobotCloudAPIView):
+    def get(self, request: Request, task_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().training_status(token, task_id))
+
+
+class TrainingStopView(RobotCloudAPIView):
+    def post(self, request: Request, task_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().stop_training(token, task_id))
+
+
+class TrainingDownloadView(RobotCloudAPIView):
+    def get(self, request: Request, task_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().download_model(token, task_id))
+
+
+class InferenceCreateView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute_with_token(
+            request,
+            lambda token: self._service().create_inference_task(
+                token,
+                payload.get("model_id"),
+                payload.get("dataset_id"),
+            ),
+        )
+
+
+class InferenceListView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        page = int(request.query_params.get("page", 1))
+        size = int(request.query_params.get("size", 20))
+        return self._execute_with_token(
+            request, lambda token: self._service().list_inference_tasks(token, page, size)
+        )
+
+
+class InferenceResultView(RobotCloudAPIView):
+    def get(self, request: Request, task_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().inference_result(token, task_id))
+
+
+class SimulationCreateView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute_with_token(
+            request,
+            lambda token: self._service().create_simulation_task(
+                token,
+                payload.get("scene_file", ""),
+                payload.get("model_id"),
+                payload.get("robot_type", ""),
+                payload.get("training_mode", ""),
+            ),
+        )
+
+
+class SimulationStatusView(RobotCloudAPIView):
+    def get(self, request: Request, task_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().simulation_status(token, task_id))
+
+
+class SimulationListView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        page = int(request.query_params.get("page", 1))
+        size = int(request.query_params.get("size", 20))
+        return self._execute_with_token(request, lambda token: self._service().list_simulation_tasks(token, page, size))
+
+
+class BindDeviceView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute_with_token(
+            request,
+            lambda token: self._service().bind_device(token, payload.get("device_sn", ""), payload.get("model_id")),
+        )
+
+
+class AdminUsersView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        role = request.query_params.get("role")
+        page = int(request.query_params.get("page", 1))
+        return self._execute_with_token(request, lambda token: self._service().admin_users(token, page, role))
+
+
+class AdminDatasetReviewView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request, dataset_id: int) -> Response:
+        payload = request.data
+        return self._execute_with_token(
+            request,
+            lambda token: self._service().admin_review_dataset(token, dataset_id, payload.get("status", "")),
+        )
+
+
+class AdminOverviewView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().admin_overview(token))

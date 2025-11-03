@@ -1,8 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import os
+import secrets
 import sys
-from backend.app.database import InvitationCode, create_database
+
+import django
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "robotcloud_backend.settings")
+
+if os.getenv("INVITE_USE_SQLITE", "").lower() in {"1", "true", "yes"}:
+    os.environ.setdefault("USE_SQLITE_FOR_TESTS", "1")
+    os.environ.setdefault("USE_IN_MEMORY_CACHE", "1")
+
+django.setup()
+
+from robotcloud_backend.api.models import InvitationCode  # noqa: E402
 
 
 def format_invitation(invitation: InvitationCode) -> str:
@@ -16,13 +29,12 @@ def format_invitation(invitation: InvitationCode) -> str:
 
 
 def handle_list(show_used: bool) -> None:
-    db = create_database()
-    invitations = db.list_invitation_codes()
-    if not invitations:
+    invitations = InvitationCode.objects.all().order_by("-created_at")
+    if not invitations.exists():
         print("No invitation codes found.")
         return
     shown = False
-    for invitation in sorted(invitations, key=lambda item: item.created_at, reverse=True):
+    for invitation in invitations:
         if not show_used and invitation.used:
             continue
         shown = True
@@ -32,35 +44,45 @@ def handle_list(show_used: bool) -> None:
 
 
 def handle_create(code: str, note: str | None) -> None:
-    db = create_database()
-    invitation = db.add_invitation_code(code, note)
+    if InvitationCode.objects.filter(code=code).exists():
+        print(f"Invitation code '{code}' already exists.", file=sys.stderr)
+        sys.exit(1)
+    invitation = InvitationCode.objects.create(code=code, note=note)
     print(f"Created invitation code: {format_invitation(invitation)}")
 
 
 def handle_generate(prefix: str, length: int, note: str | None) -> None:
-    db = create_database()
-    invitation = db.generate_invitation_code(prefix=prefix, length=length, note=note)
+    random_segment = secrets.token_hex(length // 2).upper()
+    code = f"{prefix}-{random_segment}"
+    invitation = InvitationCode.objects.create(code=code, note=note)
     print(f"Generated invitation code: {format_invitation(invitation)}")
 
 
 def handle_show(code: str) -> None:
-    db = create_database()
-    invitation = db.get_invitation_code(code)
-    if invitation is None:
+    try:
+        invitation = InvitationCode.objects.get(code=code)
+    except InvitationCode.DoesNotExist:
         print(f"Invitation code '{code}' not found.", file=sys.stderr)
         sys.exit(1)
     print(format_invitation(invitation))
 
 
 def handle_update(code: str, note: str | None) -> None:
-    db = create_database()
-    invitation = db.update_invitation_code(code, note)
+    try:
+        invitation = InvitationCode.objects.get(code=code)
+    except InvitationCode.DoesNotExist:
+        print(f"Invitation code '{code}' not found.", file=sys.stderr)
+        sys.exit(1)
+    invitation.note = note
+    invitation.save(update_fields=["note"])
     print(f"Updated invitation code: {format_invitation(invitation)}")
 
 
 def handle_delete(code: str) -> None:
-    db = create_database()
-    db.delete_invitation_code(code)
+    deleted, _ = InvitationCode.objects.filter(code=code).delete()
+    if not deleted:
+        print(f"Invitation code '{code}' not found.", file=sys.stderr)
+        sys.exit(1)
     print(f"Deleted invitation code '{code}'.")
 
 

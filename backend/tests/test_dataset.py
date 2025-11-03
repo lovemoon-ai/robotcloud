@@ -1,24 +1,28 @@
-from fastapi.testclient import TestClient
+from django.core.files.uploadedfile import SimpleUploadedFile
+from rest_framework.test import APIClient
 
 
-def _upload_dataset(client: TestClient, token: str) -> int:
-    files = {"file": ("parking.zip", b"content", "application/zip")}
-    data = {"name": "parking", "description": "desc", "visibility": "public"}
+def _upload_dataset(client: APIClient, token: str) -> int:
+    upload_file = SimpleUploadedFile("parking.zip", b"content", content_type="application/zip")
+    data = {"name": "parking", "description": "desc", "visibility": "public", "file": upload_file}
     resp = client.post(
         "/api/v1/dataset/upload",
-        headers={"Authorization": f"Bearer {token}"},
-        files=files,
         data=data,
+        format="multipart",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
     )
     assert resp.status_code == 200
     return resp.json()["data"]["dataset_id"]
 
 
-def test_dataset_crud(client: TestClient, create_user_token) -> None:
+def test_dataset_crud(client: APIClient, create_user_token) -> None:
     token = create_user_token("13900000000", "passwd")
     dataset_id = _upload_dataset(client, token)
 
-    list_resp = client.get("/api/v1/dataset/list", params={"visibility": "public", "page": 1, "size": 10})
+    list_resp = client.get(
+        "/api/v1/dataset/list",
+        {"visibility": "public", "page": 1, "size": 10},
+    )
     assert list_resp.status_code == 200
     payload = list_resp.json()["data"]
     assert payload["total"] == 1

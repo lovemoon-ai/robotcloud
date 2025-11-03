@@ -51,7 +51,7 @@ RobotCloud 致力于打造一个一站式的
                    │
     ┌──────────────┴───────────┐
     │       Backend API (后端) │
-    │  Python FastAPI / Django │
+    │  Python Django + DRF     │
     │  - 用户认证（手机号+验证码）│
     │  - 权限体系                │
     │  - 数据集管理              │
@@ -213,7 +213,7 @@ RobotCloud 致力于打造一个一站式的
   模块       技术方案
   ---------- --------------------------------------
   前端       React + Next.js + TailwindCSS
-  后端       FastAPI + PostgreSQL + Redis + MinIO
+  后端       Django + PostgreSQL + Redis + MinIO
   训练集群   Ray + PyTorch Lightning
   仿真       NVIDIA IsaacSim / Gazebo Web
   鉴权       JWT + OAuth2

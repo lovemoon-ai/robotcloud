@@ -22,6 +22,7 @@
 -   **分页参数**：`?page=1&size=20`
 -   **认证方式**：JWT Token (`Authorization: Bearer <token>`)
 -   **权限验证**：基于用户等级（free / plus / pro）
+-   **跨域配置**：默认允许 `http://localhost:3000` / `http://127.0.0.1:3000`，如需调整可设置环境变量 `DJANGO_CORS_ALLOWED_ORIGINS`
 
 ------------------------------------------------------------------------
 
@@ -376,7 +377,7 @@ Form-Data：
 
   模块                   前端负责人   后端负责人   技术栈
   ---------------------- ------------ ------------ ----------------------------
-  Auth / User            前端A        后端A        FastAPI + JWT
+  Auth / User            前端A        后端A        Django REST + JWT
   Dataset                前端B        后端B        MinIO + Redis
   Training / Inference   前端C        后端C        Ray / PyTorch
   Simulation             前端D        后端D        IsaacSim / REST Bridge

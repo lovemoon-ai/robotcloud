@@ -10,11 +10,18 @@ authors = [
     { name = "RobotCloud Contributors" }
 ]
 requires-python = ">=3.9"
-dependencies = []
+dependencies = [
+    "Django>=4.2,<5.0",
+    "djangorestframework>=3.14",
+    "psycopg2-binary>=2.9",
+    "django-redis>=5.3",
+    "python-dotenv>=1.0",
+    "django-cors-headers>=4.3",
+]
 
 [tool.setuptools]
 package-dir = {"" = "."}
-packages = ["app"]
+packages = ["robotcloud_backend", "robotcloud_backend.api", "robotcloud_backend.api.migrations"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -24,4 +31,5 @@ addopts = "-q"
 [tool.uv]
 dev-dependencies = [
     "pytest>=7.4",
+    "pytest-django>=4.5",
 ]
