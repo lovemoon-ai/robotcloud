@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .database import (
@@ -543,6 +544,17 @@ def _extract_token(authorization: str = Header(...)) -> str:
 def create_app(api: Optional[RobotCloudAPI] = None) -> FastAPI:
     fastapi_app = FastAPI(title="RobotCloud API", version="1.0.0")
     service = api or RobotCloudAPI()
+
+    fastapi_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def get_api() -> RobotCloudAPI:
         return service
