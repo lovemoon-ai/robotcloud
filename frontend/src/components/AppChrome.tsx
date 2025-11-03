@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ReactNode } from "react";
 import { useAuthStore } from "@/store/useAuthStore";
+import { Logo } from "@/components/Logo";
 
 interface AppChromeProps {
   children: ReactNode;
@@ -19,8 +20,11 @@ export function AppChrome({ children }: AppChromeProps) {
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <header className="border-b border-slate-800 bg-slate-900/70 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <Link href="/" className="text-lg font-semibold text-teal-300 transition hover:text-teal-100">
-            RobotCloud
+          <Link href="/" className="flex items-center gap-3 transition hover:opacity-90" aria-label="RobotCloud 首页">
+            <Logo />
+            <span className="text-lg font-semibold text-transparent bg-gradient-to-r from-teal-200 via-teal-300 to-sky-400 bg-clip-text">
+              RobotCloud
+            </span>
           </Link>
           {phone ? (
             <div className="flex items-center gap-3">
