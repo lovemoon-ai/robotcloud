@@ -17,7 +17,7 @@ INVITE_ARGS ?= list
 invite-codes:
 	cd backend && INVITE_USE_SQLITE=1 $(PYTHON) -m tools.invite_codes $(INVITE_ARGS)
 
-KILL_PORTS := 8000 3000
+KILL_PORTS := 8000 3000 8001
 
 kill:
 	@set -e; \
