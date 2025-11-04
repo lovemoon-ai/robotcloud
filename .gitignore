@@ -8,3 +8,4 @@ frontend/node_modules
 
 # local test uploaded dataset
 backend/storage/datasets
+backend/storage/train_logs
