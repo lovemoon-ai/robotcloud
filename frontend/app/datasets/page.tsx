@@ -56,7 +56,7 @@ export default function DatasetsPage() {
           notLoggedSuffix: "并获取必要权限。",
           uploadButton: "开始上传",
           uploading: "上传中...",
-          success: "数据集上传成功，正在异步处理文件。",
+          success: "数据集上传成功",
           missingFile: "请选择要上传的压缩文件。",
           fallbackError: "上传失败，请稍后重试。"
         },
@@ -69,7 +69,13 @@ export default function DatasetsPage() {
           noDescription: "暂无描述",
           status: (value: string) => `状态：${value}`,
           visibility: (value: string) => `权限：${value}`,
-          createdAt: (value: string) => `创建时间：${value}`
+          createdAt: (value: string) => `创建时间：${value}`,
+          meta: {
+            id: (value: number) => `数据集 ID：${value}`,
+            files: (count: number) => `文件数：${count}`,
+            size: (size: string) => `总大小：${size}`,
+            preview: "预览可用"
+          }
         }
       }
     : {
@@ -94,7 +100,7 @@ export default function DatasetsPage() {
           notLoggedSuffix: "before uploading.",
           uploadButton: "Start Upload",
           uploading: "Uploading...",
-          success: "Dataset uploaded successfully. Processing in the background.",
+          success: "Dataset uploaded successfully",
           missingFile: "Select an archive file to upload.",
           fallbackError: "Upload failed, please try again later."
         },
@@ -107,9 +113,23 @@ export default function DatasetsPage() {
           noDescription: "No description",
           status: (value: string) => `Status: ${value}`,
           visibility: (value: string) => `Visibility: ${value}`,
-          createdAt: (value: string) => `Created at: ${value}`
+          createdAt: (value: string) => `Created at: ${value}`,
+          meta: {
+            id: (value: number) => `Dataset ID: ${value}`,
+            files: (count: number) => `Files: ${count}`,
+            size: (size: string) => `Size: ${size}`,
+            preview: "Preview available"
+          }
         }
       };
+  const formatBytes = (size?: number | null): string | null => {
+    if (typeof size !== "number" || !Number.isFinite(size) || size < 0) return null;
+    if (size === 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    const exponent = Math.min(units.length - 1, Math.floor(Math.log10(size) / 3));
+    const value = size / Math.pow(1000, exponent);
+    return `${value.toFixed(value < 10 && exponent > 0 ? 1 : 0)} ${units[exponent]}`;
+  };
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.uploadDataset,
@@ -232,6 +252,22 @@ export default function DatasetsPage() {
                     <span>{copy.list.status(dataset.status)}</span>
                     <span>{copy.list.visibility(dataset.visibility)}</span>
                   </div>
+                  {(() => {
+                    const segments: string[] = [copy.list.meta.id(dataset.id)];
+                    if (typeof dataset.totalFiles === "number") {
+                      segments.push(copy.list.meta.files(dataset.totalFiles));
+                    }
+                    const formattedSize = formatBytes(dataset.fileSize);
+                    if (formattedSize) {
+                      segments.push(copy.list.meta.size(formattedSize));
+                    }
+                    if (dataset.previewAvailable) {
+                      segments.push(copy.list.meta.preview);
+                    }
+                    return segments.length ? (
+                      <p className="mt-2 text-[11px] text-slate-400">{segments.join(" • ")}</p>
+                    ) : null;
+                  })()}
                   <p className="mt-2 text-[11px] text-slate-500">
                     {copy.list.createdAt(new Date(dataset.createdAt).toLocaleString())}
                   </p>

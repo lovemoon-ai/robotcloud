@@ -6,6 +6,7 @@ import {
   AuthSession,
   DashboardSummary,
   DatasetSummary,
+  DatasetUploadResult,
   InferenceJob,
   SimulatorSession,
   TrainingConfig,
@@ -152,7 +153,11 @@ describe("robotCloudApi", () => {
             description: "desc",
             visibility: "private",
             status: "processing",
-            created_at: "2024-01-01T00:00:00Z"
+            created_at: "2024-01-01T00:00:00Z",
+            file_name: "demo.zip",
+            file_size: 1024,
+            total_files: 3,
+            preview_available: true
           }
         ],
         total: 1
@@ -172,15 +177,33 @@ describe("robotCloudApi", () => {
         description: "desc",
         visibility: "private",
         status: "processing",
-        createdAt: "2024-01-01T00:00:00Z"
+        createdAt: "2024-01-01T00:00:00Z",
+        fileName: "demo.zip",
+        fileSize: 1024,
+        totalFiles: 3,
+        previewAvailable: true
       }
     ]);
   });
 
-  it("uploadDataset sends multipart form data", async () => {
+  it("uploadDataset sends multipart form data and maps response", async () => {
     setAuthenticatedUser();
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          dataset_id: 2,
+          status: "ready",
+          file_name: "dataset.zip",
+          file_size: 2048,
+          total_files: 5
+        }
+      })
+    } as unknown as Response);
     const file = new File(["content"], "dataset.zip", { type: "application/zip" });
-    await robotCloudApi.uploadDataset({
+    const result = await robotCloudApi.uploadDataset({
       file,
       name: "demo",
       description: "desc",
@@ -194,6 +217,13 @@ describe("robotCloudApi", () => {
     expect(form.get("description")).toBe("desc");
     expect(form.get("visibility")).toBe("public");
     expect(form.get("file")).toBeInstanceOf(File);
+    expect(result).toEqual<DatasetUploadResult>({
+      datasetId: 2,
+      status: "ready",
+      fileName: "dataset.zip",
+      fileSize: 2048,
+      totalFiles: 5
+    });
   });
 
   it("fetchTrainingJobs maps tasks and includes auth header", async () => {

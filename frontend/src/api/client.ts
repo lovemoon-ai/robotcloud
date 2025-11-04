@@ -6,6 +6,7 @@ import {
   DashboardSummary,
   DatasetSummary,
   DatasetUploadInput,
+  DatasetUploadResult,
   InferenceJob,
   InviteRegistrationPayload,
   OtpPayload,
@@ -31,6 +32,11 @@ type BackendDataset = {
   visibility: "public" | "private";
   status: string;
   created_at: string;
+  storage_path?: string;
+  file_name?: string | null;
+  file_size?: number | null;
+  total_files?: number | null;
+  preview_available?: boolean;
 };
 
 type BackendTrainingTask = {
@@ -184,7 +190,11 @@ export const robotCloudApi = {
       description: item.description,
       visibility: item.visibility,
       status: item.status,
-      createdAt: item.created_at
+      createdAt: item.created_at,
+      fileName: item.file_name ?? null,
+      fileSize: item.file_size ?? null,
+      totalFiles: item.total_files ?? null,
+      previewAvailable: Boolean(item.preview_available)
     }));
   },
   uploadDataset: async (form: DatasetUploadInput) => {
@@ -193,10 +203,24 @@ export const robotCloudApi = {
     body.append("name", form.name);
     body.append("description", form.description);
     body.append("visibility", form.visibility);
-    return request<{ dataset_id: number; status: string }>("/dataset/upload", {
+    const response = await request<{
+      dataset_id: number;
+      status: string;
+      file_name: string;
+      file_size: number;
+      total_files: number;
+    }>("/dataset/upload", {
       method: "POST",
       body
     });
+    const result: DatasetUploadResult = {
+      datasetId: response.dataset_id,
+      status: response.status,
+      fileName: response.file_name,
+      fileSize: response.file_size,
+      totalFiles: response.total_files
+    };
+    return result;
   },
   fetchTrainingJobs: async (): Promise<TrainingJob[]> => {
     const data = await request<{ items: BackendTrainingTask[]; total: number }>("/training/list?page=1&size=20");

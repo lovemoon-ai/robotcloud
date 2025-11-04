@@ -58,6 +58,7 @@ class Dataset(models.Model):
     storage_path = models.CharField(max_length=512)
     visibility = models.CharField(max_length=16, choices=VISIBILITY_CHOICES, default=VISIBILITY_PRIVATE)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PROCESSING)
+    metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

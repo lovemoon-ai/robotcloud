@@ -156,11 +156,9 @@ class DatasetUploadView(RobotCloudAPIView):
         description = request.data.get("description", "")
         visibility = request.data.get("visibility", "private")
         uploaded = request.data.get("file")
-        filename = getattr(uploaded, "name", name)
-        storage_path = f"/storage/datasets/{filename}"
         return self._execute_with_token(
             request,
-            lambda token: self._service().upload_dataset(token, name, description, visibility, storage_path),
+            lambda token: self._service().upload_dataset(token, uploaded, name, description, visibility),
         )
 
 

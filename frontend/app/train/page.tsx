@@ -5,11 +5,13 @@ import { useState } from "react";
 import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useForm } from "react-hook-form";
-import { TrainingConfig } from "@/types";
+import { TrainingConfig, TrainingJob } from "@/types";
 import { useAuthStore } from "@/store/useAuthStore";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useLocaleStore } from "@/store/useLocaleStore";
+
+const ACTIVE_TRAINING_STATUSES: Array<TrainingJob["status"]> = ["queued", "running"];
 
 export default function TrainPage() {
   const locale = useLocaleStore((state) => state.locale);
@@ -20,7 +22,15 @@ export default function TrainPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["training-jobs"],
     queryFn: robotCloudApi.fetchTrainingJobs,
-    enabled: Boolean(token)
+    enabled: Boolean(token),
+    refetchInterval: (jobs: TrainingJob[] | undefined) => {
+      if (!jobs?.length) {
+        return false;
+      }
+      const hasActive = jobs.some((job) => ACTIVE_TRAINING_STATUSES.includes(job.status));
+      return hasActive ? 5000 : false;
+    },
+    refetchIntervalInBackground: true
   });
   const form = useForm<TrainingConfig>({
     defaultValues: { model: "YOLO", datasetId: "", learningRate: 0.001, epochs: 50, batchSize: 16 }

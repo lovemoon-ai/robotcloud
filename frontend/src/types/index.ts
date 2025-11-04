@@ -40,6 +40,10 @@ export interface DatasetSummary {
   visibility: "public" | "private";
   status: string;
   createdAt: string;
+  fileName?: string | null;
+  fileSize?: number | null;
+  totalFiles?: number | null;
+  previewAvailable: boolean;
 }
 
 export interface DatasetUploadInput {
@@ -47,6 +51,14 @@ export interface DatasetUploadInput {
   name: string;
   description: string;
   visibility: "public" | "private";
+}
+
+export interface DatasetUploadResult {
+  datasetId: number;
+  status: string;
+  fileName: string;
+  fileSize: number;
+  totalFiles: number;
 }
 
 export interface TrainingJob {

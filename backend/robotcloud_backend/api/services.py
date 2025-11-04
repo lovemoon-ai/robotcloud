@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 from datetime import timedelta
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterable, Optional
+from urllib.parse import quote
+from zipfile import BadZipFile, ZipFile
 
+from django.conf import settings
 from django.core.cache import caches
 from django.db import transaction
 from django.utils import timezone
@@ -48,6 +53,11 @@ class RobotCloudService:
         self.sms_gateway = sms_gateway
         self.token_cache = caches["tokens"]
         self.verification_cache = caches["default"]
+        dataset_root = getattr(settings, "DATASET_STORAGE_DIR", None)
+        if dataset_root is None:
+            dataset_root = Path.cwd() / "datasets"
+        self.dataset_root = Path(dataset_root)
+        self.dataset_root.mkdir(parents=True, exist_ok=True)
 
     # -------------------- Internal helpers --------------------
     def _priority_for_role(self, role: str) -> int:
@@ -111,6 +121,125 @@ class RobotCloudService:
             except (TypeError, ValueError):
                 continue
         return result
+
+    def _sanitize_filename(self, original: str, fallback: str) -> str:
+        candidate = (original or "").strip().replace("\\", "/").split("/")[-1]
+        candidate = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate)
+        candidate = candidate.strip("._")
+        if candidate:
+            return candidate
+        fallback_name = fallback.strip().replace(" ", "_")
+        return re.sub(r"[^A-Za-z0-9._-]+", "_", fallback_name) or "dataset"
+
+    def _write_dataset_file(self, dataset: Dataset, uploaded_file: Any) -> Path:
+        dataset_dir = self.dataset_root / f"user_{dataset.owner_id}" / f"dataset_{dataset.id}"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        original_name = getattr(uploaded_file, "name", "")
+        suffix = Path(original_name).suffix if original_name else ""
+        fallback = f"dataset_{dataset.id}{suffix or '.bin'}"
+        filename = self._sanitize_filename(original_name, fallback)
+        file_path = dataset_dir / filename
+        try:
+            chunks: Iterable[bytes]
+            if hasattr(uploaded_file, "chunks"):
+                chunks = uploaded_file.chunks()
+            else:
+                data = uploaded_file.read()
+                if isinstance(data, str):
+                    data = data.encode()
+                chunks = [data]
+            with file_path.open("wb") as destination:
+                for chunk in chunks:
+                    if chunk:
+                        destination.write(chunk)
+        except OSError as exc:
+            raise ValueError("Failed to persist dataset file") from exc
+        return file_path
+
+    def _relative_storage_path(self, file_path: Path) -> Path:
+        try:
+            return file_path.relative_to(self.dataset_root)
+        except ValueError:
+            return file_path
+
+    def _dataset_file_path(self, dataset: Dataset) -> Path:
+        storage_path = Path(dataset.storage_path or "")
+        if not storage_path:
+            return self.dataset_root / f"user_{dataset.owner_id}" / f"dataset_{dataset.id}"
+        if storage_path.is_absolute():
+            return storage_path
+        return self.dataset_root / storage_path
+
+    def _classify_file(self, name: str) -> str:
+        suffix = Path(name).suffix.lower()
+        if suffix in {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}:
+            return "image"
+        if suffix in {".mp4", ".avi", ".mov", ".mkv", ".webm"}:
+            return "video"
+        if suffix in {".pcd", ".ply", ".las", ".bag"}:
+            return "pointcloud"
+        if suffix in {".json", ".yaml", ".yml", ".xml", ".csv", ".txt"}:
+            return "metadata"
+        return "file"
+
+    def _compute_dataset_metadata(self, dataset: Dataset, file_path: Path) -> Dict[str, Any]:
+        file_size = file_path.stat().st_size if file_path.exists() else 0
+        total_files = 0
+        by_type: Dict[str, int] = {}
+        preview_entries: list[Dict[str, str]] = []
+        if file_path.suffix.lower() == ".zip" and file_path.exists():
+            try:
+                with ZipFile(file_path) as archive:
+                    members = [item for item in archive.infolist() if not item.is_dir()]
+            except BadZipFile:
+                members = []
+            for member in members:
+                name = member.filename
+                file_type = self._classify_file(name)
+                by_type[file_type] = by_type.get(file_type, 0) + 1
+                if len(preview_entries) < 5:
+                    preview_entries.append({"name": name, "type": file_type})
+            total_files = len(members)
+        if total_files == 0:
+            name = file_path.name
+            file_type = self._classify_file(name)
+            by_type[file_type] = by_type.get(file_type, 0) + 1
+            preview_entries = [{"name": name, "type": file_type}]
+            total_files = 1
+        return {
+            "file_name": file_path.name,
+            "file_size": file_size,
+            "total_files": total_files,
+            "by_type": by_type,
+            "preview": preview_entries,
+        }
+
+    def _ensure_dataset_metadata(self, dataset: Dataset, force: bool = False) -> Dict[str, Any]:
+        metadata = dataset.metadata or {}
+        if not metadata or force:
+            file_path = self._dataset_file_path(dataset)
+            if not file_path.exists():
+                raise ValueError("Dataset file missing")
+            metadata = self._compute_dataset_metadata(dataset, file_path)
+            dataset.metadata = metadata
+            dataset.save(update_fields=["metadata"])
+        return metadata
+
+    def _build_preview_payload(self, dataset: Dataset, metadata: Dict[str, Any]) -> list[Dict[str, Any]]:
+        preview_entries = metadata.get("preview") or []
+        if not isinstance(preview_entries, list):
+            preview_entries = []
+        payload = []
+        for entry in preview_entries[:5]:
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if not name:
+                continue
+            file_type = entry.get("type") if isinstance(entry, dict) else None
+            if not file_type:
+                file_type = self._classify_file(name)
+            url = f"/datasets/{dataset.id}/files/{quote(name, safe='')}"
+            payload.append({"name": name, "type": file_type, "url": url})
+        return payload
 
     # -------------------- Auth Module --------------------
     def send_code(self, phone: str) -> Dict[str, Any]:
@@ -209,25 +338,46 @@ class RobotCloudService:
     def upload_dataset(
         self,
         token: str,
+        uploaded_file: Any,
         name: str,
         description: str,
         visibility: str,
-        storage_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         if visibility not in {Dataset.VISIBILITY_PRIVATE, Dataset.VISIBILITY_PUBLIC}:
             raise ValueError("Invalid visibility")
         if not name:
             raise ValueError("Dataset name required")
+        if uploaded_file is None:
+            raise ValueError("Dataset file required")
         user = self._get_user_by_token(token)
         dataset = Dataset.objects.create(
             name=name,
             description=description or "",
             owner=user,
-            storage_path=storage_path or f"/storage/datasets/{name}",
+            storage_path="",
             visibility=visibility,
             status=Dataset.STATUS_PROCESSING,
+            metadata={},
         )
-        return self._response({"dataset_id": dataset.id, "status": dataset.status})
+        try:
+            file_path = self._write_dataset_file(dataset, uploaded_file)
+        except ValueError:
+            dataset.delete()
+            raise
+        metadata = self._compute_dataset_metadata(dataset, file_path)
+        dataset.storage_path = str(self._relative_storage_path(file_path))
+        dataset.status = Dataset.STATUS_READY
+        dataset.metadata = metadata
+        dataset.save(update_fields=["storage_path", "status", "metadata"])
+        return self._response(
+            {
+                "dataset_id": dataset.id,
+                "status": dataset.status,
+                "file_name": metadata["file_name"],
+                "file_size": metadata["file_size"],
+                "total_files": metadata["total_files"],
+            }
+        )
 
     def list_datasets(self, visibility: Optional[str], page: int, size: int) -> Dict[str, Any]:
         queryset = Dataset.objects.all().order_by("-created_at")
@@ -244,19 +394,24 @@ class RobotCloudService:
 
     def dataset_stats(self, dataset_id: int) -> Dict[str, Any]:
         dataset = self._get_dataset(dataset_id)
-        return self._response({"dataset_id": dataset.id, "status": dataset.status, "total_samples": 100})
-
-    def dataset_preview(self, dataset_id: int) -> Dict[str, Any]:
-        dataset = self._get_dataset(dataset_id)
+        metadata = self._ensure_dataset_metadata(dataset)
         return self._response(
             {
                 "dataset_id": dataset.id,
-                "preview": [
-                    {"type": "image", "url": f"/preview/{dataset.id}/sample1.png"},
-                    {"type": "pointcloud", "url": f"/preview/{dataset.id}/sample1.pcd"},
-                ],
+                "status": dataset.status,
+                "file_size": metadata.get("file_size", 0),
+                "total_files": metadata.get("total_files", 0),
+                "by_type": metadata.get("by_type", {}),
             }
         )
+
+    def dataset_preview(self, dataset_id: int) -> Dict[str, Any]:
+        dataset = self._get_dataset(dataset_id)
+        if dataset.status != Dataset.STATUS_READY:
+            return self._response({"dataset_id": dataset.id, "preview": []})
+        metadata = self._ensure_dataset_metadata(dataset)
+        preview = self._build_preview_payload(dataset, metadata)
+        return self._response({"dataset_id": dataset.id, "preview": preview})
 
     # -------------------- Training Module --------------------
     def create_training_task(
@@ -698,6 +853,7 @@ class RobotCloudService:
             raise ValueError("Simulation task not found") from exc
 
     def _dataset_to_dict(self, dataset: Dataset) -> Dict[str, Any]:
+        metadata = dataset.metadata or {}
         return {
             "dataset_id": dataset.id,
             "name": dataset.name,
@@ -705,6 +861,11 @@ class RobotCloudService:
             "owner_id": dataset.owner_id,
             "visibility": dataset.visibility,
             "status": dataset.status,
+            "storage_path": dataset.storage_path,
+            "file_name": metadata.get("file_name"),
+            "file_size": metadata.get("file_size"),
+            "total_files": metadata.get("total_files"),
+            "preview_available": bool(metadata.get("preview")),
             "created_at": dataset.created_at.isoformat(),
         }
 

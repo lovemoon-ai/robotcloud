@@ -173,3 +173,5 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.MultiPartParser",
     ],
 }
+
+DATASET_STORAGE_DIR = Path(os.getenv("DATASET_STORAGE_DIR", BASE_DIR / "storage" / "datasets")).resolve()
