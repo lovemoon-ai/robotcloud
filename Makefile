@@ -9,6 +9,9 @@ MANAGE := $(PYTHON) manage.py
 backend-deps:
 	$(PIP) install -r backend/requirements-dev.txt
 
+front-deps:
+	cd frontend && npm install
+
 frontend-test:
 	cd frontend && npm test
 
