@@ -28,3 +28,8 @@
 - Local tooling (e.g., `make run`) sets `USE_SQLITE=1` and `USE_IN_MEMORY_CACHE=1` so the stack boots without Postgres or Redis; unset them if you need external services.
 - Set `USE_POSTGRES=1` when you want Django to talk to your Postgres instance; otherwise it defaults to sqlite.
 - When running both apps manually, export the same base URL to keep API clients pointed at your backend instance.
+
+## Deploy steps
+- make run          # frontend & backend
+- make scheduler    # simple and standalone scheduler
+- make agent        # launch on GPU machines

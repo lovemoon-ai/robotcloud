@@ -50,12 +50,13 @@ export default function TrainPage() {
         submit: "提交训练",
         submitting: "创建中...",
         queueHeading: "训练任务队列",
+        totalLabel: (count: number) => `共 ${count} 个任务`,
+        stats: (datasetId: string, progress: number) => `数据集 ID：${datasetId} · 进度：${progress}%`,
+        logsLabel: (hasLog: boolean) => (hasLog ? "查看日志" : "日志生成中"),
         loginNotice: "请先登录后创建训练任务，正在跳转至登录页...",
         loginPrompt: "登录后可查看我的训练任务。",
         loginLink: "前往登录",
         loading: "加载中...",
-        progress: (datasetId: string, progress: number) => `数据集 ID：${datasetId}，进度：${progress}%`,
-        logs: (url: string) => `日志：${url}`,
         empty: "暂无训练任务。"
       }
     : {
@@ -71,14 +72,16 @@ export default function TrainPage() {
         submit: "Submit Training",
         submitting: "Creating...",
         queueHeading: "Training Queue",
+        totalLabel: (count: number) => `Total ${count} task${count === 1 ? "" : "s"}`,
+        stats: (datasetId: string, progress: number) => `Dataset: ${datasetId} · Progress: ${progress}%`,
+        logsLabel: (hasLog: boolean) => (hasLog ? "View logs" : "Logs pending"),
         loginNotice: "Log in before creating training jobs. Redirecting to the login page...",
         loginPrompt: "Log in to view your training jobs.",
         loginLink: "Go to login",
         loading: "Loading...",
-        progress: (datasetId: string, progress: number) => `Dataset ID: ${datasetId}, progress: ${progress}%`,
-        logs: (url: string) => `Logs: ${url}`,
         empty: "No training jobs yet."
       };
+  const taskCount = data?.length ?? 0;
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.createTrainingJob,
@@ -157,7 +160,10 @@ export default function TrainPage() {
           </button>
         </form>
         <div className="space-y-3">
-          <h2 className="text-xl font-semibold text-teal-300">{copy.queueHeading}</h2>
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-xl font-semibold text-teal-300">{copy.queueHeading}</h2>
+            {token ? <span className="text-xs text-slate-400">{copy.totalLabel(taskCount)}</span> : null}
+          </div>
           {loginNotice ? <p className="text-sm text-teal-200">{loginNotice}</p> : null}
           {!token ? (
             <p className="text-sm text-slate-400">
@@ -170,17 +176,27 @@ export default function TrainPage() {
           {token && isLoading ? <p>{copy.loading}</p> : null}
           {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
           {token ? (
-            <div className="grid gap-3">
+            <div className="grid max-h-[24rem] gap-2 overflow-y-auto pr-2">
               {data?.map((job) => (
-                <Card
-                  key={job.id}
-                  title={`${job.model} · ${job.status}`}
-                  description={copy.progress(job.datasetId, job.progress)}
-                >
-                  <div className="h-2 rounded-full bg-slate-800">
-                    <div className="h-full rounded-full bg-teal-400" style={{ width: `${job.progress}%` }} />
+                <Card key={job.id} title={`${job.model} · ${job.status}`} compact>
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span>{copy.stats(job.datasetId.toString(), job.progress)}</span>
+                    {job.logsUrl ? (
+                      <a
+                        href={job.logsUrl}
+                        className="font-semibold text-teal-300 hover:text-teal-200"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {copy.logsLabel(true)}
+                      </a>
+                    ) : (
+                      <span>{copy.logsLabel(false)}</span>
+                    )}
                   </div>
-                  <p className="mt-2 text-[11px] text-slate-500">{copy.logs(job.logsUrl)}</p>
+                  <div className="mt-2 h-1.5 rounded-full bg-slate-800">
+                    <div className="h-full rounded-full bg-teal-400 transition-all" style={{ width: `${job.progress}%` }} />
+                  </div>
                 </Card>
               ))}
               {!data?.length ? <p className="text-sm text-slate-400">{copy.empty}</p> : null}
