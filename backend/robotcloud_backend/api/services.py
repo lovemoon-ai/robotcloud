@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 from datetime import timedelta
 from typing import Any, Dict, Optional
@@ -18,6 +19,7 @@ from .models import (
     SimulationTask,
     TrainTask,
     User,
+    WorkerNode,
 )
 from ..sms import SmsGateway
 
@@ -29,10 +31,86 @@ VERIFICATION_CODE_TIMEOUT_SECONDS = 5 * 60  # 5 minutes
 class RobotCloudService:
     """Domain service that encapsulates RobotCloud business logic."""
 
+    TRAINING_PRIORITY_BY_ROLE = {
+        User.ROLE_PRO: 100,
+        User.ROLE_PLUS: 50,
+        User.ROLE_FREE: 10,
+        User.ROLE_ADMIN: 100,
+    }
+    TRAINING_CONCURRENCY_BY_ROLE = {
+        User.ROLE_PRO: 4,
+        User.ROLE_PLUS: 3,
+        User.ROLE_FREE: 2,
+        User.ROLE_ADMIN: 4,
+    }
+
     def __init__(self, sms_gateway: Optional[SmsGateway] = None) -> None:
         self.sms_gateway = sms_gateway
         self.token_cache = caches["tokens"]
         self.verification_cache = caches["default"]
+
+    # -------------------- Internal helpers --------------------
+    def _priority_for_role(self, role: str) -> int:
+        return self.TRAINING_PRIORITY_BY_ROLE.get(role, 10)
+
+    def _max_concurrent_for_role(self, role: str) -> int:
+        return self.TRAINING_CONCURRENCY_BY_ROLE.get(role, 2)
+
+    def _refresh_queue_positions(self) -> None:
+        queued_tasks = list(TrainTask.objects.filter(status="queued").order_by("-priority", "created_at"))
+        for index, task in enumerate(queued_tasks, start=1):
+            if task.queue_position != index:
+                TrainTask.objects.filter(pk=task.pk).update(queue_position=index)
+
+    def _get_worker_by_token(self, token: str) -> WorkerNode:
+        if not token:
+            raise ValueError("Agent token required")
+        try:
+            return WorkerNode.objects.get(auth_token=token)
+        except WorkerNode.DoesNotExist as exc:
+            raise ValueError("Invalid agent token") from exc
+
+    def _generate_agent_token(self) -> str:
+        while True:
+            candidate = secrets.token_hex(16)
+            if not WorkerNode.objects.filter(auth_token=candidate).exists():
+                return candidate
+
+    def _normalize_gpu_payload(self, payload: Any) -> int:
+        if isinstance(payload, int):
+            return max(payload, 0)
+        if isinstance(payload, (list, tuple)):
+            return max(len(payload), 0)
+        return 0
+
+    def _release_worker_slot(self, task: TrainTask) -> None:
+        if not task.assigned_node:
+            return
+        try:
+            node = WorkerNode.objects.get(node_name=task.assigned_node)
+        except WorkerNode.DoesNotExist:
+            return
+        if node.gpu_busy > 0:
+            node.gpu_busy -= 1
+        node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
+        node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+
+    def _parse_assigned_gpus(self, value: Optional[str]) -> list[int]:
+        if not value:
+            return []
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        result: list[int] = []
+        for item in parsed:
+            try:
+                result.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return result
 
     # -------------------- Auth Module --------------------
     def send_code(self, phone: str) -> Dict[str, Any]:
@@ -192,17 +270,21 @@ class RobotCloudService:
             raise ValueError("Model type required")
         user = self._get_user_by_token(token)
         dataset = self._get_dataset(dataset_id)
-        task = TrainTask.objects.create(
-            dataset=dataset,
-            user=user,
-            model_type=model_type,
-            params=params or {},
-            status="queued",
-            progress=0.0,
-            logs_url="",
-        )
-        task.logs_url = f"/storage/train_logs/{task.id}.log"
-        task.save(update_fields=["logs_url"])
+        with transaction.atomic():
+            task = TrainTask.objects.create(
+                dataset=dataset,
+                user=user,
+                model_type=model_type,
+                params=params or {},
+                status="queued",
+                progress=0.0,
+                logs_url="",
+                priority=self._priority_for_role(user.role),
+                queue_position=0,
+            )
+            task.logs_url = f"/storage/train_logs/{task.id}.log"
+            task.save(update_fields=["logs_url"])
+            self._refresh_queue_positions()
         return self._response({"task_id": task.id, "status": task.status})
 
     def list_training_tasks(self, token: str, page: int, size: int) -> Dict[str, Any]:
@@ -221,9 +303,13 @@ class RobotCloudService:
     def stop_training(self, token: str, task_id: int) -> Dict[str, Any]:
         user = self._get_user_by_token(token)
         task = self._get_train_task(task_id, user)
+        previous_status = task.status
         task.status = "failed"
         task.progress = 0.0
         task.save(update_fields=["status", "progress"])
+        if previous_status == "running":
+            self._release_worker_slot(task)
+        self._refresh_queue_positions()
         return self._response({"task_id": task.id, "status": task.status})
 
     def download_model(self, token: str, task_id: int) -> Dict[str, Any]:
@@ -233,6 +319,128 @@ class RobotCloudService:
             task.model_path = f"/storage/models/{task.id}.pt"
             task.save(update_fields=["model_path"])
         return self._response({"task_id": task.id, "model_path": task.model_path})
+
+    # -------------------- Scheduler Internal Module --------------------
+    def register_agent(self, node_name: str, ip: str, gpu_total: int, version: str, api_port: int) -> Dict[str, Any]:
+        if not node_name:
+            raise ValueError("Node name required")
+        if not ip:
+            raise ValueError("Agent IP required")
+        if gpu_total <= 0:
+            raise ValueError("GPU total must be positive")
+        if api_port <= 0:
+            raise ValueError("Agent port must be positive")
+        now = timezone.now()
+        with transaction.atomic():
+            node, created = WorkerNode.objects.select_for_update().get_or_create(
+                node_name=node_name,
+                defaults={
+                    "ip": ip,
+                    "gpu_total": gpu_total,
+                    "gpu_busy": 0,
+                    "gpu_free": gpu_total,
+                    "version": version or "",
+                    "auth_token": self._generate_agent_token(),
+                    "status": WorkerNode.STATUS_ONLINE,
+                    "last_heartbeat": now,
+                    "api_port": api_port,
+                },
+            )
+            if not created:
+                node.ip = ip
+                node.gpu_total = gpu_total
+                node.gpu_busy = min(node.gpu_busy, gpu_total)
+                node.gpu_free = max(gpu_total - node.gpu_busy, 0)
+                node.version = version or ""
+                node.status = WorkerNode.STATUS_ONLINE
+                node.last_heartbeat = now
+                node.api_port = api_port
+                node.save(
+                    update_fields=[
+                        "ip",
+                        "gpu_total",
+                        "gpu_busy",
+                        "gpu_free",
+                        "version",
+                        "status",
+                        "last_heartbeat",
+                        "api_port",
+                        "updated_at",
+                    ]
+                )
+            token = node.auth_token
+        return self._response({"agent_id": node.node_name, "token": token, "gpu_total": node.gpu_total, "api_port": node.api_port})
+
+    def agent_heartbeat(
+        self,
+        token: str,
+        gpu_total: int,
+        gpu_free: Any,
+        gpu_busy: Any,
+        version: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        node = self._get_worker_by_token(token)
+        now = timezone.now()
+        if gpu_total > 0:
+            node.gpu_total = gpu_total
+        free_count = self._normalize_gpu_payload(gpu_free)
+        busy_count = self._normalize_gpu_payload(gpu_busy)
+        if busy_count > node.gpu_total:
+            busy_count = node.gpu_total
+        if free_count > node.gpu_total:
+            free_count = node.gpu_total
+        node.gpu_busy = busy_count
+        node.gpu_free = max(node.gpu_total - busy_count, 0) if free_count == 0 else free_count
+        node.last_heartbeat = now
+        node.status = WorkerNode.STATUS_ONLINE
+        if version is not None:
+            node.version = version
+        node.save(
+            update_fields=["gpu_total", "gpu_busy", "gpu_free", "last_heartbeat", "status", "version", "updated_at"]
+        )
+        return self._response({"status": "ok", "node": node.node_name})
+
+    def agent_update_training(
+        self,
+        token: str,
+        task_id: int,
+        status_value: str,
+        progress_value: Optional[float],
+        metrics: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if status_value not in {"queued", "running", "completed", "failed"}:
+            raise ValueError("Invalid training status")
+        node = self._get_worker_by_token(token)
+        try:
+            task = TrainTask.objects.get(id=task_id)
+        except TrainTask.DoesNotExist as exc:
+            raise ValueError("Training task not found") from exc
+        if task.assigned_node and task.assigned_node != node.node_name:
+            raise ValueError("Task assigned to different node")
+        previous_status = task.status
+        update_fields = []
+        task.status = status_value
+        update_fields.append("status")
+        if progress_value is not None:
+            task.progress = max(0.0, min(1.0, float(progress_value)))
+            update_fields.append("progress")
+        if metrics:
+            params = task.params or {}
+            metrics_payload = params.get("metrics", {})
+            if not isinstance(metrics_payload, dict):
+                metrics_payload = {}
+            metrics_payload.update(metrics)
+            params["metrics"] = metrics_payload
+            task.params = params
+            update_fields.append("params")
+        task.save(update_fields=update_fields)
+        if previous_status == "running" and status_value in {"completed", "failed"}:
+            self._release_worker_slot(task)
+        node.last_heartbeat = timezone.now()
+        node.status = WorkerNode.STATUS_ONLINE
+        node.save(update_fields=["last_heartbeat", "status", "updated_at"])
+        self._refresh_queue_positions()
+        return self._response({"task_id": task.id, "status": task.status, "progress": task.progress})
 
     # -------------------- Inference Module --------------------
     def create_inference_task(self, token: str, model_id: int, dataset_id: int) -> Dict[str, Any]:
@@ -508,6 +716,12 @@ class RobotCloudService:
             "status": task.status,
             "progress": task.progress,
             "logs_url": task.logs_url,
+            "assigned_node": task.assigned_node,
+            "assigned_gpus": self._parse_assigned_gpus(task.assigned_gpus),
+            "priority": task.priority,
+            "queue_position": task.queue_position,
+            "retry_count": task.retry_count,
+            "created_at": task.created_at.isoformat(),
         }
 
     def _inference_to_dict(self, task: InferenceTask) -> Dict[str, Any]:

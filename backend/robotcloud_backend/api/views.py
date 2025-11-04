@@ -61,6 +61,16 @@ class RobotCloudAPIView(APIView):
     def _execute_with_token(self, request: Request, handler: Callable[[str], Dict]) -> Response:
         return self._execute(lambda: handler(self._get_token(request)))
 
+    def _get_agent_token(self, request: Request) -> str:
+        token = request.headers.get("X-Agent-Token", "")
+        if not token:
+            header = request.headers.get("Authorization", "")
+            _, _, value = header.partition(" ")
+            token = value
+        if not token:
+            raise ValueError("Agent token required")
+        return token
+
 
 class SendCodeView(RobotCloudAPIView):
     parser_classes = [JSONParser]
@@ -213,6 +223,61 @@ class TrainingStopView(RobotCloudAPIView):
 class TrainingDownloadView(RobotCloudAPIView):
     def get(self, request: Request, task_id: int) -> Response:
         return self._execute_with_token(request, lambda token: self._service().download_model(token, task_id))
+
+
+class AgentRegisterView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute(
+            lambda: self._service().register_agent(
+                payload.get("node_name", ""),
+                payload.get("ip", ""),
+                int(payload.get("gpu_total", 0) or 0),
+                payload.get("version", "") or "",
+                int(payload.get("port", 5000) or 5000),
+            )
+        )
+
+
+class AgentHeartbeatView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        token = self._get_agent_token(request)
+        return self._execute(
+            lambda: self._service().agent_heartbeat(
+                token,
+                int(payload.get("gpu_total", 0) or 0),
+                payload.get("gpu_free"),
+                payload.get("gpu_busy"),
+                payload.get("version"),
+            )
+        )
+
+
+class AgentTrainingUpdateView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        token = self._get_agent_token(request)
+
+        def action() -> Dict:
+            task_id = payload.get("task_id")
+            if task_id is None:
+                raise ValueError("task_id required")
+            return self._service().agent_update_training(
+                token,
+                int(task_id),
+                payload.get("status", ""),
+                payload.get("progress"),
+                payload.get("metrics") or {},
+            )
+
+        return self._execute(action)
 
 
 class InferenceCreateView(RobotCloudAPIView):

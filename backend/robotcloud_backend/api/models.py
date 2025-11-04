@@ -83,6 +83,11 @@ class TrainTask(models.Model):
     progress = models.FloatField(default=0.0)
     logs_url = models.CharField(max_length=512)
     model_path = models.CharField(max_length=512, null=True, blank=True)
+    assigned_node = models.CharField(max_length=64, null=True, blank=True)
+    assigned_gpus = models.CharField(max_length=64, null=True, blank=True)
+    priority = models.IntegerField(default=0)
+    queue_position = models.IntegerField(default=0)
+    retry_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -184,3 +189,32 @@ class InvitationCode(models.Model):
 
     def __str__(self) -> str:
         return f"Invitation {self.code} ({'used' if self.used else 'available'})"
+
+
+class WorkerNode(models.Model):
+    STATUS_ONLINE = "online"
+    STATUS_OFFLINE = "offline"
+
+    STATUS_CHOICES = [
+        (STATUS_ONLINE, "Online"),
+        (STATUS_OFFLINE, "Offline"),
+    ]
+
+    node_name = models.CharField(max_length=64, unique=True)
+    ip = models.CharField(max_length=64)
+    gpu_total = models.IntegerField(default=0)
+    gpu_free = models.IntegerField(default=0)
+    gpu_busy = models.IntegerField(default=0)
+    last_heartbeat = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_OFFLINE)
+    version = models.CharField(max_length=20, blank=True)
+    auth_token = models.CharField(max_length=64, unique=True)
+    api_port = models.IntegerField(default=5000)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["node_name"]
+
+    def __str__(self) -> str:
+        return f"{self.node_name} ({self.status})"

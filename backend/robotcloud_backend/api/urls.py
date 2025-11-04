@@ -30,6 +30,10 @@ urlpatterns = [
     path("training/<int:task_id>/status", views.TrainingStatusView.as_view(), name="training-status"),
     path("training/<int:task_id>/stop", views.TrainingStopView.as_view(), name="training-stop"),
     path("training/<int:task_id>/download", views.TrainingDownloadView.as_view(), name="training-download"),
+    # Internal Scheduler
+    path("internal/agent/register", views.AgentRegisterView.as_view(), name="agent-register"),
+    path("internal/agent/heartbeat", views.AgentHeartbeatView.as_view(), name="agent-heartbeat"),
+    path("internal/training/update", views.AgentTrainingUpdateView.as_view(), name="agent-training-update"),
     # Inference
     path("inference/create", views.InferenceCreateView.as_view(), name="inference-create"),
     path("inference/list", views.InferenceListView.as_view(), name="inference-list"),

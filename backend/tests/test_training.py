@@ -65,7 +65,12 @@ def test_training_lifecycle(client: APIClient, sms_gateway: InMemorySmsGateway, 
         HTTP_AUTHORIZATION=f"Bearer {token}",
     )
     assert status_resp.status_code == 200
-    assert status_resp.json()["data"]["task_id"] == task_id
+    status_data = status_resp.json()["data"]
+    assert status_data["task_id"] == task_id
+    assert status_data["assigned_node"] is None
+    assert status_data["assigned_gpus"] == []
+    assert status_data["priority"] == 10
+    assert status_data["queue_position"] == 1
 
     stop_resp = client.post(
         f"/api/v1/training/{task_id}/stop",

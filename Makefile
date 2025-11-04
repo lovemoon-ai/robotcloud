@@ -4,7 +4,7 @@ PYTHON := $(CURDIR)/.venv/bin/python
 PIP := $(CURDIR)/.venv/bin/pip
 MANAGE := $(PYTHON) manage.py
 
-.PHONY: test run backend-deps frontend-test invite-codes kill
+.PHONY: test run scheduler agent backend-deps frontend-test invite-codes kill
 
 backend-deps:
 	$(PIP) install -r backend/requirements-dev.txt
@@ -43,3 +43,9 @@ run:
 	FRONT_PID=$$!; \
 	trap 'kill $$BACK_PID $$FRONT_PID' INT TERM EXIT; \
 	wait $$BACK_PID $$FRONT_PID
+
+scheduler:
+	cd backend && USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 $(MANAGE) run_scheduler
+
+agent:
+	cd backend && SCHEDULER_API_BASE_URL=http://localhost:8000/api/v1 $(PYTHON) -m gpu_agent

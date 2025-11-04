@@ -17,11 +17,17 @@ dependencies = [
     "django-redis>=5.3",
     "python-dotenv>=1.0",
     "django-cors-headers>=4.3",
+    "requests>=2.31",
 ]
 
 [tool.setuptools]
 package-dir = {"" = "."}
-packages = ["robotcloud_backend", "robotcloud_backend.api", "robotcloud_backend.api.migrations"]
+packages = [
+    "robotcloud_backend",
+    "robotcloud_backend.api",
+    "robotcloud_backend.api.migrations",
+    "gpu_agent",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
