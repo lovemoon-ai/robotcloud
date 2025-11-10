@@ -8,6 +8,7 @@ MANAGE := $(PYTHON) manage.py
 
 backend-deps:
 	$(PIP) install -r backend/requirements-dev.txt
+	cd backend && $(PIP) install -e ".[all]"
 
 front-deps:
 	cd frontend && npm install
@@ -56,3 +57,10 @@ scheduler:
 
 agent:
 	cd backend && AGENT_PORT=8001 SCHEDULER_API_BASE_URL=http://localhost:8000/api/v1 $(PYTHON) -m gpu_agent
+
+agent-4090:
+	export SCHEDULER_API_BASE_URL=http://100.72.232.210:8000/api/v1 \
+	export AGENT_IP=100.72.208.174 \
+	export AGENT_PORT=8001 \
+	export AGENT_NODE_NAME=4090-01 \
+	cd backend && $(PYTHON) -m gpu_agent

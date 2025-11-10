@@ -240,6 +240,10 @@ if [[ "$PUSH_TO_HUB" == "true" && -z "$POLICY_REPO" ]]; then
   exit 1
 fi
 
+# source lerobot venv
+VENV=$HOME/code/github/lerobot/.venv
+source $VENV/bin/activate
+
 require_cmd lerobot-train
 
 if [[ -z "$DEVICE" ]]; then
@@ -400,7 +404,5 @@ if [[ "$DRY_RUN" == "true" ]]; then
   exit 0
 fi
 
-# source lerobot venv
-VENV_BIN=$HOME/code/github/lerobot/.venv/bin/
 
-"${VENV_BIN}${RUN_CMD[@]}"
+"${RUN_CMD[@]}"
