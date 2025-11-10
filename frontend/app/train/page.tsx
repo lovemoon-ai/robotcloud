@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useForm } from "react-hook-form";
@@ -33,7 +33,7 @@ export default function TrainPage() {
     refetchIntervalInBackground: true
   });
   const form = useForm<TrainingConfig>({
-    defaultValues: { model: "YOLO", datasetId: "", learningRate: 0.001, epochs: 50, batchSize: 16 }
+    defaultValues: { model: "ACT", datasetId: "", learningRate: 0.001, steps: 5000, batchSize: 16 }
   });
   const isZh = locale === "zh";
   const copy = isZh
@@ -46,7 +46,7 @@ export default function TrainPage() {
         datasetRequired: "请输入数据集 ID",
         learningRateLabel: "学习率",
         batchSizeLabel: "Batch Size",
-        epochsLabel: "Epochs",
+        epochsLabel: "Steps",
         submit: "提交训练",
         submitting: "创建中...",
         queueHeading: "训练任务队列",
@@ -68,7 +68,7 @@ export default function TrainPage() {
         datasetRequired: "Enter a dataset ID",
         learningRateLabel: "Learning Rate",
         batchSizeLabel: "Batch Size",
-        epochsLabel: "Epochs",
+        epochsLabel: "Steps",
         submit: "Submit Training",
         submitting: "Creating...",
         queueHeading: "Training Queue",
@@ -82,6 +82,11 @@ export default function TrainPage() {
         empty: "No training jobs yet."
       };
   const taskCount = data?.length ?? 0;
+  const [logTaskId, setLogTaskId] = useState<number | null>(null);
+  const [logBuffer, setLogBuffer] = useState<string>("");
+  const [logOffset, setLogOffset] = useState<number>(0);
+  const [logComplete, setLogComplete] = useState<boolean>(false);
+  const [logError, setLogError] = useState<string | null>(null);
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.createTrainingJob,
@@ -89,6 +94,49 @@ export default function TrainPage() {
       client.invalidateQueries({ queryKey: ["training-jobs"] });
     }
   });
+
+  const closeLog = () => {
+    setLogTaskId(null);
+    setLogBuffer("");
+    setLogOffset(0);
+    setLogComplete(false);
+    setLogError(null);
+  };
+
+  const openLog = (taskId: number) => {
+    setLogTaskId(taskId);
+    setLogBuffer("");
+    setLogOffset(0);
+    setLogComplete(false);
+    setLogError(null);
+  };
+
+  // Poll logs while modal open
+  const [pollTick, setPollTick] = useState(0);
+  const shouldPoll = Boolean(logTaskId && token && !logComplete);
+  useEffect(() => {
+    if (!shouldPoll) return;
+    let aborted = false;
+    const fetchChunk = async () => {
+      try {
+        const chunk = await robotCloudApi.fetchTrainingLog({ taskId: logTaskId!, offset: logOffset });
+        if (aborted) return;
+        if (chunk.content) setLogBuffer((prev) => prev + chunk.content);
+        setLogOffset(chunk.nextOffset);
+        setLogComplete(chunk.complete);
+        setLogError(null);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setLogError(message);
+      }
+    };
+    fetchChunk();
+    const t = setInterval(() => setPollTick((x) => x + 1), 2000);
+    return () => {
+      aborted = true;
+      clearInterval(t);
+    };
+  }, [shouldPoll, logTaskId, logOffset, pollTick, token]);
 
   const onSubmit = form.handleSubmit(async (values) => {
     if (!token) {
@@ -112,9 +160,12 @@ export default function TrainPage() {
           <label className="block text-sm">
             <span className="text-slate-300">{copy.modelLabel}</span>
             <select {...form.register("model")} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2">
-              <option value="YOLO">YOLO</option>
-              <option value="OccupancyNet">OccupancyNet</option>
-              <option value="PointTransformer">PointTransformer</option>
+              <option value="ACT">ACT</option>
+              <option value="DiffusionPolicy">DiffusionPolicy</option>
+              <option value="SmolVLA">SmolVLA</option>
+              <option value="Pi0">Pi0</option>
+              <option value="Pi0.5">Pi0.5</option>
+              <option value="GR00T_N1.5">GR00T_N1.5</option>
             </select>
           </label>
           <label className="block text-sm">
@@ -147,7 +198,7 @@ export default function TrainPage() {
             <span className="text-slate-300">{copy.epochsLabel}</span>
             <input
               type="number"
-              {...form.register("epochs", { valueAsNumber: true })}
+              {...form.register("steps", { valueAsNumber: true })}
               className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
             />
           </label>
@@ -181,17 +232,16 @@ export default function TrainPage() {
                 <Card key={job.id} title={`${job.model} · ${job.status}`} compact>
                   <div className="flex items-center justify-between text-[10px] text-slate-400">
                     <span>{copy.stats(job.datasetId.toString(), job.progress)}</span>
-                    {job.logsUrl ? (
-                      <a
-                        href={job.logsUrl}
+                    {job.status === "queued" ? (
+                      <span>{copy.logsLabel(false)}</span>
+                    ) : (
+                      <button
+                        onClick={() => openLog(job.id)}
                         className="font-semibold text-teal-300 hover:text-teal-200"
-                        target="_blank"
-                        rel="noopener noreferrer"
+                        type="button"
                       >
                         {copy.logsLabel(true)}
-                      </a>
-                    ) : (
-                      <span>{copy.logsLabel(false)}</span>
+                      </button>
                     )}
                   </div>
                   <div className="mt-2 h-1.5 rounded-full bg-slate-800">
@@ -204,6 +254,33 @@ export default function TrainPage() {
           ) : null}
         </div>
       </section>
+      {logTaskId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-3xl rounded-lg border border-slate-700 bg-slate-900 p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-teal-300">Task #{logTaskId} Logs</h3>
+              <button onClick={closeLog} className="text-slate-300 hover:text-white" type="button">
+                Close
+              </button>
+            </div>
+            <div className="h-96 overflow-auto rounded bg-black p-3 text-xs text-slate-200">
+              <pre className="whitespace-pre-wrap leading-relaxed">{logBuffer || (logError ? `Error: ${logError}` : "Waiting for logs...")}</pre>
+            </div>
+            <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
+              <span>Offset: {logOffset}{logComplete ? " · Completed" : ""}</span>
+              {!logComplete ? (
+                <button
+                  onClick={() => setPollTick((x) => x + 1)}
+                  className="text-teal-300 hover:text-teal-200"
+                  type="button"
+                >
+                  Refresh
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

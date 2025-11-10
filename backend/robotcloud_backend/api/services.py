@@ -15,6 +15,8 @@ from django.core.cache import caches
 from django.db import transaction
 from django.utils import timezone
 
+import requests
+
 from .models import (
     AdminLog,
     Dataset,
@@ -475,6 +477,41 @@ class RobotCloudService:
             task.save(update_fields=["model_path"])
         return self._response({"task_id": task.id, "model_path": task.model_path})
 
+    def training_logs(self, token: str, task_id: int, offset: int, limit: int) -> Dict[str, Any]:
+        """Proxy log chunks from the assigned agent.
+
+        Returns a JSON payload containing:
+          - content: string chunk
+          - next_offset: next byte offset to continue reading from
+          - complete: whether the job finished and EOF was reached
+        """
+        user = self._get_user_by_token(token)
+        task = self._get_train_task(task_id, user)
+        if not task.assigned_node:
+            # Not yet assigned; no logs available
+            return self._response({"content": "", "next_offset": max(offset, 0), "complete": False})
+        try:
+            node = WorkerNode.objects.get(node_name=task.assigned_node)
+        except WorkerNode.DoesNotExist:
+            return self._response({"content": "", "next_offset": max(offset, 0), "complete": False})
+
+        url = f"http://{node.ip}:{node.api_port}/api/v1/agent/logs"
+        headers = {"X-Agent-Token": node.auth_token, "Content-Type": "application/json"}
+        params = {"task_id": task_id, "offset": max(offset, 0), "limit": max(limit, 1)}
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("Invalid agent response")
+            content = str(data.get("content", ""))
+            next_offset = int(data.get("next_offset", params["offset"]))
+            complete = bool(data.get("complete", False))
+            return self._response({"content": content, "next_offset": next_offset, "complete": complete})
+        except Exception:
+            # Graceful fallback to avoid breaking the UI if agent is offline
+            return self._response({"content": "", "next_offset": max(offset, 0), "complete": False})
+
     # -------------------- Scheduler Internal Module --------------------
     def register_agent(self, node_name: str, ip: str, gpu_total: int, version: str, api_port: int) -> Dict[str, Any]:
         if not node_name:
@@ -876,7 +913,8 @@ class RobotCloudService:
             "model_type": task.model_type,
             "status": task.status,
             "progress": task.progress,
-            "logs_url": task.logs_url,
+            # Prefer API-driven log viewing to support remote agents
+            "logs_url": f"/api/v1/training/{task.id}/logs",
             "assigned_node": task.assigned_node,
             "assigned_gpus": self._parse_assigned_gpus(task.assigned_gpus),
             "priority": task.priority,

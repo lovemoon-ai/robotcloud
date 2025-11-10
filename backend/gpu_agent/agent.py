@@ -50,6 +50,49 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(result).encode("utf-8"))
 
+    def do_GET(self) -> None:  # noqa: N802
+        # Lightweight log chunk endpoint for scheduler/backend proxy.
+        # GET /api/v1/agent/logs?task_id=123&offset=0&limit=65536
+        from urllib.parse import urlparse, parse_qs
+
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/v1/agent/logs":
+            self.send_error(404, "Not Found")
+            return
+        token = self.headers.get("X-Agent-Token", "")
+        if not self.server.agent.validate_scheduler_token(token):
+            self.send_error(401, "Invalid scheduler token")
+            return
+        qs = parse_qs(parsed.query or "")
+        task_id_raw = (qs.get("task_id") or [None])[0]
+        if task_id_raw is None:
+            self.send_error(400, "task_id required")
+            return
+        try:
+            task_id = int(task_id_raw)
+        except (TypeError, ValueError):
+            self.send_error(400, "task_id must be an integer")
+            return
+        try:
+            offset = int((qs.get("offset") or ["0"])[0])
+        except (TypeError, ValueError):
+            offset = 0
+        try:
+            limit = int((qs.get("limit") or ["65536"])[0])
+        except (TypeError, ValueError):
+            limit = 65536
+        if limit <= 0:
+            limit = 65536
+
+        content, next_offset, complete = self.server.agent.read_log_chunk(task_id, offset, limit)
+        body = {"content": content, "next_offset": next_offset, "complete": complete}
+        payload = json.dumps(body).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         """Silence default HTTP server logging."""
         self.server.agent.logger.debug("AgentHTTP: " + format, *args)
@@ -611,3 +654,35 @@ class Agent:
             for job in self._jobs.values():
                 indices.extend(job.gpus)
         return sorted(set(indices))
+
+    # -------------------- Log access helpers --------------------
+    def _log_file_path(self, task_id: int) -> Path:
+        return (self.config.log_dir / f"{task_id}.log").resolve()
+
+    def read_log_chunk(self, task_id: int, offset: int, limit: int) -> tuple[str, int, bool]:
+        path = self._log_file_path(task_id)
+        if not path.exists() or offset < 0:
+            return "", max(offset, 0), False
+        try:
+            size = path.stat().st_size
+            if offset > size:
+                offset = size
+            to_read = min(limit, max(size - offset, 0))
+            data = b""
+            with path.open("rb") as f:
+                if offset:
+                    f.seek(offset)
+                if to_read:
+                    data = f.read(to_read)
+            next_offset = offset + len(data)
+            # Consider complete if job no longer running and we've reached EOF
+            with self._lock:
+                running = task_id in self._jobs
+            complete = (not running) and (next_offset >= size)
+            try:
+                text = data.decode("utf-8", errors="replace")
+            except Exception:
+                text = data.decode("latin-1", errors="replace")
+            return text, next_offset, bool(complete)
+        except OSError:
+            return "", offset, False

@@ -70,11 +70,17 @@ export interface TrainingJob {
   logsUrl: string;
 }
 
+export interface TrainingLogChunk {
+  content: string;
+  nextOffset: number;
+  complete: boolean;
+}
+
 export interface TrainingConfig {
   model: string;
   datasetId: string;
   learningRate: number;
-  epochs: number;
+  steps: number;
   batchSize: number;
 }
 

@@ -15,6 +15,7 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "robotcloud-development-secret-key")
 
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() in {"1", "true", "yes"}
 
+# TODO: add ALLOWED_HOSTS for production server
 ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
 

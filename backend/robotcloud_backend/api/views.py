@@ -223,6 +223,21 @@ class TrainingDownloadView(RobotCloudAPIView):
         return self._execute_with_token(request, lambda token: self._service().download_model(token, task_id))
 
 
+class TrainingLogsView(RobotCloudAPIView):
+    def get(self, request: Request, task_id: int) -> Response:
+        try:
+            offset = int(request.query_params.get("offset", 0))
+        except (TypeError, ValueError):
+            offset = 0
+        try:
+            limit = int(request.query_params.get("limit", 65536))
+        except (TypeError, ValueError):
+            limit = 65536
+        return self._execute_with_token(
+            request, lambda token: self._service().training_logs(token, task_id, offset, limit)
+        )
+
+
 class AgentRegisterView(RobotCloudAPIView):
     parser_classes = [JSONParser]
 

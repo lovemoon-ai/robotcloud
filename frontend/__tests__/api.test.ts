@@ -267,13 +267,13 @@ describe("robotCloudApi", () => {
 
   it("createTrainingJob posts transformed payload", async () => {
     setAuthenticatedUser();
-    const config: TrainingConfig = { model: "YOLO", datasetId: "1", learningRate: 0.1, epochs: 10, batchSize: 8 };
+    const config: TrainingConfig = { model: "YOLO", datasetId: "1", learningRate: 0.1, steps: 10, batchSize: 8 };
     await robotCloudApi.createTrainingJob(config);
     const [, init] = mockedFetch.mock.calls[0];
     expect(JSON.parse(init?.body as string)).toEqual({
       dataset_id: 1,
       model_type: "YOLO",
-      params: { learning_rate: 0.1, epochs: 10, batch_size: 8 }
+      params: { learning_rate: 0.1, steps: 10, batch_size: 8 }
     });
   });
 

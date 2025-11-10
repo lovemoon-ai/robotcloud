@@ -40,10 +40,11 @@ test: backend-deps
 
 
 ####### DEPLOY ########
+DJANGO_ALLOWED_HOSTS="localhost,127.0.0.1,100.72.232.210"
 
 run:
 	@set -e; \
-	( cd backend && USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 $(MANAGE) runserver 0.0.0.0:8000 ) & \
+	( cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) USE_IN_MEMORY_CACHE=1 $(MANAGE) runserver 0.0.0.0:8000 ) & \
 	BACK_PID=$$!; \
 	( cd frontend && NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1 npm run dev ) & \
 	FRONT_PID=$$!; \

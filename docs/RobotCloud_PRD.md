@@ -116,7 +116,7 @@ RobotCloud 致力于打造一个一站式的
 
   功能项         描述
   -------------- ---------------------------------------------------------
-  模型选择       提供预设模板（YOLO、OccupancyNet、PointTransformer 等）
+  模型选择       提供预设模板（ACT、DiffusionPolicy、SmolVLA、Pi0、Pi0.5、GR00T_N1.5）
   参数配置       用户可自定义学习率、batch size、epoch等
   训练任务调度   后端任务队列（Celery / Ray）分发GPU任务
   日志监控       实时可视化 loss、accuracy 曲线

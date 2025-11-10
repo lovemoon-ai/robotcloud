@@ -89,6 +89,19 @@ type BackendDashboardResponse = {
   gpu_hours: number;
 };
 
+function isAuthError(status: number, message: string): boolean {
+  const normalized = message.toLowerCase();
+  if (status === 401) return true;
+  if (status === 400) {
+    return (
+      normalized.includes("invalid token") ||
+      normalized.includes("token required") ||
+      normalized.includes("invalid authorization header")
+    );
+  }
+  return false;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = useAuthStore.getState().token;
   const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
@@ -124,6 +137,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (!message) {
       message = `Request failed with status ${response.status}`;
     }
+    // Auto-logout on invalid/expired token so UI can redirect to login
+    if (isAuthError(response.status, message)) {
+      try {
+        useAuthStore.getState().reset();
+      } catch {
+        // ignore store errors in non-browser contexts
+      }
+    }
     throw new Error(message);
   }
 
@@ -148,6 +169,16 @@ export const robotCloudApi = {
       role: data.role,
       expireAt: data.expire_at
     };
+  },
+  fetchTrainingLog: async (
+    params: { taskId: number; offset?: number; limit?: number }
+  ): Promise<{ content: string; nextOffset: number; complete: boolean }> => {
+    const offset = params.offset ?? 0;
+    const limit = params.limit ?? 65536;
+    const data = await request<{ content: string; next_offset: number; complete: boolean }>(
+      `/training/${params.taskId}/logs?offset=${offset}&limit=${limit}`
+    );
+    return { content: data.content, nextOffset: data.next_offset, complete: data.complete };
   },
   requestOtp: (phone: string) =>
     request<{ sent: boolean }>("/auth/send_code", {
@@ -239,7 +270,7 @@ export const robotCloudApi = {
       model_type: config.model,
       params: {
         learning_rate: config.learningRate,
-        epochs: config.epochs,
+        steps: config.steps,
         batch_size: config.batchSize
       }
     };

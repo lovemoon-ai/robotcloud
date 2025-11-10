@@ -15,6 +15,29 @@ from django.utils import timezone
 from .models import TrainTask, User, WorkerNode
 
 
+def _normalize_policy_name(model_type: str) -> str:
+    """Map UI model_type to lerobot.sh --policy values.
+
+    Accepts labels like 'ACT', 'DiffusionPolicy', 'SmolVLA', 'Pi0', 'Pi0.5',
+    and GR00T variants, returning one of: act, dp, smolvla, pi0, pi0.5, groot.
+    """
+    key = (model_type or "").strip().lower()
+    if key in {"act"}:
+        return "act"
+    if key in {"diffusionpolicy", "diffusion", "dp"}:
+        return "dp"
+    if key in {"smolvla", "smol vla", "smol-vla"}:
+        return "smolvla"
+    if key in {"pi0", "pi-0", "pi_0"}:
+        return "pi0"
+    if key in {"pi0.5", "pi0_5", "pi0-5", "pi05", "pi-0.5", "pi_0_5"}:
+        return "pi0.5"
+    if "gr00t" in key or "groot" in key:
+        return "groot"
+    # Fallback to act if unknown, to avoid script failure
+    return "act"
+
+
 class SchedulerService:
     """Background scheduler that assigns queued training tasks to worker nodes."""
 
@@ -146,14 +169,64 @@ class SchedulerService:
 
     def _dispatch_task(self, node: WorkerNode, task: TrainTask, gpu_index: int) -> bool:
         url = f"http://{node.ip}:{node.api_port}/api/v1/agent/run"
-        params = task.params or {}
+        original_params: Dict = dict(task.params or {})
+        # Translate training params to scripts/lerobot.sh options
+        script_params: Dict[str, object] = {}
+
+        # Required by script: --policy and --dataset
+        script_params["policy"] = _normalize_policy_name(task.model_type)
+        # Use a stable synthetic repo id; real HF id can be provided via params later
+        dataset_repo_id = f"robotcloud/dataset_{task.dataset_id}" if task.dataset_id else "robotcloud/dataset"
+        script_params["dataset"] = dataset_repo_id
+
+        # Ensure dataset path is passed using the option name expected by the script
+        # Agent converts this to CLI as `--dataset-root <path>` before script parsing
+        script_params["dataset_arg"] = "dataset-root"
+        # Prefer local mode when a dataset path exists
+        if task.dataset_id:
+            script_params["dataset-mode"] = "local"
+
+        # Map common tuning params to script flags
+        batch_size = original_params.pop("batch_size", None)
+        if isinstance(batch_size, (int, float)):
+            script_params["batch-size"] = int(batch_size)
+
+        # Prefer explicit steps; fallback to epochs for backward compatibility
+        steps = original_params.pop("steps", None)
+        if isinstance(steps, (int, float)):
+            script_params["steps"] = int(steps)
+        else:
+            epochs = original_params.pop("epochs", None)
+            if isinstance(epochs, (int, float)):
+                script_params["steps"] = int(epochs)
+
+        # Forward remaining user params to lerobot-train via the script's passthrough
+        # so unknown keys don't break parser. Preserve a learning_rate if provided.
+        extra_args: list[str] = []
+        learning_rate = original_params.pop("learning_rate", None)
+        if learning_rate is not None:
+            extra_args.extend(["--", "--learning_rate", str(learning_rate)])
+        # Any other remaining params can also be forwarded as --key value pairs
+        for key, value in list(original_params.items()):
+            if value is None:
+                continue
+            # Use dashed form for readability, but keep raw if already includes dashes/dots
+            flag = key if key.startswith("-") else f"--{key.replace('_', '-')}"
+            extra_args.append("--") if "--" not in extra_args else None
+            extra_args.extend([flag, str(value)])
+            original_params.pop(key, None)
+
+        if extra_args:
+            script_params["extra_args"] = extra_args
+
         payload = {
             "task_id": task.id,
-            "cmd": params.get("cmd", "python train.py"),
+            # Use alias-resolved script name; agent will map to scripts/lerobot.sh
+            "cmd": original_params.get("cmd", "lerobot"),
             "gpus": [gpu_index],
             "model_type": task.model_type,
             "dataset_path": task.dataset.storage_path if task.dataset_id else "",
-            "params": params,
+            "params": script_params,
         }
         headers = {
             "Content-Type": "application/json",
