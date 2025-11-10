@@ -1,10 +1,10 @@
-
+.PHONY: test run scheduler agent backend-deps frontend-test invite-codes kill
 
 PYTHON := $(CURDIR)/.venv/bin/python
 PIP := $(CURDIR)/.venv/bin/pip
 MANAGE := $(PYTHON) manage.py
 
-.PHONY: test run scheduler agent backend-deps frontend-test invite-codes kill
+####### DEVELOP ########
 
 backend-deps:
 	$(PIP) install -r backend/requirements-dev.txt
@@ -37,6 +37,9 @@ kill:
 test: backend-deps
 	cd backend && USE_SQLITE_FOR_TESTS=1 USE_IN_MEMORY_CACHE=1 $(PYTHON) -m pytest
 	$(MAKE) frontend-test
+
+
+####### DEPLOY ########
 
 run:
 	@set -e; \

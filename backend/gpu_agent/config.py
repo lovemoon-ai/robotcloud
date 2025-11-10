@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import socket
 from dataclasses import dataclass
+from pathlib import Path
 
 
 def _int_env(name: str, default: int) -> int:
@@ -32,6 +33,8 @@ class AgentConfig:
     heartbeat_interval: int
     version: str
     step_delay: float
+    log_dir: Path
+    work_dir: Path
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
@@ -44,6 +47,10 @@ class AgentConfig:
         heartbeat_interval = max(_int_env("AGENT_HEARTBEAT_INTERVAL", 30), 5)
         version = os.getenv("AGENT_VERSION", "1.0.0")
         step_delay = max(_float_env("AGENT_STEP_DELAY", 0.5), 0.1)
+        backend_root = Path(__file__).resolve().parents[1]
+        repo_root = backend_root.parent
+        log_dir = Path(os.getenv("AGENT_LOG_DIR", backend_root / "storage" / "train_logs")).expanduser().resolve()
+        work_dir = Path(os.getenv("AGENT_WORK_DIR", repo_root)).expanduser().resolve()
         return cls(
             backend_base_url=backend_base,
             node_name=node_name,
@@ -54,4 +61,6 @@ class AgentConfig:
             heartbeat_interval=heartbeat_interval,
             version=version,
             step_delay=step_delay,
+            log_dir=log_dir,
+            work_dir=work_dir,
         )
