@@ -1,14 +1,16 @@
 .PHONY: test run scheduler agent backend-deps frontend-test invite-codes kill
 
-PYTHON := $(CURDIR)/.venv/bin/python
-PIP := $(CURDIR)/.venv/bin/pip
+# PYTHON := $(CURDIR)/.venv/bin/python
+# PIP := $(CURDIR)/.venv/bin/pip
+PYTHON := /usr/bin/python3
+PIP := /usr/bin/pip3
 MANAGE := $(PYTHON) manage.py
 
 ####### DEVELOP ########
 
 backend-deps:
 	$(PIP) install -r backend/requirements-dev.txt
-	cd backend && $(PIP) install -e ".[all]"
+	cd backend && $(PIP) install ".[all]"
 
 front-deps:
 	cd frontend && npm install
@@ -21,7 +23,7 @@ INVITE_ARGS ?= list
 invite-codes:
 	cd backend && INVITE_USE_SQLITE=1 $(PYTHON) -m tools.invite_codes $(INVITE_ARGS)
 
-KILL_PORTS := 8000 3000 8001
+KILL_PORTS := 6150 6151 6152
 
 kill:
 	@set -e; \
@@ -53,20 +55,20 @@ DJANGO_ALLOWED_HOSTS="localhost,127.0.0.1,100.72.232.210"
 
 run:
 	@set -e; \
-	( cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) USE_IN_MEMORY_CACHE=1 $(MANAGE) runserver 0.0.0.0:8000 ) & \
+	( cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) USE_IN_MEMORY_CACHE=1 $(MANAGE) runserver 0.0.0.0:6150 ) & \
 	BACK_PID=$$!; \
-	( cd frontend && NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1 npm run dev ) & \
+	( cd frontend && NEXT_PUBLIC_API_BASE_URL=http://localhost:6150/api/v1 PORT=6151 npm run dev ) & \
 	FRONT_PID=$$!; \
 	trap 'kill $$BACK_PID $$FRONT_PID' INT TERM; \
 	wait $$BACK_PID $$FRONT_PID
 
 run-all:
 	@set -e; \
-	( cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) USE_IN_MEMORY_CACHE=1 $(MANAGE) runserver 0.0.0.0:8000 ) & \
+	( cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) USE_IN_MEMORY_CACHE=1 $(MANAGE) runserver 0.0.0.0:6150 ) & \
 	BACK_PID=$$!; \
 	( cd backend && USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 $(MANAGE) run_scheduler ) & \
 	SCHED_PID=$$!; \
-	( cd frontend && NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1 npm run dev ) & \
+	( cd frontend && NEXT_PUBLIC_API_BASE_URL=http://localhost:6150/api/v1 npm run dev ) & \
 	FRONT_PID=$$!; \
 	trap 'kill $$BACK_PID $$SCHED_PID $$FRONT_PID' INT TERM; \
 	wait $$BACK_PID $$SCHED_PID $$FRONT_PID
@@ -75,11 +77,11 @@ scheduler:
 	cd backend && USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 $(MANAGE) run_scheduler
 
 agent:
-	cd backend && AGENT_PORT=8001 SCHEDULER_API_BASE_URL=http://localhost:8000/api/v1 $(PYTHON) -m gpu_agent
+	cd backend && AGENT_PORT=6152 SCHEDULER_API_BASE_URL=http://localhost:6150/api/v1 $(PYTHON) -m gpu_agent
 
 agent-4090:
-	export SCHEDULER_API_BASE_URL=http://100.72.232.210:8000/api/v1 \
+	export SCHEDULER_API_BASE_URL=http://100.72.232.210:6150/api/v1 \
 	export AGENT_IP=100.72.208.174 \
-	export AGENT_PORT=8001 \
+	export AGENT_PORT=6152 \
 	export AGENT_NODE_NAME=4090-01 \
 	cd backend && $(PYTHON) -m gpu_agent
