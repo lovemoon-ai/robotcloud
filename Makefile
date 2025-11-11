@@ -55,6 +55,15 @@ run:
 	@set -e; \
 	( cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) USE_IN_MEMORY_CACHE=1 $(MANAGE) runserver 0.0.0.0:8000 ) & \
 	BACK_PID=$$!; \
+	( cd frontend && NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1 npm run dev ) & \
+	FRONT_PID=$$!; \
+	trap 'kill $$BACK_PID $$FRONT_PID' INT TERM; \
+	wait $$BACK_PID $$FRONT_PID
+
+run-all:
+	@set -e; \
+	( cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) USE_IN_MEMORY_CACHE=1 $(MANAGE) runserver 0.0.0.0:8000 ) & \
+	BACK_PID=$$!; \
 	( cd backend && USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 $(MANAGE) run_scheduler ) & \
 	SCHED_PID=$$!; \
 	( cd frontend && NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1 npm run dev ) & \

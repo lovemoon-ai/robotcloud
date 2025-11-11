@@ -16,6 +16,8 @@ fi
 
 OUT_ARGS=()
 HAS_POLICY_DEVICE=false
+# Capture optional output_dir to map to Hydra's run dir
+HYDRA_RUN_DIR=""
 for arg in "$@"; do
   # Normalize learning rate: learning_rate -> optimizer.lr
   if [[ "$arg" == "--learning_rate="* ]]; then
@@ -37,6 +39,16 @@ for arg in "$@"; do
     HAS_POLICY_DEVICE=true
   fi
 
+  # Map output_dir/output-dir to hydra.run.dir
+  if [[ "$arg" == "--output_dir="* || "$arg" == "output_dir="* ]]; then
+    HYDRA_RUN_DIR="${arg#*=}"
+    continue
+  fi
+  if [[ "$arg" == "--output-dir="* || "$arg" == "output-dir="* ]]; then
+    HYDRA_RUN_DIR="${arg#*=}"
+    continue
+  fi
+
   OUT_ARGS+=("$arg")
 done
 
@@ -49,5 +61,10 @@ fi
 OUT_ARGS+=("--policy.push_to_hub=false")
 OUT_ARGS+=("--save_checkpoint=true")
 OUT_ARGS+=("--wandb.enable=false")
+
+# If scheduler provided an output directory, forward as Hydra run dir
+if [[ -n "$HYDRA_RUN_DIR" ]]; then
+  OUT_ARGS+=("hydra.run.dir=$HYDRA_RUN_DIR")
+fi
 
 exec lerobot-train "${OUT_ARGS[@]}"
