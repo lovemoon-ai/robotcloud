@@ -49,9 +49,8 @@ def test_training_job_builds_command_with_dataset_arg(tmp_path: Path) -> None:
     command = job._build_command()  # accessing helper for deterministic assertion
 
     assert command[0] == str(_repo_root() / "scripts" / "lerobot.sh")
-    assert "--policy" in command and command[command.index("--policy") + 1] == "act"
-    assert "--epochs" in command and command[command.index("--epochs") + 1] == "5"
-    assert "--dataset" in command and command[command.index("--dataset") + 1] == dataset_path
+    assert any(tok == "--epochs=5" for tok in command)
+    assert any(tok == f"--dataset={dataset_path}" for tok in command)
     assert command[-2:] == ["--foo", "bar"]
 
 

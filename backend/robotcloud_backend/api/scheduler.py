@@ -16,10 +16,11 @@ from .models import TrainTask, User, WorkerNode
 
 
 def _normalize_policy_name(model_type: str) -> str:
-    """Map UI model_type to lerobot.sh --policy values.
+    """Map UI model_type to training policy identifiers.
 
     Accepts labels like 'ACT', 'DiffusionPolicy', 'SmolVLA', 'Pi0', 'Pi0.5',
     and GR00T variants, returning one of: act, dp, smolvla, pi0, pi0.5, groot.
+    The scheduler later maps these to lerobot-train's hydra key 'policy.type'.
     """
     key = (model_type or "").strip().lower()
     if key in {"act"}:
@@ -170,51 +171,45 @@ class SchedulerService:
     def _dispatch_task(self, node: WorkerNode, task: TrainTask, gpu_index: int) -> bool:
         url = f"http://{node.ip}:{node.api_port}/api/v1/agent/run"
         original_params: Dict = dict(task.params or {})
-        # Translate training params to scripts/lerobot.sh options
-        script_params: Dict[str, object] = {}
+        # Build direct lerobot-train parameters (forwarded by scripts/lerobot.sh)
+        train_params: Dict[str, object] = {}
 
-        # Required by script: --policy and --dataset
-        script_params["policy"] = _normalize_policy_name(task.model_type)
-        # Use a stable synthetic repo id; real HF id can be provided via params later
+        # Policy selection maps to hydra key policy.type
+        normalized = _normalize_policy_name(task.model_type)
+        policy_type = {"dp": "diffusion", "pi0.5": "pi05"}.get(normalized, normalized)
+        train_params["policy.type"] = policy_type
+
+        # Provide a synthetic dataset repo id for traceability; can be overridden
         dataset_repo_id = f"robotcloud/dataset_{task.dataset_id}" if task.dataset_id else "robotcloud/dataset"
-        script_params["dataset"] = dataset_repo_id
+        train_params["dataset.repo_id"] = dataset_repo_id
 
-        # Ensure dataset path is passed using the option name expected by the script
-        # Agent converts this to CLI as `--dataset-root <path>` before script parsing
-        script_params["dataset_arg"] = "dataset-root"
-        # Prefer local mode when a dataset path exists
+        # Instruct agent to pass local dataset path as --dataset.root=... when available
+        train_params["dataset_arg"] = "dataset.root"
         if task.dataset_id:
-            script_params["dataset-mode"] = "local"
+            train_params["dataset.mode"] = "local"
 
-        # Map common tuning params to script flags
+        # Common tunables
         batch_size = original_params.pop("batch_size", None)
         if isinstance(batch_size, (int, float)):
-            script_params["batch-size"] = int(batch_size)
+            train_params["batch_size"] = int(batch_size)
 
-        # Prefer explicit steps; fallback to epochs for backward compatibility
         steps = original_params.pop("steps", None)
         if isinstance(steps, (int, float)):
-            script_params["steps"] = int(steps)
+            train_params["steps"] = int(steps)
         else:
             epochs = original_params.pop("epochs", None)
             if isinstance(epochs, (int, float)):
-                script_params["steps"] = int(epochs)
+                train_params["epochs"] = int(epochs)
 
-        # Forward remaining user params to lerobot-train via the script's passthrough
-        # Use Hydra-style overrides (key=value) so lerobot-train accepts them.
-        extra_args: list[str] = []
+        # Carry through remaining user params as direct flags
         learning_rate = original_params.pop("learning_rate", None)
         if learning_rate is not None:
-            extra_args.append(f"learning_rate={learning_rate}")
-        # Any other remaining params are forwarded as hydra overrides key=value
+            train_params["learning_rate"] = learning_rate
         for key, value in list(original_params.items()):
             if value is None:
                 continue
-            extra_args.append(f"{key}={value}")
+            train_params[key] = value
             original_params.pop(key, None)
-
-        if extra_args:
-            script_params["extra_args"] = extra_args
 
         payload = {
             "task_id": task.id,
@@ -223,7 +218,7 @@ class SchedulerService:
             "gpus": [gpu_index],
             "model_type": task.model_type,
             "dataset_path": task.dataset.storage_path if task.dataset_id else "",
-            "params": script_params,
+            "params": train_params,
         }
         headers = {
             "Content-Type": "application/json",

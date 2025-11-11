@@ -295,14 +295,16 @@ class TrainingJob(threading.Thread):
             serialized = "true" if value else "false"
         elif isinstance(value, (list, dict)):
             serialized = json.dumps(value)
-        return [arg_name, str(serialized)]
+        # Use --key=value formatting for all parameters
+        return [f"{arg_name}={str(serialized)}"]
 
     @staticmethod
     def _format_arg_name(key: str) -> str:
         stripped = key.strip()
         if stripped.startswith("--") or stripped.startswith("-"):
             return stripped
-        return f"--{stripped.replace('_', '-')}"
+        # Keep original key as-is (including dots or underscores)
+        return f"--{stripped}"
 
     def _build_env(self) -> Dict[str, str]:
         env = os.environ.copy()
