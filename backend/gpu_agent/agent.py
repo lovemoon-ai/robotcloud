@@ -857,4 +857,4 @@ class Agent:
     # -------------------- Dataset helpers --------------------
     def dataset_dir(self, task_id: int) -> Path:
         """Return a persistent per-task dataset directory on the agent host."""
-        return (self.config.work_dir / "storage" / "datasets" / f"task_{task_id}").resolve()
+        return (self.config.dataset_dir / f"task_{task_id}").resolve()

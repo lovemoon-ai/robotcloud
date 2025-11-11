@@ -51,6 +51,7 @@ class AgentConfig:
         repo_root = backend_root.parent
         log_dir = Path(os.getenv("AGENT_LOG_DIR", backend_root / "storage" / "train_logs")).expanduser().resolve()
         work_dir = Path(os.getenv("AGENT_WORK_DIR", repo_root)).expanduser().resolve()
+        dataset_dir = Path(os.getenv("AGENT_LOG_DIR", backend_root / "storage" / "datasets")).expanduser().resolve()
         return cls(
             backend_base_url=backend_base,
             node_name=node_name,
