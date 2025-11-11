@@ -8,7 +8,7 @@
 ## Build, Test, and Development Commands
 - `python -m venv .venv && make backend-deps` installs backend tooling into the project virtualenv.
 - `make test` executes `pytest -q` then `npm test` to keep both stacks green.
-- `make run` launches the FastAPI server on `:8000` and the Next dev server on `:3000`, exporting `NEXT_PUBLIC_API_BASE_URL` automatically.
+- `make run` launches the FastAPI server on `:8000`, the scheduler loop, and the Next dev server on `:3000`, exporting `NEXT_PUBLIC_API_BASE_URL` automatically.
 - For frontend-only loops, run `npm run dev`, `npm run lint`, or `npm run build` inside `frontend/`.
 
 ## Coding Style & Naming Conventions
@@ -30,6 +30,6 @@
 - When running both apps manually, export the same base URL to keep API clients pointed at your backend instance.
 
 ## Deploy steps
-- make run          # frontend & backend
-- make scheduler    # simple and standalone scheduler
+- make run          # backend + scheduler + frontend (dev)
+- make scheduler    # run scheduler standalone
 - make agent        # launch on GPU machines

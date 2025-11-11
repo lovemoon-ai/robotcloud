@@ -8,6 +8,8 @@ from datetime import timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
 import requests
+from pathlib import Path
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
@@ -211,13 +213,35 @@ class SchedulerService:
             train_params[key] = value
             original_params.pop(key, None)
 
+        # Upload dataset package to agent first (if available)
+        # Default to original storage_path; will be emptied if upload succeeds
+        dataset_path = task.dataset.storage_path if task.dataset_id else ""
+        if task.dataset_id and task.dataset and task.dataset.storage_path:
+            file_path = self._dataset_file_on_disk(task)
+            if file_path and file_path.exists() and file_path.is_file():
+                upload_url = f"http://{node.ip}:{node.api_port}/api/v1/agent/upload"
+                headers = {"X-Agent-Token": node.auth_token, "Content-Type": "application/octet-stream"}
+                params = {"task_id": task.id, "filename": file_path.name}
+                try:
+                    with file_path.open("rb") as fp:
+                        resp = requests.post(upload_url, params=params, data=fp, headers=headers, timeout=30)
+                        resp.raise_for_status()
+                    # Agent will extract and set dataset path itself; leave empty here
+                    dataset_path = ""
+                except Exception as exc:
+                    self.logger.warning(
+                        "Failed to upload dataset for task %s to node %s: %s", task.id, node.node_name, exc
+                    )
+                    # Best-effort: proceed to dispatch; agent may use provided dataset_path
+
         payload = {
             "task_id": task.id,
             # Use alias-resolved script name; agent will map to scripts/lerobot.sh
             "cmd": original_params.get("cmd", "lerobot"),
             "gpus": [gpu_index],
             "model_type": task.model_type,
-            "dataset_path": task.dataset.storage_path if task.dataset_id else "",
+            # Let agent discover extracted path when upload succeeded; otherwise pass original path
+            "dataset_path": dataset_path,
             "params": train_params,
         }
         headers = {
@@ -240,6 +264,22 @@ class SchedulerService:
             "Unexpected response when dispatching task %s to node %s: %s", task.id, node.node_name, data
         )
         return False
+
+    def _dataset_file_on_disk(self, task: TrainTask) -> Optional[Path]:
+        """Resolve dataset file absolute path on backend host."""
+        try:
+            raw = (task.dataset.storage_path or "").strip()
+        except Exception:
+            return None
+        if not raw:
+            return None
+        p = Path(raw)
+        if p.is_absolute():
+            return p
+        base = getattr(settings, "DATASET_STORAGE_DIR", None)
+        if not base:
+            return p
+        return Path(base) / p
 
     def _rollback_assignment(self, task_id: int, node_id: int) -> None:
         with transaction.atomic():

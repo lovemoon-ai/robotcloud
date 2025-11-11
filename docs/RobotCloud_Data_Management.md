@@ -135,7 +135,7 @@ class StorageAdapter(ABC):
 }
 ```
 
-GPU Agent 拉取数据、解压、校验 manifest，传入训练脚本。
+GPU Agent 拉取或接收（Scheduler 直传）数据包，解压、校验 manifest，传入训练脚本。
 
 ------------------------------------------------------------------------
 

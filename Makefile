@@ -33,7 +33,15 @@ kill:
 		else \
 			echo "No processes listening on port $$port"; \
 		fi; \
-	done
+	done; \
+	# Kill Django run_scheduler processes
+	sched_pids=$$(ps ax -o pid= -o command= | grep -E "[m]anage.py run_scheduler" | awk '{print $$1}' | tr '\n' ' '); \
+	if [ -n "$$sched_pids" ]; then \
+		echo "Killing run_scheduler processes: $$sched_pids"; \
+		kill $$sched_pids 2>/dev/null || true; \
+	else \
+		echo "No run_scheduler processes found"; \
+	fi
 
 test: backend-deps
 	cd backend && USE_SQLITE_FOR_TESTS=1 USE_IN_MEMORY_CACHE=1 $(PYTHON) -m pytest
@@ -47,10 +55,12 @@ run:
 	@set -e; \
 	( cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) USE_IN_MEMORY_CACHE=1 $(MANAGE) runserver 0.0.0.0:8000 ) & \
 	BACK_PID=$$!; \
+	( cd backend && USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 $(MANAGE) run_scheduler ) & \
+	SCHED_PID=$$!; \
 	( cd frontend && NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1 npm run dev ) & \
 	FRONT_PID=$$!; \
-	trap 'kill $$BACK_PID $$FRONT_PID' INT TERM EXIT; \
-	wait $$BACK_PID $$FRONT_PID
+	trap 'kill $$BACK_PID $$SCHED_PID $$FRONT_PID' INT TERM; \
+	wait $$BACK_PID $$SCHED_PID $$FRONT_PID
 
 scheduler:
 	cd backend && USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 $(MANAGE) run_scheduler

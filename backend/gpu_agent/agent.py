@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
+import tarfile
+import zipfile
+from urllib.parse import urlparse, parse_qs
 
 from .config import AgentConfig
 
@@ -23,7 +26,17 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
     server: "AgentHTTPServer"
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/api/v1/agent/run":
+        parsed = urlparse(self.path)
+        token = self.headers.get("X-Agent-Token", "")
+        if not self.server.agent.validate_scheduler_token(token):
+            self.send_error(401, "Invalid scheduler token")
+            return
+        # Upload dataset package
+        if parsed.path == "/api/v1/agent/upload":
+            self._handle_upload(parsed)
+            return
+        # Enqueue training run
+        if parsed.path != "/api/v1/agent/run":
             self.send_error(404, "Not Found")
             return
         content_length = int(self.headers.get("Content-Length", 0))
@@ -32,10 +45,6 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             payload = json.loads(raw.decode("utf-8") or "{}")
         except json.JSONDecodeError:
             self.send_error(400, "Invalid JSON payload")
-            return
-        token = self.headers.get("X-Agent-Token", "")
-        if not self.server.agent.validate_scheduler_token(token):
-            self.send_error(401, "Invalid scheduler token")
             return
         try:
             result = self.server.agent.enqueue_task(payload)
@@ -96,6 +105,59 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         """Silence default HTTP server logging."""
         self.server.agent.logger.debug("AgentHTTP: " + format, *args)
+
+    # -------------------- Upload handling --------------------
+    def _handle_upload(self, parsed) -> None:
+        qs = parse_qs(parsed.query or "")
+        task_id_raw = (qs.get("task_id") or [None])[0]
+        if task_id_raw is None:
+            self.send_error(400, "task_id required")
+            return
+        try:
+            task_id = int(task_id_raw)
+        except (TypeError, ValueError):
+            self.send_error(400, "task_id must be an integer")
+            return
+        filename = (qs.get("filename") or [None])[0] or self.headers.get("X-Filename", "dataset.zip")
+
+        # Read body (possibly large); prefer chunked reading
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            content_length = 0
+        try:
+            target_dir = self.server.agent.dataset_dir(task_id)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            dest = target_dir / filename
+            with dest.open("wb") as f:
+                remaining = content_length
+                chunk_size = 1024 * 1024
+                if remaining <= 0:
+                    # No content-length; read until EOF
+                    while True:
+                        chunk = self.rfile.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                else:
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(chunk_size, remaining))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        remaining -= len(chunk)
+        except OSError as exc:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"detail": f"Failed to write file: {exc}"}).encode("utf-8"))
+            return
+        body = json.dumps({"status": "ok", "path": str(dest)}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 class AgentHTTPServer(ThreadingHTTPServer):
@@ -165,6 +227,18 @@ class TrainingJob(threading.Thread):
     # ------------------------------------------------------------------ #
     def _execute(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        # Prepare dataset (extract uploaded archive or given file) before running
+        try:
+            self._prepare_dataset()
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.error("Failed to prepare dataset for task %s: %s", self.task_id, exc)
+            self.agent.notify_status(
+                self.task_id,
+                "failed",
+                self._last_progress,
+                metrics={"error": f"dataset prep failed: {exc}"},
+            )
+            return
         command = self._build_command()
         env = self._build_env()
         formatted_cmd = self._format_command(command)
@@ -328,6 +402,68 @@ class TrainingJob(threading.Thread):
             aliases["lerobot"] = lerobot
             aliases["lerobot.sh"] = lerobot
         return aliases
+
+    # -------------------- Dataset preparation --------------------
+    def _prepare_dataset(self) -> None:
+        """Ensure self.dataset_path points to a directory with extracted data.
+
+        Priority order:
+          1) If dataset_path is an existing directory, keep it.
+          2) If dataset_path is a file archive, extract it.
+          3) If not provided or not found, look under agent's dataset_dir(task_id)
+             for an uploaded archive and extract it.
+        """
+        # 1) Already a directory
+        if self.dataset_path:
+            p = Path(self.dataset_path).expanduser()
+            if p.is_dir():
+                return
+            if p.is_file():
+                extracted = self._extract_archive(p.resolve())
+                if extracted:
+                    self.dataset_path = str(extracted)
+                    return
+        # 2) Try uploaded archive
+        task_dir = self.agent.dataset_dir(self.task_id)
+        if not task_dir.exists():
+            return
+        # Find any archive-like files
+        for f in sorted(task_dir.iterdir()):
+            if not f.is_file():
+                continue
+            extracted = self._extract_archive(f)
+            if extracted:
+                self.dataset_path = str(extracted)
+                return
+
+    def _extract_archive(self, file_path: Path) -> Optional[Path]:
+        """Extract .zip/.tar(.gz)/.tgz archives to a 'data' dir next to file.
+
+        Returns the extraction directory on success, or None if unsupported/failed.
+        """
+        suffixes = [s.lower() for s in file_path.suffixes]
+        if not file_path.exists() or not suffixes:
+            return None
+        target_dir = file_path.parent / "data"
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        try:
+            if suffixes[-1] == ".zip":
+                with zipfile.ZipFile(file_path, "r") as zf:
+                    zf.extractall(target_dir)
+                return target_dir
+            if ".tar" in suffixes or suffixes[-1] in {".gz", ".tgz"}:
+                try:
+                    with tarfile.open(file_path, "r:*") as tf:
+                        tf.extractall(target_dir)
+                    return target_dir
+                except tarfile.TarError:
+                    return None
+        except (OSError, zipfile.BadZipFile):
+            return None
+        return None
 
     # -------------------- Log parsing --------------------
     def _handle_output_line(self, line: str) -> None:
@@ -688,3 +824,8 @@ class Agent:
             return text, next_offset, bool(complete)
         except OSError:
             return "", offset, False
+
+    # -------------------- Dataset helpers --------------------
+    def dataset_dir(self, task_id: int) -> Path:
+        """Return a persistent per-task dataset directory on the agent host."""
+        return (self.config.work_dir / "storage" / "datasets" / f"task_{task_id}").resolve()

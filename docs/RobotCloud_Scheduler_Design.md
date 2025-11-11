@@ -63,13 +63,23 @@
 **任务下发接口：**
 
 ``` bash
+1) 上传数据包（可选，若本地文件可直传）
+
+POST http://gpu-node-1:5000/api/v1/agent/upload?task_id={task_id}&filename=dataset.zip
+Headers: X-Agent-Token: <token>
+Body: application/octet-stream (zip/tar.gz)
+
+Agent 在执行训练前会将数据包解压到本地工作目录 storage/datasets/task_{task_id}/data。
+
+2) 下发训练执行命令
+
 POST http://gpu-node-1:5000/api/v1/agent/run
 {
   "task_id": 123,
   "cmd": "python train.py --epochs 50 --lr 1e-3",
   "gpus": [0,1],
   "model_type": "yolov8",
-  "dataset_path": "/mnt/data/xxx"
+  "dataset_path": ""  // 若已通过 upload 上传则留空，Agent 自动填充
 }
 ```
 
