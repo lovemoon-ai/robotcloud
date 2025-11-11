@@ -18,6 +18,7 @@ import zipfile
 from urllib.parse import urlparse, parse_qs
 import hashlib
 import shutil
+import errno
 
 from .config import AgentConfig
 
@@ -241,6 +242,7 @@ class TrainingJob(threading.Thread):
         cmd: str,
         log_dir: Path,
         work_dir: Path,
+        attach_pid: Optional[int] = None,
     ) -> None:
         super().__init__(daemon=True)
         self.agent = agent
@@ -259,6 +261,7 @@ class TrainingJob(threading.Thread):
         self._last_progress = 0.0
         self._last_metrics: Dict[str, Any] = {}
         self._last_status = "queued"
+        self._attach_pid = attach_pid
 
     # ------------------------------------------------------------------ #
     def stop(self) -> None:
@@ -277,6 +280,11 @@ class TrainingJob(threading.Thread):
     # ------------------------------------------------------------------ #
     def _execute(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        if self._attach_pid:
+            # Attach to an existing training process and tail logs
+            self.logger.info("Attaching to existing training task %s (pid=%s)", self.task_id, self._attach_pid)
+            self._attach_and_tail(self._attach_pid)
+            return
         # Prepare dataset (extract uploaded archive or given file) before running
         try:
             self._prepare_dataset()
@@ -335,41 +343,162 @@ class TrainingJob(threading.Thread):
                 metrics={"exit_code": exit_code, "log_path": str(self.log_path)},
             )
 
+    def _attach_and_tail(self, pid: int) -> None:
+        # Send immediate running status with known metadata
+        self.agent.notify_status(
+            self.task_id,
+            "running",
+            self._last_progress,
+            metrics={"dataset_path": self.dataset_path, "log_path": str(self.log_path), "attached": True, "pid": pid},
+        )
+        # Tail the existing log file similar to _stream_process loop
+        offset = 0
+        try:
+            if self.log_path.exists():
+                offset = self.log_path.stat().st_size
+        except OSError:
+            offset = 0
+        step = max(getattr(self.agent.config, "step_delay", 0.5), 0.1)
+        while True:
+            # Drain new lines
+            try:
+                size = self.log_path.stat().st_size if self.log_path.exists() else offset
+                if size > offset:
+                    with self.log_path.open("r", encoding="utf-8", errors="replace") as rf:
+                        rf.seek(offset)
+                        data = rf.read(size - offset)
+                    if data:
+                        for line in data.splitlines():
+                            self._handle_output_line(line)
+                    offset = size
+            except OSError:
+                pass
+            if self._stopping.is_set():
+                break
+            if not self._is_process_alive(pid):
+                break
+            time.sleep(step)
+        # Decide final status heuristically
+        final_status = "completed" if self._last_progress >= 0.999 else "failed"
+        self.agent.notify_status(
+            self.task_id,
+            final_status,
+            self._last_progress,
+            metrics={"attached": True, "pid": pid, "log_path": str(self.log_path)},
+        )
+
     def _stream_process(self, command: List[str], env: Dict[str, str]) -> int:
         header = (
             f"[robotcloud] task={self.task_id} gpus={self.gpus} dataset_path={self.dataset_path or 'N/A'}\n"
             f"[robotcloud] command={self._format_command(command)}\n\n"
         )
-        with self.log_path.open("w", encoding="utf-8") as log_file:
-            log_file.write(header)
-            log_file.flush()
+        # Write header and get starting offset for tailing
+        with self.log_path.open("w", encoding="utf-8") as f:
+            f.write(header)
+            f.flush()
+        try:
+            # Open log file for appending as the child stdout/stderr sink
+            log_sink = self.log_path.open("a", encoding="utf-8")
             try:
+                # Start process detached from agent's stdin/stdout; keep training alive if agent dies
                 process = subprocess.Popen(
                     command,
                     cwd=str(self.work_dir),
                     env=env,
-                    stdout=subprocess.PIPE,
+                    stdout=log_sink,
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
                     universal_newlines=True,
+                    preexec_fn=os.setsid if hasattr(os, "setsid") else None,
                 )
+                # Persist job state for recovery
+                try:
+                    self.agent.save_job_state(
+                        self.task_id,
+                        {
+                            "pid": process.pid,
+                            "gpus": self.gpus,
+                            "cmd": self.cmd,
+                            "params": self.params,
+                            "dataset_path": self.dataset_path,
+                            "log_path": str(self.log_path),
+                            "work_dir": str(self.work_dir),
+                        },
+                    )
+                except Exception:
+                    pass
             except FileNotFoundError as exc:
+                log_sink.close()
                 raise FileNotFoundError(f"Executable not found for training command '{command[0]}'") from exc
-            self._process = process
-            assert process.stdout is not None
+        except OSError as exc:
+            raise RuntimeError(f"Failed to initialize log file: {exc}") from exc
+
+        self._process = process
+        # Tail the log file to parse progress while the process runs
+        offset = self.log_path.stat().st_size
+        tail_buffer = ""
+        try:
+            step = max(getattr(self.agent.config, "step_delay", 0.5), 0.1)
+            while True:
+                # Read any new data appended to the log
+                try:
+                    size = self.log_path.stat().st_size
+                except OSError:
+                    size = offset
+                if size > offset:
+                    try:
+                        with self.log_path.open("r", encoding="utf-8", errors="replace") as rf:
+                            rf.seek(offset)
+                            data = rf.read(size - offset)
+                    except OSError:
+                        data = ""
+                    if data:
+                        tail_buffer += data
+                        # Process complete lines; keep last partial line in buffer
+                        lines = tail_buffer.splitlines(keepends=False)
+                        if not tail_buffer.endswith("\n"):
+                            tail_buffer = lines[-1] if lines else tail_buffer
+                            lines = lines[:-1] if lines else []
+                        else:
+                            tail_buffer = ""
+                        for line in lines:
+                            self._handle_output_line(line)
+                    offset = size
+
+                if self._stopping.is_set():
+                    break
+                rc = process.poll()
+                if rc is not None:
+                    # Final drain
+                    try:
+                        size = self.log_path.stat().st_size
+                        if size > offset:
+                            with self.log_path.open("r", encoding="utf-8", errors="replace") as rf:
+                                rf.seek(offset)
+                                data = rf.read(size - offset)
+                            if data:
+                                tail_buffer += data
+                                for line in tail_buffer.splitlines():
+                                    self._handle_output_line(line)
+                    except OSError:
+                        pass
+                    break
+                time.sleep(step)
+        finally:
             try:
-                for line in process.stdout:
-                    log_file.write(line)
-                    log_file.flush()
-                    self._handle_output_line(line)
-                    if self._stopping.is_set():
-                        break
-            finally:
-                process.stdout.close()
-            exit_code = process.wait()
-            self._process = None
-            return exit_code
+                log_sink.flush()
+                log_sink.close()
+            except Exception:
+                pass
+        exit_code = process.wait()
+        self._process = None
+        # Clear job state on finish
+        try:
+            self.agent.clear_job_state(self.task_id)
+        except Exception:
+            pass
+        return exit_code
 
     # -------------------- Command helpers --------------------
     def _build_command(self) -> List[str]:
@@ -607,6 +736,21 @@ class TrainingJob(threading.Thread):
                 pass
         return removed
 
+    @staticmethod
+    def _is_process_alive(pid: int) -> bool:
+        try:
+            # On POSIX, signal 0 checks existence without sending a signal
+            os.kill(pid, 0)
+            return True
+        except PermissionError:
+            # Process exists but we don't have permission
+            return True
+        except ProcessLookupError:
+            return False
+        except Exception:
+            # Fallback best-effort
+            return False
+
     def _normalize_dataset_root(self, root: Path) -> Path:
         """Ensure dataset.root contains 'data', 'meta', 'videos' subfolders.
 
@@ -791,6 +935,11 @@ class Agent:
         """Register with scheduler, start heartbeat loop and HTTP server."""
         self.logger.info("Starting GPU agent for node '%s' on port %s", self.config.node_name, self.config.api_port)
         self._register_with_scheduler()
+        # Attempt to recover any running training processes from previous session
+        try:
+            self._recover_existing_jobs()
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.warning("Recovery of existing jobs failed: %s", exc)
         self._start_heartbeat()
         try:
             self._serve_http()
@@ -1034,3 +1183,79 @@ class Agent:
             return obj if isinstance(obj, dict) else None
         except Exception:
             return None
+
+    # -------------------- Recovery helpers --------------------
+    def _tasks_root(self) -> Path:
+        return (self.config.dataset_cache_dir.parent / "datasets").resolve()
+
+    def _recover_existing_jobs(self) -> None:
+        root = self._tasks_root()
+        if not root.exists():
+            return
+        recovered = 0
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or not child.name.startswith("task_"):
+                continue
+            try:
+                task_id = int(child.name.split("_", 1)[1])
+            except Exception:
+                continue
+            meta = self.load_task_dataset_meta(task_id) or {}
+            pid = meta.get("pid") if isinstance(meta, dict) else None
+            try:
+                pid = int(pid) if pid is not None else None
+            except Exception:
+                pid = None
+            if not pid:
+                continue
+            # Verify process is alive
+            if not TrainingJob._is_process_alive(pid):
+                # Clear stale pid
+                self.clear_job_state(task_id)
+                continue
+            if task_id in self._jobs:
+                continue
+            gpus = meta.get("gpus") if isinstance(meta, dict) else None
+            if not isinstance(gpus, list) or not gpus:
+                gpus = [0]
+            cmd = meta.get("cmd") if isinstance(meta, dict) else None
+            if not isinstance(cmd, str) or not cmd:
+                cmd = "python train.py"
+            params = meta.get("params") if isinstance(meta, dict) else None
+            if not isinstance(params, dict):
+                params = {}
+            dataset_path = meta.get("dataset_path") if isinstance(meta, dict) else None
+            if not isinstance(dataset_path, str):
+                dataset_path = ""
+            job = TrainingJob(
+                self,
+                task_id,
+                gpus,
+                params,
+                dataset_path,
+                cmd,
+                self.config.log_dir,
+                self.config.work_dir,
+                attach_pid=pid,
+            )
+            self._jobs[task_id] = job
+            job.start()
+            recovered += 1
+        if recovered:
+            self.logger.info("Recovered %s running training task(s) from previous session", recovered)
+
+    def save_job_state(self, task_id: int, data: Dict[str, Any]) -> None:
+        # Alias to dataset meta store used for recovery
+        self.save_task_dataset_meta(task_id, data)
+
+    def clear_job_state(self, task_id: int) -> None:
+        path = self._task_meta_path(task_id)
+        try:
+            if not path.exists():
+                return
+            meta = json.loads(path.read_text("utf-8") or "{}")
+            if isinstance(meta, dict) and "pid" in meta:
+                meta.pop("pid", None)
+                path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass

@@ -80,7 +80,13 @@ POST http://gpu-node-1:5000/api/v1/agent/run
   "cmd": "python train.py --epochs 50 --lr 1e-3",
   "gpus": [0,1],
   "model_type": "yolov8",
-  "dataset_path": ""  // 若已通过 upload 上传则留空，Agent 自动填充
+  "dataset_path": "",  // 若已通过 upload 上传则留空，Agent 自动填充
+  "params": {
+    // Scheduler 会补充直传给训练脚本的参数
+    // 新增：为每个任务指定独立的输出目录，供脚本保存 checkpoint / 日志
+    // 该路径相对于 Agent 的工作目录（repo 根目录），并保持与日志同处 backend/storage 下
+    "output_dir": "backend/storage/train_runs/task_123"
+  }
 }
 ```
 

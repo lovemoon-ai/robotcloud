@@ -239,6 +239,11 @@ class SchedulerService:
                     )
                     # Best-effort: proceed to dispatch; agent may use provided dataset_path
 
+        # Ensure a per-task output directory is provided unless the user already
+        # set one explicitly in params.
+        if "output_dir" not in train_params:
+            train_params["output_dir"] = f"backend/storage/train_runs/task_{task.id}"
+
         payload = {
             "task_id": task.id,
             # Use alias-resolved script name; agent will map to scripts/lerobot.sh
@@ -247,6 +252,7 @@ class SchedulerService:
             "model_type": task.model_type,
             # Let agent discover extracted path when upload succeeded; otherwise pass original path
             "dataset_path": dataset_path,
+            # Provide direct training parameters for the agent wrapper to forward
             "params": train_params,
         }
         headers = {
