@@ -201,19 +201,16 @@ class SchedulerService:
                 script_params["steps"] = int(epochs)
 
         # Forward remaining user params to lerobot-train via the script's passthrough
-        # so unknown keys don't break parser. Preserve a learning_rate if provided.
+        # Use Hydra-style overrides (key=value) so lerobot-train accepts them.
         extra_args: list[str] = []
         learning_rate = original_params.pop("learning_rate", None)
         if learning_rate is not None:
-            extra_args.extend(["--", "--learning_rate", str(learning_rate)])
-        # Any other remaining params can also be forwarded as --key value pairs
+            extra_args.append(f"learning_rate={learning_rate}")
+        # Any other remaining params are forwarded as hydra overrides key=value
         for key, value in list(original_params.items()):
             if value is None:
                 continue
-            # Use dashed form for readability, but keep raw if already includes dashes/dots
-            flag = key if key.startswith("-") else f"--{key.replace('_', '-')}"
-            extra_args.append("--") if "--" not in extra_args else None
-            extra_args.extend([flag, str(value)])
+            extra_args.append(f"{key}={value}")
             original_params.pop(key, None)
 
         if extra_args:

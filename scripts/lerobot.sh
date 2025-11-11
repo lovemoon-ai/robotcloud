@@ -43,7 +43,7 @@ Common options:
 
 Notes:
   • Defaults are sourced from Makefile test targets and docs in docs/source/*.mdx.
-  • Pass `--` followed by raw arguments to forward anything directly to lerobot-train.
+  • Pass `key=value` overrides directly (Hydra style), or use `--` followed by raw arguments to forward anything directly to lerobot-train.
 EOF
 }
 
@@ -216,6 +216,11 @@ while [[ $# -gt 0 ]]; do
       EXTRA_ARGS+=("$@")
       break
       ;;
+    # Accept Hydra-style overrides (e.g. dataset.mode=local) directly and pass through
+    *=*)
+      EXTRA_ARGS+=("$1")
+      shift 1
+      ;;
     *)
       echo "Unknown option: $1" >&2
       usage
@@ -260,36 +265,36 @@ POLICY_ARGS=()
 
 case "$policy_key" in
   act)
-    POLICY_ARGS+=(--policy.type=act)
+    POLICY_ARGS+=(policy.type=act)
     ;;
   dp|diffusion|diffusionpolicy)
-    POLICY_ARGS+=(--policy.type=diffusion)
+    POLICY_ARGS+=(policy.type=diffusion)
     ;;
   pi0)
-    POLICY_ARGS+=(--policy.type=pi0)
+    POLICY_ARGS+=(policy.type=pi0)
     PRESET_PRETRAINED=${PRETRAINED_PATH:-lerobot/pi0_base}
-    POLICY_ARGS+=(--policy.pretrained_path="$PRESET_PRETRAINED")
-    POLICY_ARGS+=(--policy.compile_model=true --policy.gradient_checkpointing=true --policy.dtype=bfloat16)
+    POLICY_ARGS+=(policy.pretrained_path="$PRESET_PRETRAINED")
+    POLICY_ARGS+=(policy.compile_model=true policy.gradient_checkpointing=true policy.dtype=bfloat16)
     [[ -z "$BATCH_SIZE" ]] && BATCH_SIZE="32"
     [[ -z "$STEPS" ]] && STEPS="3000"
     ;;
   pi05)
-    POLICY_ARGS+=(--policy.type=pi05)
+    POLICY_ARGS+=(policy.type=pi05)
     PRESET_PRETRAINED=${PRETRAINED_PATH:-lerobot/pi05_base}
-    POLICY_ARGS+=(--policy.pretrained_path="$PRESET_PRETRAINED")
-    POLICY_ARGS+=(--policy.compile_model=true --policy.gradient_checkpointing=true --policy.dtype=bfloat16)
+    POLICY_ARGS+=(policy.pretrained_path="$PRESET_PRETRAINED")
+    POLICY_ARGS+=(policy.compile_model=true policy.gradient_checkpointing=true policy.dtype=bfloat16)
     [[ -z "$BATCH_SIZE" ]] && BATCH_SIZE="32"
     [[ -z "$STEPS" ]] && STEPS="3000"
     ;;
   smolvla)
     PRESET_PRETRAINED=${PRETRAINED_PATH:-lerobot/smolvla_base}
-    POLICY_ARGS+=(--policy.path="$PRESET_PRETRAINED")
+    POLICY_ARGS+=(policy.path="$PRESET_PRETRAINED")
     [[ -z "$BATCH_SIZE" ]] && BATCH_SIZE="64"
     [[ -z "$STEPS" ]] && STEPS="20000"
     ;;
   groot)
-    POLICY_ARGS+=(--policy.type=groot)
-    POLICY_ARGS+=(--policy.tune_diffusion_model=false)
+    POLICY_ARGS+=(policy.type=groot)
+    POLICY_ARGS+=(policy.tune_diffusion_model=false)
     [[ -z "$BATCH_SIZE" ]] && BATCH_SIZE="32"
     [[ -z "$STEPS" ]] && STEPS="10000"
     ;;
@@ -310,72 +315,72 @@ if [[ -z "$OUTPUT_DIR" ]]; then
 fi
 
 TRAIN_ARGS=(
-  --dataset.repo_id="$DATASET_ID"
-  --policy.device="$DEVICE"
-  --job_name="$JOB_NAME"
-  --output_dir="$OUTPUT_DIR"
-  --wandb.enable="$WANDB_ENABLE"
-  --policy.push_to_hub="$PUSH_TO_HUB"
+  dataset.repo_id="$DATASET_ID"
+  policy.device="$DEVICE"
+  job_name="$JOB_NAME"
+  output_dir="$OUTPUT_DIR"
+  wandb.enable="$WANDB_ENABLE"
+  policy.push_to_hub="$PUSH_TO_HUB"
 )
 
 if [[ -n "$POLICY_REPO" ]]; then
-  TRAIN_ARGS+=(--policy.repo_id="$POLICY_REPO")
+  TRAIN_ARGS+=(policy.repo_id="$POLICY_REPO")
 fi
 
 if [[ -n "$BATCH_SIZE" ]]; then
-  TRAIN_ARGS+=(--batch_size="$BATCH_SIZE")
+  TRAIN_ARGS+=(batch_size="$BATCH_SIZE")
 fi
 
 if [[ -n "$STEPS" ]]; then
-  TRAIN_ARGS+=(--steps="$STEPS")
+  TRAIN_ARGS+=(steps="$STEPS")
 fi
 
 if [[ -n "$SAVE_FREQ" ]]; then
-  TRAIN_ARGS+=(--save_freq="$SAVE_FREQ")
+  TRAIN_ARGS+=(save_freq="$SAVE_FREQ")
 fi
 
 if [[ -n "$LOG_FREQ" ]]; then
-  TRAIN_ARGS+=(--log_freq="$LOG_FREQ")
+  TRAIN_ARGS+=(log_freq="$LOG_FREQ")
 fi
 
 if [[ -n "$EVAL_FREQ" ]]; then
-  TRAIN_ARGS+=(--eval_freq="$EVAL_FREQ")
+  TRAIN_ARGS+=(eval_freq="$EVAL_FREQ")
 fi
 
 if [[ -n "$EVAL_BATCH" ]]; then
-  TRAIN_ARGS+=(--eval.batch_size="$EVAL_BATCH")
+  TRAIN_ARGS+=(eval.batch_size="$EVAL_BATCH")
 fi
 
 if [[ -n "$EVAL_EPISODES" ]]; then
-  TRAIN_ARGS+=(--eval.n_episodes="$EVAL_EPISODES")
+  TRAIN_ARGS+=(eval.n_episodes="$EVAL_EPISODES")
 fi
 
 if [[ -n "$NUM_WORKERS" ]]; then
-  TRAIN_ARGS+=(--num_workers="$NUM_WORKERS")
+  TRAIN_ARGS+=(num_workers="$NUM_WORKERS")
 fi
 
 if [[ -n "$ENV_TYPE" ]]; then
-  TRAIN_ARGS+=(--env.type="$ENV_TYPE")
+  TRAIN_ARGS+=(env.type="$ENV_TYPE")
 fi
 
 if [[ -n "$ENV_TASK" ]]; then
-  TRAIN_ARGS+=(--env.task="$ENV_TASK")
+  TRAIN_ARGS+=(env.task="$ENV_TASK")
 fi
 
 if [[ -n "$ENV_EPISODE_LENGTH" ]]; then
-  TRAIN_ARGS+=(--env.episode_length="$ENV_EPISODE_LENGTH")
+  TRAIN_ARGS+=(env.episode_length="$ENV_EPISODE_LENGTH")
 fi
 
 if [[ -n "$DATASET_MODE" ]]; then
-  TRAIN_ARGS+=(--dataset.mode="$DATASET_MODE")
+  TRAIN_ARGS+=(dataset.mode="$DATASET_MODE")
 fi
 
 if [[ -n "$DATASET_ROOT" ]]; then
-  TRAIN_ARGS+=(--dataset.root="$DATASET_ROOT")
+  TRAIN_ARGS+=(dataset.root="$DATASET_ROOT")
 fi
 
 if [[ -n "$DATASET_EPISODES" ]]; then
-  TRAIN_ARGS+=(--dataset.episodes="$DATASET_EPISODES")
+  TRAIN_ARGS+=(dataset.episodes="$DATASET_EPISODES")
 fi
 
 TRAIN_ARGS+=("${POLICY_ARGS[@]}")
