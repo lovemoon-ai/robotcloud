@@ -15,6 +15,7 @@ if ! command -v lerobot-train >/dev/null 2>&1; then
 fi
 
 OUT_ARGS=()
+HAS_POLICY_DEVICE=false
 for arg in "$@"; do
   # Normalize learning rate: learning_rate -> optimizer.lr
   if [[ "$arg" == "--learning_rate="* ]]; then
@@ -31,7 +32,22 @@ for arg in "$@"; do
     continue
   fi
 
+  # Track if policy.device is explicitly set
+  if [[ "$arg" == "--policy.device="* || "$arg" == "policy.device="* ]]; then
+    HAS_POLICY_DEVICE=true
+  fi
+
   OUT_ARGS+=("$arg")
 done
+
+# optional
+if [[ "$HAS_POLICY_DEVICE" == false ]]; then
+  OUT_ARGS+=("--policy.device=cuda")
+fi
+
+# default
+OUT_ARGS+=("--policy.push_to_hub=false")
+OUT_ARGS+=("--save_checkpoint=true")
+OUT_ARGS+=("--wandb.enable=false")
 
 exec lerobot-train "${OUT_ARGS[@]}"
