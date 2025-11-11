@@ -16,6 +16,8 @@ import requests
 import tarfile
 import zipfile
 from urllib.parse import urlparse, parse_qs
+import hashlib
+import shutil
 
 from .config import AgentConfig
 
@@ -119,8 +121,11 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             self.send_error(400, "task_id must be an integer")
             return
         filename = (qs.get("filename") or [None])[0] or self.headers.get("X-Filename", "dataset.zip")
+        expected_md5 = (qs.get("md5") or [None])[0] or self.headers.get("X-Content-MD5")
+        if isinstance(expected_md5, str):
+            expected_md5 = expected_md5.strip().lower()
 
-        # Read body (possibly large); prefer chunked reading
+        # Read body (possibly large); prefer chunked reading and compute md5
         try:
             content_length = int(self.headers.get("Content-Length", 0))
         except (TypeError, ValueError):
@@ -128,7 +133,8 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         try:
             target_dir = self.server.agent.dataset_dir(task_id)
             target_dir.mkdir(parents=True, exist_ok=True)
-            dest = target_dir / filename
+            dest = target_dir / f"{filename}.part"
+            md5 = hashlib.md5()
             with dest.open("wb") as f:
                 remaining = content_length
                 chunk_size = 1024 * 1024
@@ -139,20 +145,64 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
                         if not chunk:
                             break
                         f.write(chunk)
+                        md5.update(chunk)
                 else:
                     while remaining > 0:
                         chunk = self.rfile.read(min(chunk_size, remaining))
                         if not chunk:
                             break
                         f.write(chunk)
+                        md5.update(chunk)
                         remaining -= len(chunk)
+            actual_md5 = md5.hexdigest()
+            final_task_path = target_dir / filename
+            dest.rename(final_task_path)
+            if expected_md5 and actual_md5 != expected_md5:
+                # Integrity check failed; remove file and report error
+                try:
+                    final_task_path.unlink(missing_ok=True)  # type: ignore[call-arg]
+                except TypeError:
+                    # Python 3.10 compatibility
+                    if final_task_path.exists():
+                        final_task_path.unlink()
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps({"detail": "MD5 mismatch", "expected": expected_md5, "actual": actual_md5}).encode("utf-8")
+                )
+                return
         except OSError as exc:
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"detail": f"Failed to write file: {exc}"}).encode("utf-8"))
             return
-        body = json.dumps({"status": "ok", "path": str(dest)}).encode("utf-8")
+        # Move/copy to cache by MD5 and persist task meta
+        cache_copied = False
+        cache_path_str = ""
+        try:
+            cache_root = self.server.agent.dataset_cache_root(actual_md5)
+            archives_dir = cache_root / "archives"
+            archives_dir.mkdir(parents=True, exist_ok=True)
+            cache_path = archives_dir / filename
+            if not cache_path.exists():
+                try:
+                    shutil.copy2(final_task_path, cache_path)
+                    cache_copied = True
+                except OSError:
+                    pass
+            cache_path_str = str(cache_path)
+            # Save per-task meta for later reuse
+            self.server.agent.save_task_dataset_meta(task_id, {
+                "md5": actual_md5,
+                "archive_path": cache_path_str,
+                "filename": filename,
+            })
+        except Exception:
+            # Best-effort: ignore caching errors
+            cache_path_str = str(final_task_path)
+        body = json.dumps({"status": "ok", "path": cache_path_str, "md5": actual_md5, "cached": cache_copied}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -412,7 +462,43 @@ class TrainingJob(threading.Thread):
           2) If dataset_path is a file archive, extract it.
           3) If not provided or not found, look under agent's dataset_dir(task_id)
              for an uploaded archive and extract it.
+          4) If task meta contains an MD5, reuse the cache at dataset_cache_dir/<md5>.
         """
+        # Prefer cached extraction via MD5 if available
+        try:
+            meta = self.agent.load_task_dataset_meta(self.task_id)
+        except Exception:
+            meta = None
+        dataset_md5 = None
+        if isinstance(meta, dict):
+            val = meta.get("md5")
+            if isinstance(val, str) and len(val) >= 16:
+                dataset_md5 = val.strip().lower()
+        if dataset_md5:
+            cache_root = self.agent.dataset_cache_root(dataset_md5)
+            extracted_root = cache_root / "extracted"
+            archives_dir = cache_root / "archives"
+            # If extracted already exists, use it
+            if extracted_root.exists():
+                self.dataset_path = str(self._normalize_dataset_root(extracted_root))
+                return
+            # Otherwise, find an archive in cache and extract it to cache
+            archive_path: Optional[Path] = None
+            arch = meta.get("archive_path") if isinstance(meta, dict) else None
+            if isinstance(arch, str) and arch:
+                p = Path(arch)
+                if p.exists():
+                    archive_path = p
+            if not archive_path and archives_dir.exists():
+                for f in sorted(archives_dir.iterdir()):
+                    if f.is_file():
+                        archive_path = f
+                        break
+            if archive_path and archive_path.exists():
+                extracted = self._extract_archive(archive_path, target_dir=extracted_root)
+                if extracted:
+                    self.dataset_path = str(self._normalize_dataset_root(extracted))
+                    return
         # 1) Already a directory
         if self.dataset_path:
             p = Path(self.dataset_path).expanduser()
@@ -422,7 +508,20 @@ class TrainingJob(threading.Thread):
                 self.dataset_path = str(normalized)
                 return
             if p.is_file():
-                extracted = self._extract_archive(p.resolve())
+                # Attempt to reuse cache by computing md5
+                try:
+                    dataset_md5 = self._md5_of_file(p)
+                except Exception:
+                    dataset_md5 = None
+                if dataset_md5:
+                    cache_root = self.agent.dataset_cache_root(dataset_md5)
+                    extracted_root = cache_root / "extracted"
+                    if extracted_root.exists():
+                        self.dataset_path = str(self._normalize_dataset_root(extracted_root))
+                        return
+                    extracted = self._extract_archive(p.resolve(), target_dir=extracted_root)
+                else:
+                    extracted = self._extract_archive(p.resolve())
                 if extracted:
                     self.dataset_path = str(self._normalize_dataset_root(extracted))
                     return
@@ -439,34 +538,47 @@ class TrainingJob(threading.Thread):
                 self.dataset_path = str(self._normalize_dataset_root(extracted))
                 return
 
-    def _extract_archive(self, file_path: Path) -> Optional[Path]:
-        """Extract .zip/.tar(.gz)/.tgz archives to a 'data' dir next to file.
+    def _extract_archive(self, file_path: Path, target_dir: Optional[Path] = None) -> Optional[Path]:
+        """Extract .zip/.tar(.gz)/.tgz archives.
 
+        - If target_dir is provided, extract there; otherwise use sibling 'data' dir.
         Returns the extraction directory on success, or None if unsupported/failed.
         """
         suffixes = [s.lower() for s in file_path.suffixes]
         if not file_path.exists() or not suffixes:
             return None
-        target_dir = file_path.parent / "data"
+        target = target_dir or (file_path.parent / "data")
         try:
-            target_dir.mkdir(parents=True, exist_ok=True)
+            target.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
         try:
             if suffixes[-1] == ".zip":
                 with zipfile.ZipFile(file_path, "r") as zf:
-                    zf.extractall(target_dir)
-                return target_dir
+                    zf.extractall(target)
+                return target
             if ".tar" in suffixes or suffixes[-1] in {".gz", ".tgz"}:
                 try:
                     with tarfile.open(file_path, "r:*") as tf:
-                        tf.extractall(target_dir)
-                    return target_dir
+                        tf.extractall(target)
+                    return target
                 except tarfile.TarError:
                     return None
         except (OSError, zipfile.BadZipFile):
             return None
         return None
+
+    def _md5_of_file(self, file_path: Path) -> Optional[str]:
+        try:
+            m = hashlib.md5()
+            with file_path.open("rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    if not chunk:
+                        break
+                    m.update(chunk)
+            return m.hexdigest()
+        except OSError:
+            return None
 
     def _normalize_dataset_root(self, root: Path) -> Path:
         """Ensure dataset.root contains 'data', 'meta', 'videos' subfolders.
@@ -707,6 +819,7 @@ class Agent:
                         step_delay=self.config.step_delay,
                         log_dir=self.config.log_dir,
                         work_dir=self.config.work_dir,
+                        dataset_cache_dir=self.config.dataset_cache_dir,
                     )
                 self.logger.info("Agent registered with scheduler (token=%s)", self.agent_token[:8])
                 return
@@ -857,4 +970,40 @@ class Agent:
     # -------------------- Dataset helpers --------------------
     def dataset_dir(self, task_id: int) -> Path:
         """Return a persistent per-task dataset directory on the agent host."""
-        return (self.config.dataset_dir / f"task_{task_id}").resolve()
+        root = self.config.dataset_cache_dir.parent  # backend_root/storage
+        return (root / "datasets" / f"task_{task_id}").resolve()
+
+    def dataset_cache_root(self, md5: str) -> Path:
+        """Return the cache root directory for a dataset MD5."""
+        safe = (md5 or "").strip().lower()
+        return (self.config.dataset_cache_dir / safe).resolve()
+
+    def _task_meta_path(self, task_id: int) -> Path:
+        return self.dataset_dir(task_id) / "meta.json"
+
+    def save_task_dataset_meta(self, task_id: int, data: Dict[str, Any]) -> None:
+        path = self._task_meta_path(task_id)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            existing: Dict[str, Any] = {}
+            if path.exists():
+                try:
+                    existing = json.loads(path.read_text("utf-8")) or {}
+                    if not isinstance(existing, dict):
+                        existing = {}
+                except Exception:
+                    existing = {}
+            existing.update(data or {})
+            path.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
+    def load_task_dataset_meta(self, task_id: int) -> Optional[Dict[str, Any]]:
+        path = self._task_meta_path(task_id)
+        if not path.exists():
+            return None
+        try:
+            obj = json.loads(path.read_text("utf-8") or "{}")
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None

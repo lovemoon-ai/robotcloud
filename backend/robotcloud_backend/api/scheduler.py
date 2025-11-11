@@ -221,7 +221,12 @@ class SchedulerService:
             if file_path and file_path.exists() and file_path.is_file():
                 upload_url = f"http://{node.ip}:{node.api_port}/api/v1/agent/upload"
                 headers = {"X-Agent-Token": node.auth_token, "Content-Type": "application/octet-stream"}
+                md5hex = self._md5_of_file(file_path)
+                if md5hex:
+                    headers["X-Content-MD5"] = md5hex
                 params = {"task_id": task.id, "filename": file_path.name}
+                if md5hex:
+                    params["md5"] = md5hex
                 try:
                     with file_path.open("rb") as fp:
                         resp = requests.post(upload_url, params=params, data=fp, headers=headers, timeout=30)
@@ -264,6 +269,20 @@ class SchedulerService:
             "Unexpected response when dispatching task %s to node %s: %s", task.id, node.node_name, data
         )
         return False
+
+    def _md5_of_file(self, path: Path) -> Optional[str]:
+        try:
+            import hashlib
+
+            m = hashlib.md5()
+            with path.open("rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    if not chunk:
+                        break
+                    m.update(chunk)
+            return m.hexdigest()
+        except OSError:
+            return None
 
     def _dataset_file_on_disk(self, task: TrainTask) -> Optional[Path]:
         """Resolve dataset file absolute path on backend host."""

@@ -141,6 +141,13 @@ GPU Agent 拉取或接收（Scheduler 直传）数据包，解压、规范目录
 - 若压缩包内存在嵌套目录，Agent 会自动选择包含这些子目录的那一层作为根目录；
 - 若缺少某些目录，Agent 会在根目录下创建对应的空目录以满足训练脚本约定。
 
+缓存与校验
+
+- Agent 将数据包根据 MD5 归档到统一缓存目录：`storage/datasets_cache/<md5>/archives/`；
+- 解压目录固定为：`storage/datasets_cache/<md5>/extracted/`，可被后续相同 MD5 的任务复用；
+- 上传阶段与落盘后均计算 MD5（可与调度端传来的 `md5` 或 `X-Content-MD5` 对比），不一致则拒绝；
+- 训练任务与上传之间通过 `backend/storage/datasets/task_{task_id}/meta.json` 传递 `md5` 与归档路径。
+
 ------------------------------------------------------------------------
 
 ## 七、安全与性能

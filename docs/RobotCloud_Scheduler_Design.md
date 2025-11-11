@@ -65,11 +65,12 @@
 ``` bash
 1) 上传数据包（可选，若本地文件可直传）
 
-POST http://gpu-node-1:5000/api/v1/agent/upload?task_id={task_id}&filename=dataset.zip
-Headers: X-Agent-Token: <token>
+POST http://gpu-node-1:5000/api/v1/agent/upload?task_id={task_id}&filename=dataset.zip&md5=<md5hex>
+Headers: X-Agent-Token: <token>, X-Content-MD5: <md5hex>
 Body: application/octet-stream (zip/tar.gz)
 
-Agent 在执行训练前会将数据包解压到本地工作目录 storage/datasets/task_{task_id}/data。
+Agent 在接收上传时计算 MD5 校验并缓存到统一目录 storage/datasets_cache/<md5>/archives/；
+若缓存中已有相同 MD5 的解压结果则直接复用，否则解压到 storage/datasets_cache/<md5>/extracted。
 
 2) 下发训练执行命令
 

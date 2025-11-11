@@ -35,6 +35,7 @@ class AgentConfig:
     step_delay: float
     log_dir: Path
     work_dir: Path
+    dataset_cache_dir: Path
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
@@ -51,7 +52,7 @@ class AgentConfig:
         repo_root = backend_root.parent
         log_dir = Path(os.getenv("AGENT_LOG_DIR", backend_root / "storage" / "train_logs")).expanduser().resolve()
         work_dir = Path(os.getenv("AGENT_WORK_DIR", repo_root)).expanduser().resolve()
-        dataset_dir = Path(os.getenv("AGENT_LOG_DIR", backend_root / "storage" / "datasets")).expanduser().resolve()
+        dataset_cache_dir = Path(os.getenv("AGENT_DATASET_DIR", backend_root / "storage" / "datasets_cache")).expanduser().resolve()
         return cls(
             backend_base_url=backend_base,
             node_name=node_name,
@@ -64,4 +65,5 @@ class AgentConfig:
             step_delay=step_delay,
             log_dir=log_dir,
             work_dir=work_dir,
+            dataset_cache_dir=dataset_cache_dir,
         )
