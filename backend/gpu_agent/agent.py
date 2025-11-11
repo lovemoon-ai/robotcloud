@@ -417,11 +417,14 @@ class TrainingJob(threading.Thread):
         if self.dataset_path:
             p = Path(self.dataset_path).expanduser()
             if p.is_dir():
+                # Normalize expected layout inside existing directory
+                normalized = self._normalize_dataset_root(p)
+                self.dataset_path = str(normalized)
                 return
             if p.is_file():
                 extracted = self._extract_archive(p.resolve())
                 if extracted:
-                    self.dataset_path = str(extracted)
+                    self.dataset_path = str(self._normalize_dataset_root(extracted))
                     return
         # 2) Try uploaded archive
         task_dir = self.agent.dataset_dir(self.task_id)
@@ -433,7 +436,7 @@ class TrainingJob(threading.Thread):
                 continue
             extracted = self._extract_archive(f)
             if extracted:
-                self.dataset_path = str(extracted)
+                self.dataset_path = str(self._normalize_dataset_root(extracted))
                 return
 
     def _extract_archive(self, file_path: Path) -> Optional[Path]:
@@ -464,6 +467,32 @@ class TrainingJob(threading.Thread):
         except (OSError, zipfile.BadZipFile):
             return None
         return None
+
+    def _normalize_dataset_root(self, root: Path) -> Path:
+        """Ensure dataset.root contains 'data', 'meta', 'videos' subfolders.
+
+        - If current root already has them, return as-is.
+        - If any immediate subdir has the required layout, select it.
+        - Otherwise, create missing subfolders under current root and return it.
+        """
+        def has_required(d: Path) -> bool:
+            return (d / "data").is_dir() and (d / "meta").is_dir() and (d / "videos").is_dir()
+
+        try:
+            if has_required(root):
+                return root
+            # Search one level down
+            for sub in sorted([p for p in root.iterdir() if p.is_dir()]):
+                if has_required(sub):
+                    return sub
+            # Create missing folders in current root
+            for name in ("data", "meta", "videos"):
+                d = root / name
+                if not d.exists():
+                    d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return root
 
     # -------------------- Log parsing --------------------
     def _handle_output_line(self, line: str) -> None:
