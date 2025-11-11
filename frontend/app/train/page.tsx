@@ -53,6 +53,11 @@ export default function TrainPage() {
         totalLabel: (count: number) => `共 ${count} 个任务`,
         stats: (datasetId: string, progress: number) => `数据集 ID：${datasetId} · 进度：${progress}%`,
         logsLabel: (hasLog: boolean) => (hasLog ? "查看日志" : "日志生成中"),
+        delete: "删除",
+        confirmDeleteTitle: (id: number) => `删除训练任务 #${id}`,
+        confirmDeleteMessage: "此操作将从后端删除任务记录，且不可恢复。确认要删除吗？",
+        confirm: "确认删除",
+        cancel: "取消",
         loginNotice: "请先登录后创建训练任务，正在跳转至登录页...",
         loginPrompt: "登录后可查看我的训练任务。",
         loginLink: "前往登录",
@@ -75,6 +80,11 @@ export default function TrainPage() {
         totalLabel: (count: number) => `Total ${count} task${count === 1 ? "" : "s"}`,
         stats: (datasetId: string, progress: number) => `Dataset: ${datasetId} · Progress: ${progress}%`,
         logsLabel: (hasLog: boolean) => (hasLog ? "View logs" : "Logs pending"),
+        delete: "Delete",
+        confirmDeleteTitle: (id: number) => `Delete training task #${id}`,
+        confirmDeleteMessage: "This will remove the task record from the backend and cannot be undone. Proceed?",
+        confirm: "Confirm Delete",
+        cancel: "Cancel",
         loginNotice: "Log in before creating training jobs. Redirecting to the login page...",
         loginPrompt: "Log in to view your training jobs.",
         loginLink: "Go to login",
@@ -92,6 +102,22 @@ export default function TrainPage() {
     mutationFn: robotCloudApi.createTrainingJob,
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ["training-jobs"] });
+    }
+  });
+
+  // Delete training job flow
+  const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteMutation = useMutation({
+    mutationFn: (taskId: number) => robotCloudApi.deleteTrainingJob(taskId),
+    onSuccess: () => {
+      setDeleteTarget(null);
+      setDeleteError(null);
+      client.invalidateQueries({ queryKey: ["training-jobs"] });
+    },
+    onError: (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      setDeleteError(message);
     }
   });
 
@@ -232,17 +258,28 @@ export default function TrainPage() {
                 <Card key={job.id} title={`${job.model} · ${job.status}`} compact>
                   <div className="flex items-center justify-between text-[10px] text-slate-400">
                     <span>{copy.stats(job.datasetId.toString(), job.progress)}</span>
-                    {job.status === "queued" ? (
-                      <span>{copy.logsLabel(false)}</span>
-                    ) : (
-                      <button
-                        onClick={() => openLog(job.id)}
-                        className="font-semibold text-teal-300 hover:text-teal-200"
-                        type="button"
-                      >
-                        {copy.logsLabel(true)}
-                      </button>
-                    )}
+                    <div className="flex items-center gap-3">
+                      {job.status === "queued" ? (
+                        <span>{copy.logsLabel(false)}</span>
+                      ) : (
+                        <button
+                          onClick={() => openLog(job.id)}
+                          className="font-semibold text-teal-300 hover:text-teal-200"
+                          type="button"
+                        >
+                          {copy.logsLabel(true)}
+                        </button>
+                      )}
+                      {job.status !== "running" ? (
+                        <button
+                          onClick={() => setDeleteTarget(job.id)}
+                          className="font-semibold text-red-400 hover:text-red-300"
+                          type="button"
+                        >
+                          {copy.delete}
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="mt-2 h-1.5 rounded-full bg-slate-800">
                     <div className="h-full rounded-full bg-teal-400 transition-all" style={{ width: `${job.progress}%` }} />
@@ -277,6 +314,35 @@ export default function TrainPage() {
                   Refresh
                 </button>
               ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {deleteTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-lg border border-slate-700 bg-slate-900 p-4 shadow-xl">
+            <div className="mb-2">
+              <h3 className="text-lg font-semibold text-red-300">{copy.confirmDeleteTitle(deleteTarget)}</h3>
+              <p className="mt-1 text-sm text-slate-300">{copy.confirmDeleteMessage}</p>
+              {deleteError ? <p className="mt-2 text-sm text-red-400">{deleteError}</p> : null}
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-md border border-slate-600 px-3 py-1.5 text-slate-200 hover:bg-slate-800"
+                type="button"
+                disabled={deleteMutation.isPending}
+              >
+                {copy.cancel}
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(deleteTarget)}
+                className="rounded-md bg-red-500 px-3 py-1.5 font-semibold text-slate-950 hover:bg-red-400 disabled:opacity-60"
+                type="button"
+                disabled={deleteMutation.isPending}
+              >
+                {copy.confirm}
+              </button>
             </div>
           </div>
         </div>

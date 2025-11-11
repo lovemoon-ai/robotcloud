@@ -238,6 +238,11 @@ class TrainingLogsView(RobotCloudAPIView):
         )
 
 
+class TrainingDeleteView(RobotCloudAPIView):
+    def post(self, request: Request, task_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().delete_training_task(token, task_id))
+
+
 class AgentRegisterView(RobotCloudAPIView):
     parser_classes = [JSONParser]
 

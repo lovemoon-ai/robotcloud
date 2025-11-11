@@ -31,6 +31,7 @@ urlpatterns = [
     path("training/<int:task_id>/stop", views.TrainingStopView.as_view(), name="training-stop"),
     path("training/<int:task_id>/download", views.TrainingDownloadView.as_view(), name="training-download"),
     path("training/<int:task_id>/logs", views.TrainingLogsView.as_view(), name="training-logs"),
+    path("training/<int:task_id>/delete", views.TrainingDeleteView.as_view(), name="training-delete"),
     # Internal Scheduler
     path("internal/agent/register", views.AgentRegisterView.as_view(), name="agent-register"),
     path("internal/agent/heartbeat", views.AgentHeartbeatView.as_view(), name="agent-heartbeat"),

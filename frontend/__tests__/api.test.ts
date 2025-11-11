@@ -277,6 +277,20 @@ describe("robotCloudApi", () => {
     });
   });
 
+  it("deleteTrainingJob posts to delete endpoint with auth", async () => {
+    setAuthenticatedUser();
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({ code: 0, data: { deleted: true } })
+    } as unknown as Response);
+    await robotCloudApi.deleteTrainingJob(7);
+    const [url, init] = mockedFetch.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/training/7/delete`);
+    expect(init?.method).toBe("POST");
+    expect(mapHeaders(init)).toHaveProperty("authorization", "Bearer token");
+  });
+
   it("fetchInferenceJobs maps response", async () => {
     setAuthenticatedUser();
     const backend = {

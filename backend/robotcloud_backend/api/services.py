@@ -512,6 +512,22 @@ class RobotCloudService:
             # Graceful fallback to avoid breaking the UI if agent is offline
             return self._response({"content": "", "next_offset": max(offset, 0), "complete": False})
 
+    def delete_training_task(self, token: str, task_id: int) -> Dict[str, Any]:
+        """Delete a training task that belongs to the current user.
+
+        Only non-running tasks can be deleted. Users should stop a running task first.
+        This removes the database record and refreshes queue positions for remaining
+        queued tasks.
+        """
+        user = self._get_user_by_token(token)
+        task = self._get_train_task(task_id, user)
+        if task.status == "running":
+            raise ValueError("Cannot delete a running task; please stop it first")
+        with transaction.atomic():
+            task.delete()
+            self._refresh_queue_positions()
+        return self._response({"deleted": True})
+
     # -------------------- Scheduler Internal Module --------------------
     def register_agent(self, node_name: str, ip: str, gpu_total: int, version: str, api_port: int) -> Dict[str, Any]:
         if not node_name:

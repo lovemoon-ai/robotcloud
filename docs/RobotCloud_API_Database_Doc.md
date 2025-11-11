@@ -201,6 +201,21 @@ Form-Data：
 
 **GET** `/api/v1/training/{task_id}/download`
 
+### 6. 删除训练任务
+
+仅支持删除非运行中的任务（排队、已完成、已失败）。
+
+**POST** `/api/v1/training/{task_id}/delete`
+
+Response
+
+```json
+{
+  "code": 0,
+  "data": { "deleted": true }
+}
+```
+
 ------------------------------------------------------------------------
 
 # ⚙️ **Ⅴ. Inference 模块**

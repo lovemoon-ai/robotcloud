@@ -264,6 +264,8 @@ export const robotCloudApi = {
       logsUrl: task.logs_url
     }));
   },
+  deleteTrainingJob: async (taskId: number): Promise<{ deleted: boolean }> =>
+    request<{ deleted: boolean }>(`/training/${taskId}/delete`, { method: "POST" }),
   createTrainingJob: async (config: TrainingConfig) => {
     const payload = {
       dataset_id: Number.parseInt(config.datasetId, 10),
