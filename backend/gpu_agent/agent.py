@@ -556,11 +556,15 @@ class TrainingJob(threading.Thread):
             if suffixes[-1] == ".zip":
                 with zipfile.ZipFile(file_path, "r") as zf:
                     zf.extractall(target)
+                # Cleanup spurious files that affect training
+                self._cleanup_extracted(target)
                 return target
             if ".tar" in suffixes or suffixes[-1] in {".gz", ".tgz"}:
                 try:
                     with tarfile.open(file_path, "r:*") as tf:
                         tf.extractall(target)
+                    # Cleanup spurious files that affect training
+                    self._cleanup_extracted(target)
                     return target
                 except tarfile.TarError:
                     return None
@@ -579,6 +583,29 @@ class TrainingJob(threading.Thread):
             return m.hexdigest()
         except OSError:
             return None
+
+    def _cleanup_extracted(self, root: Path) -> int:
+        """Remove files like '._*.parquet' that can break training.
+
+        Returns number of files removed.
+        """
+        removed = 0
+        try:
+            for p in root.rglob("*.parquet"):
+                try:
+                    if p.is_file() and p.name.startswith("._"):
+                        p.unlink()
+                        removed += 1
+                except OSError:
+                    continue
+        except OSError:
+            return removed
+        if removed:
+            try:
+                self.logger.info("Removed %s invalid parquet files from dataset (._*.parquet)", removed)
+            except Exception:
+                pass
+        return removed
 
     def _normalize_dataset_root(self, root: Path) -> Path:
         """Ensure dataset.root contains 'data', 'meta', 'videos' subfolders.
