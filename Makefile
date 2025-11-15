@@ -20,11 +20,8 @@ REQUIRED_ENV_VARS := \
 
 $(foreach var,$(REQUIRED_ENV_VARS),$(if $($(var)),,$(error Missing environment variable '$(var)'. Configure it in .env)))
 
-ifeq ($(shell id -u),0)
-PYTHON := /usr/bin/python3
-else
+# PYTHON := /usr/bin/python3
 PYTHON := $(CURDIR)/.venv/bin/python
-endif
 PIP := $(CURDIR)/.venv/bin/pip
 MANAGE := $(PYTHON) manage.py
 
