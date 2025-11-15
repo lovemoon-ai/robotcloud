@@ -5,6 +5,21 @@ include .env
 export $(shell sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .env)
 endif
 
+REQUIRED_ENV_VARS := \
+	BACKEND_HOST \
+	BACKEND_PORT \
+	FRONTEND_HOST \
+	FRONTEND_PORT \
+	PUBLIC_API_BASE_URL \
+	DJANGO_ALLOWED_HOSTS \
+	DJANGO_CORS_ALLOWED_ORIGINS \
+	SCHEDULER_API_BASE_URL \
+	AGENT_PORT \
+	AGENT_IP \
+	AGENT_NODE_NAME
+
+$(foreach var,$(REQUIRED_ENV_VARS),$(if $($(var)),,$(error Missing environment variable '$(var)'. Configure it in .env)))
+
 ifeq ($(shell id -u),0)
 PYTHON := /usr/bin/python3
 else
@@ -12,19 +27,6 @@ PYTHON := $(CURDIR)/.venv/bin/python
 endif
 PIP := $(CURDIR)/.venv/bin/pip
 MANAGE := $(PYTHON) manage.py
-
-BACKEND_HOST ?= 0.0.0.0
-BACKEND_PORT ?= 6150
-FRONTEND_HOST ?= 0.0.0.0
-FRONTEND_PORT ?= 6151
-PUBLIC_API_BASE_URL ?= http://localhost:$(BACKEND_PORT)/api/v1
-PUBLIC_FRONTEND_ORIGIN ?= http://localhost:$(FRONTEND_PORT)
-DJANGO_ALLOWED_HOSTS ?= localhost,127.0.0.1,100.72.232.210,0.0.0.0
-DJANGO_CORS_ALLOWED_ORIGINS ?= $(PUBLIC_FRONTEND_ORIGIN),http://127.0.0.1:$(FRONTEND_PORT)
-SCHEDULER_API_BASE_URL ?= $(PUBLIC_API_BASE_URL)
-AGENT_PORT ?= 6152
-AGENT_IP ?= 127.0.0.1
-AGENT_NODE_NAME ?= local-agent
 
 ####### DEVELOP ########
 
