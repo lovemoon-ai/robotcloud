@@ -31,9 +31,9 @@ describe("/login page", () => {
 
   const fillCredentialsAndSubmit = async (phone = "13800000001", password = "secret123") => {
     render(<LoginPage />);
-    fireEvent.change(screen.getByPlaceholderText("例如：13800001234"), { target: { value: phone } });
-    fireEvent.change(screen.getByPlaceholderText("至少 8 位字符"), { target: { value: password } });
-    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+    fireEvent.change(screen.getByPlaceholderText("e.g. 13800001234"), { target: { value: phone } });
+    fireEvent.change(screen.getByPlaceholderText("At least 8 characters"), { target: { value: password } });
+    fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   };
 
   it("logs in existing users with password", async () => {
@@ -51,7 +51,7 @@ describe("/login page", () => {
       expect(useAuthStore.getState().token).toBe("token");
     });
     expect(mockedApi.loginWithPassword).toHaveBeenCalledWith({ phone: "13800000001", password: "secret123" });
-    expect(screen.getByText("欢迎回来，13800000001！")).toBeInTheDocument();
+    expect(screen.getByText("Welcome back, 13800000001!")).toBeInTheDocument();
     expect(replaceMock).toHaveBeenCalledWith("/");
   });
 
@@ -71,11 +71,11 @@ describe("/login page", () => {
 
     expect(replaceMock).not.toHaveBeenCalled();
     await waitFor(() => {
-      expect(screen.getByText("检测到新手机号，请输入邀请码完成注册。")).toBeInTheDocument();
+      expect(screen.getByText("New phone detected. Enter an invitation code to finish registration.")).toBeInTheDocument();
     });
 
-    fireEvent.change(screen.getByPlaceholderText("请输入邀请码"), { target: { value: "INV-2024" } });
-    fireEvent.click(screen.getByRole("button", { name: "提交注册" }));
+    fireEvent.change(screen.getByPlaceholderText("Enter invitation code"), { target: { value: "INV-2024" } });
+    fireEvent.click(screen.getByRole("button", { name: "Complete Registration" }));
 
     await waitFor(() => {
       expect(mockedApi.registerWithInvitation).toHaveBeenCalledWith({

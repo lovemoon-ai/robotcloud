@@ -10,11 +10,11 @@ interface LocaleState {
 }
 
 export const useLocaleStore = create<LocaleState>((set) => ({
-  locale: "zh",
+  locale: "en",
   toggleLocale: () =>
     set((state) => ({
       locale: state.locale === "zh" ? "en" : "zh"
     })),
   setLocale: (locale) => set({ locale }),
-  reset: () => set({ locale: "zh" })
+  reset: () => set({ locale: "en" })
 }));

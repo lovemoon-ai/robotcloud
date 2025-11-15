@@ -5,6 +5,7 @@ frontend/.next
 frontend/node_modules
 *.swp
 *.swo
+.env
 
 # local test uploaded dataset
 backend/storage/

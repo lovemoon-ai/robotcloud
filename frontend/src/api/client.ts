@@ -1,3 +1,4 @@
+import getConfig from "next/config";
 import { useAuthStore } from "@/store/useAuthStore";
 import {
   AdminUser,
@@ -16,7 +17,24 @@ import {
   UserRole
 } from "@/types";
 
-const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
+const DEFAULT_API_BASE = "http://localhost:8000/api/v1";
+
+type RuntimeConfig = {
+  publicRuntimeConfig?: {
+    apiBaseUrl?: string;
+  };
+};
+
+const runtimeConfig: RuntimeConfig | undefined = (() => {
+  try {
+    return getConfig();
+  } catch {
+    return undefined;
+  }
+})();
+
+const RAW_API_BASE =
+  runtimeConfig?.publicRuntimeConfig?.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
 const API_BASE = RAW_API_BASE.replace(/\/$/, "");
 
 interface ApiResponse<T> {
