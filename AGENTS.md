@@ -26,6 +26,7 @@
 ## Environment & Configuration Tips
 - Copy `.env.example` to `.env` and edit it to control hosts/ports (`BACKEND_HOST/BACKEND_PORT`, `FRONTEND_HOST/FRONTEND_PORT`), public URLs, and allow-lists (`DJANGO_ALLOWED_HOSTS`, `DJANGO_CORS_ALLOWED_ORIGINS`). The Makefile automatically loads this file so `make run`, `make run-all`, and `make agent` all share the same networking config.
 - Store local secrets in `.env` (already gitignored); the frontend consumes `PUBLIC_API_BASE_URL`/`NEXT_PUBLIC_API_BASE_URL` while the backend uses SQLite + in-memory cache out of the box, so no extra services are required.
+- Need to expose a service behind a friendly domain? Run `sudo ./scripts/configure_domain_proxy.sh --domain <your-domain> --service-port <local-port> [--email you@example.com]` to install nginx, create the reverse proxy, and (optionally) provision TLS with Let's Encrypt.
 - Local tooling (e.g., `make run`) sets `USE_SQLITE=1` and `USE_IN_MEMORY_CACHE=1` so the stack boots without Postgres or Redis; unset them if you need external services.
 - Set `USE_POSTGRES=1` when you want Django to talk to your Postgres instance; otherwise it defaults to sqlite.
 - When running both apps manually, export the same base URL to keep API clients pointed at your backend instance.
