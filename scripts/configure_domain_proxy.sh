@@ -102,7 +102,13 @@ reload_nginx() {
   echo "[info] Validating nginx configuration"
   nginx -t
   echo "[info] Reloading nginx"
-  systemctl reload nginx
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl reload nginx
+  elif command -v service >/dev/null 2>&1; then
+    service nginx reload
+  else
+    nginx -s reload
+  fi
 }
 
 request_certificate() {
