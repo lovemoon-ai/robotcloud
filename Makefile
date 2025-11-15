@@ -1,9 +1,13 @@
 .PHONY: test run scheduler agent backend-deps frontend-test invite-codes kill
 
-# PYTHON := $(CURDIR)/.venv/bin/python
-# PIP := $(CURDIR)/.venv/bin/pip
+ifeq ($(shell id -u),0)
 PYTHON := /usr/bin/python3
-PIP := /usr/bin/pip3
+else
+PYTHON := $(CURDIR)/.venv/bin/python
+endif
+PIP := $(CURDIR)/.venv/bin/pip
+# PYTHON := /usr/bin/python3
+# PIP := /usr/bin/pip3
 MANAGE := $(PYTHON) manage.py
 
 ####### DEVELOP ########
@@ -51,7 +55,7 @@ test: backend-deps
 
 
 ####### DEPLOY ########
-DJANGO_ALLOWED_HOSTS="localhost,127.0.0.1,100.72.232.210"
+DJANGO_ALLOWED_HOSTS="localhost,127.0.0.1,100.72.232.210,0.0.0.0"
 
 run:
 	@set -e; \
