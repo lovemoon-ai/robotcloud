@@ -138,6 +138,34 @@ class UpgradeView(RobotCloudAPIView):
         )
 
 
+class PaymentCreateView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute_with_token(
+            request,
+            lambda token: self._service().create_payment(
+                token, payload.get("target_role", ""), payload.get("provider", "mock")
+            ),
+        )
+
+
+class PaymentStatusView(RobotCloudAPIView):
+    def get(self, request: Request, payment_id: str) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().payment_status(token, payment_id))
+
+
+class PaymentMockCallbackView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute(
+            lambda: self._service().mock_payment_callback(payload.get("payment_id", ""), payload.get("status", "succeeded"))
+        )
+
+
 class UsageView(RobotCloudAPIView):
     def get(self, request: Request) -> Response:
         return self._execute_with_token(request, lambda token: self._service().usage(token))

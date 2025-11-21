@@ -23,6 +23,7 @@ from .models import (
     Device,
     InvitationCode,
     InferenceTask,
+    Payment,
     SimulationTask,
     TrainTask,
     User,
@@ -38,6 +39,10 @@ VERIFICATION_CODE_TIMEOUT_SECONDS = 5 * 60  # 5 minutes
 class RobotCloudService:
     """Domain service that encapsulates RobotCloud business logic."""
 
+    PLAN_PRICING = {
+        User.ROLE_PLUS: {"amount_cents": 9900, "currency": "CNY", "description": "Plus monthly plan"},
+        User.ROLE_PRO: {"amount_cents": 29900, "currency": "CNY", "description": "Pro monthly plan"},
+    }
     TRAINING_PRIORITY_BY_ROLE = {
         User.ROLE_PRO: 100,
         User.ROLE_PLUS: 50,
@@ -86,6 +91,12 @@ class RobotCloudService:
         while True:
             candidate = secrets.token_hex(16)
             if not WorkerNode.objects.filter(auth_token=candidate).exists():
+                return candidate
+
+    def _generate_payment_id(self) -> str:
+        while True:
+            candidate = secrets.token_hex(12)
+            if not Payment.objects.filter(payment_id=candidate).exists():
                 return candidate
 
     def _normalize_gpu_payload(self, payload: Any) -> int:
@@ -316,18 +327,93 @@ class RobotCloudService:
             }
         )
 
+    def create_payment(self, token: str, target_role: str, provider: str | None = None) -> Dict[str, Any]:
+        if target_role not in self.PLAN_PRICING:
+            raise ValueError("Unsupported target role")
+        user = self._get_user_by_token(token)
+        allowed = [User.ROLE_FREE, User.ROLE_PLUS, User.ROLE_PRO]
+        if allowed.index(target_role) <= allowed.index(user.role):
+            raise ValueError("Upgrade target must be higher than current role")
+        plan = self.PLAN_PRICING[target_role]
+        normalized_provider = (provider or "mock").lower()
+        if normalized_provider not in {"wechat", "alipay", "mock"}:
+            raise ValueError("Unsupported payment provider")
+        pay_code = f"PAY-{normalized_provider}-{secrets.token_hex(6)}"
+        checkout_url = f"https://pay.robotcloud.local/{normalized_provider}/{pay_code}"
+        payment = Payment.objects.create(
+            payment_id=self._generate_payment_id(),
+            user=user,
+            target_role=target_role,
+            amount_cents=plan["amount_cents"],
+            currency=plan["currency"],
+            provider=normalized_provider,
+            description=plan.get("description", ""),
+            metadata={
+                "display_amount": plan["amount_cents"],
+                "currency": plan["currency"],
+                "pay_code": pay_code,
+                "checkout_url": checkout_url,
+            },
+        )
+        payload = self._payment_to_dict(payment)
+        return self._response(payload)
+
+    def payment_status(self, token: str, payment_id: str) -> Dict[str, Any]:
+        if not payment_id:
+            raise ValueError("Payment id required")
+        user = self._get_user_by_token(token)
+        try:
+            payment = Payment.objects.get(payment_id=payment_id, user=user)
+        except Payment.DoesNotExist:
+            raise ValueError("Payment not found")
+        return self._response(self._payment_to_dict(payment))
+
+    def mock_payment_callback(self, payment_id: str, status_value: str) -> Dict[str, Any]:
+        if not payment_id:
+            raise ValueError("Payment id required")
+        if status_value not in {
+            Payment.STATUS_SUCCEEDED,
+            Payment.STATUS_FAILED,
+            Payment.STATUS_CANCELED,
+        }:
+            raise ValueError("Invalid payment status")
+        try:
+            payment = Payment.objects.get(payment_id=payment_id)
+        except Payment.DoesNotExist:
+            raise ValueError("Payment not found")
+        if payment.status == Payment.STATUS_SUCCEEDED:
+            return self._response(self._payment_to_dict(payment))
+        payment.status = status_value
+        payment.save(update_fields=["status", "updated_at"])
+        return self._response(self._payment_to_dict(payment))
+
     def upgrade(self, token: str, target_role: str, payment_id: str) -> Dict[str, Any]:
         if target_role not in {User.ROLE_FREE, User.ROLE_PLUS, User.ROLE_PRO}:
             raise ValueError("Invalid target role")
-        if not payment_id:
-            raise ValueError("Payment id required")
         user = self._get_user_by_token(token)
         allowed = [User.ROLE_FREE, User.ROLE_PLUS, User.ROLE_PRO]
         if allowed.index(target_role) < allowed.index(user.role):
             raise ValueError("Cannot downgrade role")
+        if not payment_id:
+            raise ValueError("Payment id required")
+        try:
+            payment = Payment.objects.get(payment_id=payment_id)
+        except Payment.DoesNotExist:
+            raise ValueError("Payment not found")
+        if payment.user_id != user.id:
+            raise PermissionError("Payment does not belong to user")
+        if payment.status != Payment.STATUS_SUCCEEDED:
+            raise ValueError("Payment not completed")
+        if payment.target_role != target_role:
+            raise ValueError("Payment does not match target role")
+        if payment.applied_at:
+            raise ValueError("Payment already applied")
         user.role = target_role
         user.expire_at = (user.expire_at or timezone.now()) + timedelta(days=365)
-        user.save(update_fields=["role", "expire_at"])
+        with transaction.atomic():
+            user.save(update_fields=["role", "expire_at"])
+            payment.applied_at = timezone.now()
+            payment.save(update_fields=["applied_at", "updated_at"])
         return self._response({"role": user.role, "expire_at": user.expire_at.isoformat()})
 
     def usage(self, token: str) -> Dict[str, Any]:
@@ -958,6 +1044,20 @@ class RobotCloudService:
             "training_mode": task.training_mode,
             "status": task.status,
             "created_at": task.created_at.isoformat(),
+        }
+
+    def _payment_to_dict(self, payment: Payment) -> Dict[str, Any]:
+        return {
+            "payment_id": payment.payment_id,
+            "target_role": payment.target_role,
+            "amount_cents": payment.amount_cents,
+            "currency": payment.currency,
+            "provider": payment.provider,
+            "status": payment.status,
+            "pay_code": payment.metadata.get("pay_code") if isinstance(payment.metadata, dict) else None,
+            "applied_at": payment.applied_at.isoformat() if payment.applied_at else None,
+            "created_at": payment.created_at.isoformat(),
+            "checkout_url": payment.metadata.get("checkout_url") if isinstance(payment.metadata, dict) else None,
         }
 
     def _user_to_dict(self, user: User) -> Dict[str, Any]:

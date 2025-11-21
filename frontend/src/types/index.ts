@@ -108,3 +108,18 @@ export interface AdminUser {
   role: UserRole;
   createdAt: string;
 }
+
+export type PaymentStatus = "pending" | "succeeded" | "failed" | "canceled";
+
+export interface Payment {
+  paymentId: string;
+  targetRole: UserRole;
+  amountCents: number;
+  currency: string;
+  provider: string;
+  status: PaymentStatus;
+  appliedAt: string | null;
+  createdAt: string;
+  checkoutUrl?: string;
+  payCode?: string;
+}

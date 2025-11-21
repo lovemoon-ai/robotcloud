@@ -16,6 +16,10 @@ urlpatterns = [
     path("user/profile", views.ProfileView.as_view(), name="user-profile"),
     path("user/upgrade", views.UpgradeView.as_view(), name="user-upgrade"),
     path("user/usage", views.UsageView.as_view(), name="user-usage"),
+    # Payment
+    path("payment/create", views.PaymentCreateView.as_view(), name="payment-create"),
+    path("payment/<str:payment_id>", views.PaymentStatusView.as_view(), name="payment-status"),
+    path("payment/callback/mock", views.PaymentMockCallbackView.as_view(), name="payment-callback-mock"),
     # Dashboard
     path("dashboard/summary", views.DashboardSummaryView.as_view(), name="dashboard-summary"),
     # Dataset
