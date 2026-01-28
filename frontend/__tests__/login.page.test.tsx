@@ -13,10 +13,8 @@ jest.mock("next/navigation", () => ({
 
 jest.mock("@/api/client", () => ({
   robotCloudApi: {
-    loginWithPassword: jest.fn(),
     requestOtp: jest.fn(),
-    verifyOtp: jest.fn(),
-    registerWithInvitation: jest.fn()
+    loginWithCode: jest.fn()
   }
 }));
 
@@ -29,15 +27,15 @@ describe("/login page", () => {
     replaceMock.mockReset();
   });
 
-  const fillCredentialsAndSubmit = async (phone = "13800000001", password = "secret123") => {
+  const fillPhoneAndSendCode = async (phone = "13800000001") => {
     render(<LoginPage />);
     fireEvent.change(screen.getByPlaceholderText("e.g. 13800001234"), { target: { value: phone } });
-    fireEvent.change(screen.getByPlaceholderText("At least 8 characters"), { target: { value: password } });
-    fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send Code" }));
   };
 
-  it("logs in existing users with password", async () => {
-    mockedApi.loginWithPassword.mockResolvedValueOnce({
+  it("sends verification code and logs in with code", async () => {
+    mockedApi.requestOtp.mockResolvedValueOnce({ sent: true, code: "000000" });
+    mockedApi.loginWithCode.mockResolvedValueOnce({
       token: "token",
       userId: 9,
       phone: "13800000001",
@@ -45,47 +43,73 @@ describe("/login page", () => {
       expireAt: null
     });
 
-    await fillCredentialsAndSubmit();
+    await fillPhoneAndSendCode();
+
+    await waitFor(() => {
+      expect(mockedApi.requestOtp).toHaveBeenCalledWith("13800000001");
+    });
+
+    // Enter verification code
+    fireEvent.change(screen.getByPlaceholderText("Enter 6-digit code"), { target: { value: "000000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Login / Register" }));
+
+    await waitFor(() => {
+      expect(mockedApi.loginWithCode).toHaveBeenCalledWith({
+        phone: "13800000001",
+        code: "000000",
+        invitationCode: undefined
+      });
+    });
 
     await waitFor(() => {
       expect(useAuthStore.getState().token).toBe("token");
     });
-    expect(mockedApi.loginWithPassword).toHaveBeenCalledWith({ phone: "13800000001", password: "secret123" });
-    expect(screen.getByText("Welcome back, 13800000001!")).toBeInTheDocument();
     expect(replaceMock).toHaveBeenCalledWith("/");
   });
 
-  it("prompts for invitation code and completes registration when account missing", async () => {
-    mockedApi.loginWithPassword
-      .mockRejectedValueOnce(new Error("Phone not registered"))
-      .mockResolvedValueOnce({
-        token: "fresh-token",
-        userId: 10,
-        phone: "13800000001",
-        role: "free",
-        expireAt: null
-      });
-    mockedApi.registerWithInvitation.mockResolvedValue({ user_id: 10 });
+  it("shows error for invalid phone number", async () => {
+    render(<LoginPage />);
+    fireEvent.change(screen.getByPlaceholderText("e.g. 13800001234"), { target: { value: "invalid" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send Code" }));
 
-    await fillCredentialsAndSubmit();
-
-    expect(replaceMock).not.toHaveBeenCalled();
     await waitFor(() => {
-      expect(screen.getByText("New phone detected. Enter an invitation code to finish registration.")).toBeInTheDocument();
+      expect(screen.getByText("Phone number format is incorrect")).toBeInTheDocument();
+    });
+  });
+
+  it("allows login with invitation code", async () => {
+    mockedApi.requestOtp.mockResolvedValueOnce({ sent: true, code: "000000" });
+    mockedApi.loginWithCode.mockResolvedValueOnce({
+      token: "token",
+      userId: 10,
+      phone: "13800000001",
+      role: "free",
+      expireAt: null
     });
 
+    render(<LoginPage />);
+    
+    // Show invitation code input
+    fireEvent.click(screen.getByText("Have an invite code?"));
+
+    fireEvent.change(screen.getByPlaceholderText("e.g. 13800001234"), { target: { value: "13800000001" } });
     fireEvent.change(screen.getByPlaceholderText("Enter invitation code"), { target: { value: "INV-2024" } });
-    fireEvent.click(screen.getByRole("button", { name: "Complete Registration" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send Code" }));
 
     await waitFor(() => {
-      expect(mockedApi.registerWithInvitation).toHaveBeenCalledWith({
+      expect(mockedApi.requestOtp).toHaveBeenCalledWith("13800000001");
+    });
+
+    // Enter verification code
+    fireEvent.change(screen.getByPlaceholderText("Enter 6-digit code"), { target: { value: "000000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Login / Register" }));
+
+    await waitFor(() => {
+      expect(mockedApi.loginWithCode).toHaveBeenCalledWith({
         phone: "13800000001",
-        password: "secret123",
+        code: "000000",
         invitationCode: "INV-2024"
       });
-      expect(mockedApi.loginWithPassword).toHaveBeenCalledTimes(2);
-      expect(useAuthStore.getState().token).toBe("fresh-token");
-      expect(replaceMock).toHaveBeenCalledWith("/");
     });
   });
 });

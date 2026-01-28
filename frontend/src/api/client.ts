@@ -18,7 +18,7 @@ import {
   UserRole
 } from "@/types";
 
-const DEFAULT_API_BASE = "http://localhost:8000/api/v1";
+const DEFAULT_API_BASE = "http://localhost:6150/api/v1";
 
 type RuntimeConfig = {
   publicRuntimeConfig?: {

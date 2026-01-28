@@ -6,7 +6,7 @@ const RAW_API_BASE_URL =
   process.env.PUBLIC_API_BASE_URL ??
   process.env.ROBOTCLOUD_API_BASE_URL ??
   process.env.NEXT_PUBLIC_API_BASE_URL ??
-  "http://localhost:8000/api/v1";
+  "http://localhost:6150/api/v1";
 const API_BASE_URL = RAW_API_BASE_URL.replace(/\/$/, "");
 
 const nextConfig = {

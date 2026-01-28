@@ -10,10 +10,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .services import RobotCloudService
-from ..sms import ConsoleSmsGateway, SmsGateway
+from ..sms import ConsoleSmsGateway, SmsGateway, get_default_sms_gateway
 
 
-_sms_gateway: SmsGateway = ConsoleSmsGateway()
+_sms_gateway: SmsGateway = get_default_sms_gateway()
 _service: RobotCloudService | None = None
 
 
