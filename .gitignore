@@ -11,4 +11,4 @@ frontend/node_modules
 backend/storage/
 
 backend/build
-q4-22_robotcloud.sh
+02_robocloud.sh
