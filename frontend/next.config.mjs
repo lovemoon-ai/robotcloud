@@ -10,6 +10,8 @@ const RAW_API_BASE_URL =
 const API_BASE_URL = RAW_API_BASE_URL.replace(/\/$/, "");
 
 const nextConfig = {
+  output: "export",
+  trailingSlash: true,
   reactStrictMode: true,
   experimental: {
     esmExternals: false

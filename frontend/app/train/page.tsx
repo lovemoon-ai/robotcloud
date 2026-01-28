@@ -23,7 +23,8 @@ export default function TrainPage() {
     queryKey: ["training-jobs"],
     queryFn: robotCloudApi.fetchTrainingJobs,
     enabled: Boolean(token),
-    refetchInterval: (jobs: TrainingJob[] | undefined) => {
+    refetchInterval: (query) => {
+      const jobs = query.state.data;
       if (!jobs?.length) {
         return false;
       }
