@@ -30,6 +30,7 @@ from .models import (
     WorkerNode,
 )
 from ..sms import SmsGateway
+from ..payment.alipay import get_alipay
 
 
 TOKEN_TIMEOUT_SECONDS = 7 * 24 * 60 * 60  # 7 days
@@ -257,11 +258,54 @@ class RobotCloudService:
     # -------------------- Auth Module --------------------
     def send_code(self, phone: str) -> Dict[str, Any]:
         self._ensure_phone(phone)
-        code = f"{secrets.randbelow(10000):04d}"
+        dev_code = getattr(settings, "AUTH_DEV_CODE", "")
+        if dev_code:
+            code = dev_code
+        else:
+            code = f"{secrets.randbelow(1000000):06d}"
         self.verification_cache.set(self._verification_key(phone), code, VERIFICATION_CODE_TIMEOUT_SECONDS)
         if self.sms_gateway:
             self.sms_gateway.send_verification_code(phone, code)
-        return self._response({"sent": True})
+        return self._response({"sent": True, "code": code if dev_code else None})
+
+    def login_with_code(self, phone: str, code: str, invitation_code: str | None = None) -> Dict[str, Any]:
+        """Login or register with SMS verification code."""
+        self._ensure_phone(phone)
+        if not code:
+            raise ValueError("Verification code required")
+
+        dev_code = getattr(settings, "AUTH_DEV_CODE", "")
+        stored_code = self.verification_cache.get(self._verification_key(phone))
+
+        if dev_code and code == dev_code:
+            pass
+        elif stored_code != code:
+            raise ValueError("Invalid verification code")
+
+        user = User.objects.filter(phone=phone).first()
+        if not user:
+            if invitation_code:
+                invitation = self._get_invitation(invitation_code)
+            else:
+                invitation = None
+            with transaction.atomic():
+                user = self._create_user_without_password(phone)
+                if invitation:
+                    self._mark_invitation_used(invitation, user, phone)
+            self.verification_cache.delete(self._verification_key(phone))
+
+        token = secrets.token_urlsafe(16)
+        self.token_cache.set(token, user.id, TOKEN_TIMEOUT_SECONDS)
+        return self._response(
+            {
+                "token": token,
+                "user_id": user.id,
+                "phone": user.phone,
+                "role": user.role,
+                "expire_at": user.expire_at.isoformat() if user.expire_at else None,
+                "registered": user is not None,
+            }
+        )
 
     def register(self, phone: str, password: str, code: str, invitation_code: str) -> Dict[str, Any]:
         self._ensure_phone(phone)
@@ -327,7 +371,7 @@ class RobotCloudService:
             }
         )
 
-    def create_payment(self, token: str, target_role: str, provider: str | None = None) -> Dict[str, Any]:
+    def create_payment(self, token: str, target_role: str, provider: str | None = None, base_url: str | None = None) -> Dict[str, Any]:
         if target_role not in self.PLAN_PRICING:
             raise ValueError("Unsupported target role")
         user = self._get_user_by_token(token)
@@ -335,21 +379,46 @@ class RobotCloudService:
         if allowed.index(target_role) <= allowed.index(user.role):
             raise ValueError("Upgrade target must be higher than current role")
         plan = self.PLAN_PRICING[target_role]
-        normalized_provider = (provider or "mock").lower()
+        normalized_provider = (provider or "alipay").lower()
         if normalized_provider not in {"wechat", "alipay", "mock"}:
             raise ValueError("Unsupported payment provider")
+
+        is_dev = getattr(settings, "DEBUG", False)
+        dev_amount = getattr(settings, "PAYMENT_DEV_AMOUNT_CENTS", 1)
+        amount_cents = dev_amount if is_dev else plan["amount_cents"]
+        amount_yuan = amount_cents / 100
+
+        payment_id = self._generate_payment_id()
         pay_code = f"PAY-{normalized_provider}-{secrets.token_hex(6)}"
-        checkout_url = f"https://pay.robotcloud.local/{normalized_provider}/{pay_code}"
+
+        checkout_url = None
+        if normalized_provider == "alipay":
+            alipay = get_alipay()
+            if alipay.is_configured():
+                base = base_url or "http://localhost:8000"
+                notify_url = f"{base}/api/v1/payment/alipay/notify"
+                return_url = f"{base}/plans?payment_id={payment_id}"
+                checkout_url = alipay.create_page_pay(
+                    out_trade_no=payment_id,
+                    total_amount=f"{amount_yuan:.2f}",
+                    subject=plan.get("description", f"RobotCloud {target_role} Plan"),
+                    return_url=return_url,
+                    notify_url=notify_url,
+                )
+
+        if not checkout_url:
+            checkout_url = f"https://pay.robotcloud.local/{normalized_provider}/{pay_code}"
+
         payment = Payment.objects.create(
-            payment_id=self._generate_payment_id(),
+            payment_id=payment_id,
             user=user,
             target_role=target_role,
-            amount_cents=plan["amount_cents"],
+            amount_cents=amount_cents,
             currency=plan["currency"],
             provider=normalized_provider,
             description=plan.get("description", ""),
             metadata={
-                "display_amount": plan["amount_cents"],
+                "display_amount": amount_cents,
                 "currency": plan["currency"],
                 "pay_code": pay_code,
                 "checkout_url": checkout_url,
@@ -385,6 +454,66 @@ class RobotCloudService:
             return self._response(self._payment_to_dict(payment))
         payment.status = status_value
         payment.save(update_fields=["status", "updated_at"])
+        return self._response(self._payment_to_dict(payment))
+
+    def alipay_notify(self, data: Dict[str, str]) -> bool:
+        """Handle Alipay async notification callback."""
+        out_trade_no = data.get("out_trade_no", "")
+        trade_status = data.get("trade_status", "")
+
+        alipay = get_alipay()
+        if alipay.is_configured() and not alipay.verify_notify(data):
+            return False
+
+        if not out_trade_no:
+            return False
+
+        if trade_status not in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
+            return True
+
+        try:
+            payment = Payment.objects.get(payment_id=out_trade_no)
+        except Payment.DoesNotExist:
+            return False
+
+        if payment.status == Payment.STATUS_SUCCEEDED:
+            return True
+
+        total_amount = data.get("total_amount", "0")
+        try:
+            total_cents = int(float(total_amount) * 100)
+        except (ValueError, TypeError):
+            total_cents = 0
+
+        if total_cents > 0 and total_cents != payment.amount_cents:
+            return False
+
+        payment.status = Payment.STATUS_SUCCEEDED
+        payment.save(update_fields=["status", "updated_at"])
+        return True
+
+    def alipay_query(self, token: str, payment_id: str) -> Dict[str, Any]:
+        """Query Alipay order status and update local payment record."""
+        if not payment_id:
+            raise ValueError("Payment id required")
+        user = self._get_user_by_token(token)
+        try:
+            payment = Payment.objects.get(payment_id=payment_id, user=user)
+        except Payment.DoesNotExist:
+            raise ValueError("Payment not found")
+
+        if payment.status == Payment.STATUS_SUCCEEDED:
+            return self._response(self._payment_to_dict(payment))
+
+        alipay = get_alipay()
+        if alipay.is_configured():
+            result = alipay.query_order(payment_id)
+            if result:
+                trade_status = result.get("trade_status", "")
+                if trade_status in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
+                    payment.status = Payment.STATUS_SUCCEEDED
+                    payment.save(update_fields=["status", "updated_at"])
+
         return self._response(self._payment_to_dict(payment))
 
     def upgrade(self, token: str, target_role: str, payment_id: str) -> Dict[str, Any]:
@@ -912,6 +1041,16 @@ class RobotCloudService:
         return User.objects.create(
             phone=phone,
             password_hash=self._hash_password(password),
+            role=User.ROLE_FREE,
+            expire_at=now + timedelta(days=30),
+        )
+
+    def _create_user_without_password(self, phone: str) -> User:
+        """Create a user without password (for SMS code login)."""
+        now = timezone.now()
+        return User.objects.create(
+            phone=phone,
+            password_hash="",
             role=User.ROLE_FREE,
             expire_at=now + timedelta(days=30),
         )

@@ -117,6 +117,21 @@ class LoginView(RobotCloudAPIView):
         return self._execute(lambda: self._service().login(payload.get("phone", ""), payload.get("password", "")))
 
 
+class LoginWithCodeView(RobotCloudAPIView):
+    """Login or register with SMS verification code."""
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute(
+            lambda: self._service().login_with_code(
+                payload.get("phone", ""),
+                payload.get("code", ""),
+                payload.get("invitation_code"),
+            )
+        )
+
+
 class VerifyTokenView(RobotCloudAPIView):
     def get(self, request: Request) -> Response:
         return self._execute_with_token(request, lambda token: self._service().verify_token(token))
@@ -143,10 +158,11 @@ class PaymentCreateView(RobotCloudAPIView):
 
     def post(self, request: Request) -> Response:
         payload = request.data
+        base_url = request.build_absolute_uri("/").rstrip("/")
         return self._execute_with_token(
             request,
             lambda token: self._service().create_payment(
-                token, payload.get("target_role", ""), payload.get("provider", "mock")
+                token, payload.get("target_role", ""), payload.get("provider", "alipay"), base_url
             ),
         )
 
@@ -164,6 +180,30 @@ class PaymentMockCallbackView(RobotCloudAPIView):
         return self._execute(
             lambda: self._service().mock_payment_callback(payload.get("payment_id", ""), payload.get("status", "succeeded"))
         )
+
+
+class AlipayNotifyView(RobotCloudAPIView):
+    """Handle Alipay async notification callback."""
+    parser_classes = [JSONParser, MultiPartParser]
+
+    def post(self, request: Request) -> Response:
+        data = {}
+        if hasattr(request.data, "items"):
+            for key, value in request.data.items():
+                data[key] = str(value) if value else ""
+        else:
+            data = dict(request.data)
+
+        success = self._service().alipay_notify(data)
+        from django.http import HttpResponse
+        return HttpResponse("success" if success else "failure", content_type="text/plain")
+
+
+class AlipayQueryView(RobotCloudAPIView):
+    """Query Alipay order status."""
+
+    def get(self, request: Request, payment_id: str) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().alipay_query(token, payment_id))
 
 
 class UsageView(RobotCloudAPIView):

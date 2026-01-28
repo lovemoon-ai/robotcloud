@@ -234,6 +234,20 @@ export const robotCloudApi = {
       checkoutUrl: data.checkout_url
     };
   },
+  alipayQuery: async (paymentId: string): Promise<Payment> => {
+    const data = await request<BackendPayment>(`/payment/alipay/query/${paymentId}`);
+    return {
+      paymentId: data.payment_id,
+      targetRole: data.target_role,
+      amountCents: data.amount_cents,
+      currency: data.currency,
+      provider: data.provider,
+      status: data.status,
+      appliedAt: data.applied_at,
+      createdAt: data.created_at,
+      checkoutUrl: data.checkout_url
+    };
+  },
   mockPaymentCallback: async (paymentId: string, status: "succeeded" | "failed" | "canceled" = "succeeded"): Promise<Payment> => {
     const data = await request<BackendPayment>("/payment/callback/mock", {
       method: "POST",
@@ -268,11 +282,30 @@ export const robotCloudApi = {
     );
     return { content: data.content, nextOffset: data.next_offset, complete: data.complete };
   },
-  requestOtp: (phone: string) =>
-    request<{ sent: boolean }>("/auth/send_code", {
+  requestOtp: async (phone: string) => {
+    const data = await request<{ sent: boolean; code?: string }>("/auth/send_code", {
       method: "POST",
       body: JSON.stringify({ phone })
-    }),
+    });
+    return data;
+  },
+  loginWithCode: async (payload: { phone: string; code: string; invitationCode?: string }): Promise<AuthSession> => {
+    const data = await request<BackendLoginResponse>("/auth/login_code", {
+      method: "POST",
+      body: JSON.stringify({
+        phone: payload.phone,
+        code: payload.code,
+        invitation_code: payload.invitationCode
+      })
+    });
+    return {
+      token: data.token,
+      userId: data.user_id,
+      phone: data.phone,
+      role: data.role,
+      expireAt: data.expire_at
+    };
+  },
   verifyOtp: (payload: OtpPayload) =>
     request<{ user_id: number }>("/auth/register", {
       method: "POST",

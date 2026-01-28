@@ -221,7 +221,12 @@ export default function PlansPage() {
     setError(null);
     setRefreshing(true);
     try {
-      const updated = await robotCloudApi.paymentStatus(activePayment.paymentId);
+      let updated: Payment;
+      if (activePayment.provider === "alipay") {
+        updated = await robotCloudApi.alipayQuery(activePayment.paymentId);
+      } else {
+        updated = await robotCloudApi.paymentStatus(activePayment.paymentId);
+      }
       setActivePayment(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to refresh payment");

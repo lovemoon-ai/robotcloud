@@ -96,3 +96,77 @@ def test_register_with_invitation_without_sms(client: APIClient, create_invitati
         format="json",
     )
     assert login_resp.status_code == 200
+
+
+def test_login_with_code_new_user(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    """Test login with SMS code for a new user (auto-registration)."""
+    send_resp = client.post("/api/v1/auth/send_code", {"phone": "13800000010"}, format="json")
+    assert send_resp.status_code == 200
+    code = sms_gateway.get_code("13800000010")
+
+    login_resp = client.post(
+        "/api/v1/auth/login_code",
+        {"phone": "13800000010", "code": code},
+        format="json",
+    )
+    assert login_resp.status_code == 200
+    data = login_resp.json()["data"]
+    assert data["token"]
+    assert data["phone"] == "13800000010"
+    assert data["role"] == "free"
+
+
+def test_login_with_code_existing_user(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
+    """Test login with SMS code for an existing user."""
+    invitation_code = create_invitation(code="INV-TEST02")
+    client.post(
+        "/api/v1/auth/register_invite",
+        {"phone": "13800000011", "password": "pw123456", "invitation_code": invitation_code},
+        format="json",
+    )
+
+    send_resp = client.post("/api/v1/auth/send_code", {"phone": "13800000011"}, format="json")
+    assert send_resp.status_code == 200
+    code = sms_gateway.get_code("13800000011")
+
+    login_resp = client.post(
+        "/api/v1/auth/login_code",
+        {"phone": "13800000011", "code": code},
+        format="json",
+    )
+    assert login_resp.status_code == 200
+    data = login_resp.json()["data"]
+    assert data["token"]
+    assert data["phone"] == "13800000011"
+
+
+def test_login_with_code_invalid_code(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    """Test login with invalid SMS code."""
+    send_resp = client.post("/api/v1/auth/send_code", {"phone": "13800000012"}, format="json")
+    assert send_resp.status_code == 200
+
+    login_resp = client.post(
+        "/api/v1/auth/login_code",
+        {"phone": "13800000012", "code": "999999"},
+        format="json",
+    )
+    assert login_resp.status_code == 400
+    assert login_resp.json()["detail"] == "Invalid verification code"
+
+
+def test_login_with_code_and_invitation(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
+    """Test login with SMS code and invitation code for new user."""
+    invitation_code = create_invitation(code="INV-TEST03")
+    send_resp = client.post("/api/v1/auth/send_code", {"phone": "13800000013"}, format="json")
+    assert send_resp.status_code == 200
+    code = sms_gateway.get_code("13800000013")
+
+    login_resp = client.post(
+        "/api/v1/auth/login_code",
+        {"phone": "13800000013", "code": code, "invitation_code": invitation_code},
+        format="json",
+    )
+    assert login_resp.status_code == 200
+    data = login_resp.json()["data"]
+    assert data["token"]
+    assert data["phone"] == "13800000013"
