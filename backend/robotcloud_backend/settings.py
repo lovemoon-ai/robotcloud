@@ -208,3 +208,6 @@ ALIPAY_GATEWAY = os.getenv("ALIPAY_GATEWAY", "https://openapi.alipay.com/gateway
 # Payment Configuration
 # In development mode, use 1 cent (0.01 RMB) for testing
 PAYMENT_DEV_AMOUNT_CENTS = 1  # 0.01 RMB
+
+# Plus subscription price: 200 RMB/month (20000 cents)
+PLUS_PRICE_CNY = 20000

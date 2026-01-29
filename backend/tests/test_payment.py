@@ -2,12 +2,13 @@ from rest_framework.test import APIClient
 
 
 def test_payment_flow_and_upgrade_guardrails(client: APIClient, create_user_token, auth_header) -> None:
+    """Test Plus plan payment flow and upgrade - only Plus plan is available."""
     token = create_user_token("13800000002", "abcdef")
 
-    # Create payment for Pro
+    # Create payment for Plus (only Plus is available)
     create_resp = client.post(
         "/api/v1/payment/create",
-        {"target_role": "pro", "provider": "wechat"},
+        {"target_role": "plus", "provider": "alipay"},
         format="json",
         **auth_header(token),
     )
@@ -15,13 +16,12 @@ def test_payment_flow_and_upgrade_guardrails(client: APIClient, create_user_toke
     payment = create_resp.json()["data"]
     assert payment["status"] == "pending"
     payment_id = payment["payment_id"]
-    assert payment["provider"] == "wechat"
-    assert payment["pay_code"].startswith("PAY-wechat-")
+    assert payment["provider"] == "alipay"
 
     # Cannot upgrade while payment is pending
     pending_upgrade = client.post(
         "/api/v1/user/upgrade",
-        {"target_role": "pro", "payment_id": payment_id},
+        {"target_role": "plus", "payment_id": payment_id},
         format="json",
         **auth_header(token),
     )
@@ -41,17 +41,47 @@ def test_payment_flow_and_upgrade_guardrails(client: APIClient, create_user_toke
     assert status_resp.status_code == 200
     assert status_resp.json()["data"]["status"] == "succeeded"
 
-    # Upgrade now succeeds and stamps expire_at
+    # Upgrade now succeeds and stamps expire_at (30 days subscription)
     upgrade_resp = client.post(
         "/api/v1/user/upgrade",
-        {"target_role": "pro", "payment_id": payment_id},
+        {"target_role": "plus", "payment_id": payment_id},
         format="json",
         **auth_header(token),
     )
     assert upgrade_resp.status_code == 200
     upgrade_data = upgrade_resp.json()["data"]
-    assert upgrade_data["role"] == "pro"
+    assert upgrade_data["role"] == "plus"
     assert upgrade_data["expire_at"] is not None
+
+
+def test_pro_plan_not_available(client: APIClient, create_user_token, auth_header) -> None:
+    """Test that Pro plan is not available - only Plus is supported."""
+    token = create_user_token("13800000003", "pro_test")
+
+    # Attempt to create payment for Pro should fail
+    create_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "pro", "provider": "alipay"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp.status_code == 400
+    assert "only plus" in create_resp.json()["detail"].lower() or "unsupported" in create_resp.json()["detail"].lower()
+
+
+def test_wechat_not_supported(client: APIClient, create_user_token, auth_header) -> None:
+    """Test that WeChat Pay is not supported - only Alipay is supported."""
+    token = create_user_token("13800000004", "wechat_test")
+
+    # Attempt to use WeChat Pay should fail
+    create_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus", "provider": "wechat"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp.status_code == 400
+    assert "alipay" in create_resp.json()["detail"].lower()
 
 
 def test_alipay_payment_flow(client: APIClient, create_user_token, auth_header) -> None:
@@ -131,4 +161,45 @@ def test_dev_mode_payment_amount(client: APIClient, create_user_token, auth_head
     if settings.DEBUG:
         assert payment["amount_cents"] == 1
     else:
-        assert payment["amount_cents"] == 9900  # Normal Plus price
+        assert payment["amount_cents"] == 20000  # Plus price: 200 RMB
+
+
+def test_plus_user_cannot_upgrade_again(client: APIClient, create_user_token, auth_header) -> None:
+    """Test that Plus users cannot create another payment."""
+    # Create user and upgrade to Plus
+    token = create_user_token("13800000023", "plus_user")
+    
+    # First upgrade to Plus
+    create_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus", "provider": "alipay"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp.status_code == 200
+    payment_id = create_resp.json()["data"]["payment_id"]
+    
+    # Mark as succeeded
+    client.post(
+        "/api/v1/payment/callback/mock",
+        {"payment_id": payment_id, "status": "succeeded"},
+        format="json",
+    )
+    
+    # Apply upgrade
+    client.post(
+        "/api/v1/user/upgrade",
+        {"target_role": "plus", "payment_id": payment_id},
+        format="json",
+        **auth_header(token),
+    )
+    
+    # Try to create another payment - should fail
+    create_resp2 = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus", "provider": "alipay"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp2.status_code == 400
+    assert "only available for free" in create_resp2.json()["detail"].lower()

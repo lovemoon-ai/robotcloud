@@ -40,9 +40,9 @@ VERIFICATION_CODE_TIMEOUT_SECONDS = 5 * 60  # 5 minutes
 class RobotCloudService:
     """Domain service that encapsulates RobotCloud business logic."""
 
+    # Only Plus plan is available: 200 RMB/month (20000 cents)
     PLAN_PRICING = {
-        User.ROLE_PLUS: {"amount_cents": 9900, "currency": "CNY", "description": "Plus monthly plan"},
-        User.ROLE_PRO: {"amount_cents": 29900, "currency": "CNY", "description": "Pro monthly plan"},
+        User.ROLE_PLUS: {"amount_cents": 20000, "currency": "CNY", "description": "RobotCloud Plus Subscription - 1 month"},
     }
     TRAINING_PRIORITY_BY_ROLE = {
         User.ROLE_PRO: 100,
@@ -372,16 +372,20 @@ class RobotCloudService:
         )
 
     def create_payment(self, token: str, target_role: str, provider: str | None = None, base_url: str | None = None) -> Dict[str, Any]:
+        # Only Plus plan is supported
+        if target_role != User.ROLE_PLUS:
+            raise ValueError("Only Plus plan is available")
         if target_role not in self.PLAN_PRICING:
             raise ValueError("Unsupported target role")
         user = self._get_user_by_token(token)
-        allowed = [User.ROLE_FREE, User.ROLE_PLUS, User.ROLE_PRO]
-        if allowed.index(target_role) <= allowed.index(user.role):
-            raise ValueError("Upgrade target must be higher than current role")
+        # Only allow upgrade from Free to Plus
+        if user.role != User.ROLE_FREE:
+            raise ValueError("Upgrade is only available for Free users")
         plan = self.PLAN_PRICING[target_role]
+        # Only Alipay is supported
         normalized_provider = (provider or "alipay").lower()
-        if normalized_provider not in {"wechat", "alipay", "mock"}:
-            raise ValueError("Unsupported payment provider")
+        if normalized_provider != "alipay":
+            raise ValueError("Only Alipay is supported")
 
         is_dev = getattr(settings, "DEBUG", False)
         dev_amount = getattr(settings, "PAYMENT_DEV_AMOUNT_CENTS", 1)
@@ -517,12 +521,13 @@ class RobotCloudService:
         return self._response(self._payment_to_dict(payment))
 
     def upgrade(self, token: str, target_role: str, payment_id: str) -> Dict[str, Any]:
-        if target_role not in {User.ROLE_FREE, User.ROLE_PLUS, User.ROLE_PRO}:
-            raise ValueError("Invalid target role")
+        # Only Plus plan is supported
+        if target_role != User.ROLE_PLUS:
+            raise ValueError("Only Plus plan is available")
         user = self._get_user_by_token(token)
-        allowed = [User.ROLE_FREE, User.ROLE_PLUS, User.ROLE_PRO]
-        if allowed.index(target_role) < allowed.index(user.role):
-            raise ValueError("Cannot downgrade role")
+        # Only allow upgrade from Free to Plus
+        if user.role != User.ROLE_FREE:
+            raise ValueError("Upgrade is only available for Free users")
         if not payment_id:
             raise ValueError("Payment id required")
         try:
@@ -537,8 +542,9 @@ class RobotCloudService:
             raise ValueError("Payment does not match target role")
         if payment.applied_at:
             raise ValueError("Payment already applied")
+        # Activate Plus subscription for 30 days
         user.role = target_role
-        user.expire_at = (user.expire_at or timezone.now()) + timedelta(days=365)
+        user.expire_at = timezone.now() + timedelta(days=30)
         with transaction.atomic():
             user.save(update_fields=["role", "expire_at"])
             payment.applied_at = timezone.now()
