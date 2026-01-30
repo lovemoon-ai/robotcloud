@@ -4,14 +4,19 @@ from rest_framework.test import APIClient
 from robotcloud_backend.sms import InMemorySmsGateway
 
 
-def _setup_user_and_dataset(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation, phone: str) -> tuple[str, int]:
-    invitation_code = create_invitation()
-    register_resp = client.post(
-        "/api/v1/auth/register_invite",
-        {"phone": phone, "password": "trainpw", "invitation_code": invitation_code},
+def _setup_user_and_dataset(client: APIClient, sms_gateway: InMemorySmsGateway, phone: str) -> tuple[str, int]:
+    send_resp = client.post("/api/v1/auth/send_code", {"phone": phone}, format="json")
+    assert send_resp.status_code == 200
+    code = sms_gateway.get_code(phone)
+    client.post(
+        "/api/v1/auth/register",
+        {
+            "phone": phone,
+            "password": "trainpw",
+            "code": code,
+        },
         format="json",
     )
-    assert register_resp.status_code == 200
 
     login_resp = client.post(
         "/api/v1/auth/login",
@@ -32,8 +37,8 @@ def _setup_user_and_dataset(client: APIClient, sms_gateway: InMemorySmsGateway, 
     return token, dataset_id
 
 
-def test_delete_training_task(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
-    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, create_invitation, "13900000009")
+def test_delete_training_task(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13900000009")
 
     create_resp = client.post(
         "/api/v1/training/create",
@@ -69,4 +74,3 @@ def test_delete_training_task(client: APIClient, sms_gateway: InMemorySmsGateway
     )
     assert list_resp2.status_code == 200
     assert list_resp2.json()["data"]["total"] == 0
-

@@ -9,13 +9,20 @@ urlpatterns = [
     # Authentication
     path("auth/send_code", views.SendCodeView.as_view(), name="auth-send-code"),
     path("auth/register", views.RegisterView.as_view(), name="auth-register"),
-    path("auth/register_invite", views.RegisterInviteView.as_view(), name="auth-register-invite"),
+
     path("auth/login", views.LoginView.as_view(), name="auth-login"),
+    path("auth/login_code", views.LoginWithCodeView.as_view(), name="auth-login-code"),
     path("auth/verify_token", views.VerifyTokenView.as_view(), name="auth-verify-token"),
     # User
     path("user/profile", views.ProfileView.as_view(), name="user-profile"),
     path("user/upgrade", views.UpgradeView.as_view(), name="user-upgrade"),
     path("user/usage", views.UsageView.as_view(), name="user-usage"),
+    # Payment
+    path("payment/create", views.PaymentCreateView.as_view(), name="payment-create"),
+    path("payment/callback/mock", views.PaymentMockCallbackView.as_view(), name="payment-callback-mock"),
+    path("payment/alipay/notify", views.AlipayNotifyView.as_view(), name="payment-alipay-notify"),
+    path("payment/alipay/query/<str:payment_id>", views.AlipayQueryView.as_view(), name="payment-alipay-query"),
+    path("payment/<str:payment_id>", views.PaymentStatusView.as_view(), name="payment-status"),
     # Dashboard
     path("dashboard/summary", views.DashboardSummaryView.as_view(), name="dashboard-summary"),
     # Dataset

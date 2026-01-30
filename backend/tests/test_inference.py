@@ -4,18 +4,16 @@ from rest_framework.test import APIClient
 from robotcloud_backend.sms import InMemorySmsGateway
 
 
-def _prepare_dataset(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation) -> tuple[str, int]:
+def _prepare_dataset(client: APIClient, sms_gateway: InMemorySmsGateway) -> tuple[str, int]:
     send_resp = client.post("/api/v1/auth/send_code", {"phone": "13900000002"}, format="json")
     assert send_resp.status_code == 200
     code = sms_gateway.get_code("13900000002")
-    invitation_code = create_invitation()
     client.post(
         "/api/v1/auth/register",
         {
             "phone": "13900000002",
             "password": "inferpw",
             "code": code,
-            "invitation_code": invitation_code,
         },
         format="json",
     )
@@ -38,8 +36,8 @@ def _prepare_dataset(client: APIClient, sms_gateway: InMemorySmsGateway, create_
     return token, dataset_id
 
 
-def test_inference_flow(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
-    token, dataset_id = _prepare_dataset(client, sms_gateway, create_invitation)
+def test_inference_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    token, dataset_id = _prepare_dataset(client, sms_gateway)
 
     create_resp = client.post(
         "/api/v1/inference/create",

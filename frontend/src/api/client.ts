@@ -9,15 +9,15 @@ import {
   DatasetUploadInput,
   DatasetUploadResult,
   InferenceJob,
-  InviteRegistrationPayload,
   OtpPayload,
+  Payment,
   SimulatorSession,
   TrainingConfig,
   TrainingJob,
   UserRole
 } from "@/types";
 
-const DEFAULT_API_BASE = "http://localhost:8000/api/v1";
+const DEFAULT_API_BASE = "http://localhost:6150/api/v1";
 
 type RuntimeConfig = {
   publicRuntimeConfig?: {
@@ -90,6 +90,19 @@ type BackendAdminUser = {
   phone: string;
   role: UserRole;
   created_at: string;
+};
+
+type BackendPayment = {
+  payment_id: string;
+  target_role: UserRole;
+  amount_cents: number;
+  currency: string;
+  provider: string;
+  status: "pending" | "succeeded" | "failed" | "canceled";
+  applied_at: string | null;
+  created_at: string;
+  checkout_url?: string;
+  pay_code?: string;
 };
 
 type BackendLoginResponse = {
@@ -188,6 +201,80 @@ export const robotCloudApi = {
       expireAt: data.expire_at
     };
   },
+  createPayment: async (targetRole: UserRole, provider: string = "wechat"): Promise<Payment> => {
+    const data = await request<BackendPayment>("/payment/create", {
+      method: "POST",
+      body: JSON.stringify({ target_role: targetRole, provider })
+    });
+    return {
+      paymentId: data.payment_id,
+      targetRole: data.target_role,
+      amountCents: data.amount_cents,
+      currency: data.currency,
+      provider: data.provider,
+      status: data.status,
+      appliedAt: data.applied_at,
+      createdAt: data.created_at,
+      checkoutUrl: data.checkout_url,
+      payCode: data.pay_code
+    };
+  },
+  paymentStatus: async (paymentId: string): Promise<Payment> => {
+    const data = await request<BackendPayment>(`/payment/${paymentId}`);
+    return {
+      paymentId: data.payment_id,
+      targetRole: data.target_role,
+      amountCents: data.amount_cents,
+      currency: data.currency,
+      provider: data.provider,
+      status: data.status,
+      appliedAt: data.applied_at,
+      createdAt: data.created_at,
+      checkoutUrl: data.checkout_url
+    };
+  },
+  alipayQuery: async (paymentId: string): Promise<Payment> => {
+    const data = await request<BackendPayment>(`/payment/alipay/query/${paymentId}`);
+    return {
+      paymentId: data.payment_id,
+      targetRole: data.target_role,
+      amountCents: data.amount_cents,
+      currency: data.currency,
+      provider: data.provider,
+      status: data.status,
+      appliedAt: data.applied_at,
+      createdAt: data.created_at,
+      checkoutUrl: data.checkout_url
+    };
+  },
+  mockPaymentCallback: async (paymentId: string, status: "succeeded" | "failed" | "canceled" = "succeeded"): Promise<Payment> => {
+    const data = await request<BackendPayment>("/payment/callback/mock", {
+      method: "POST",
+      body: JSON.stringify({ payment_id: paymentId, status })
+    });
+    return {
+      paymentId: data.payment_id,
+      targetRole: data.target_role,
+      amountCents: data.amount_cents,
+      currency: data.currency,
+      provider: data.provider,
+      status: data.status,
+      appliedAt: data.applied_at,
+      createdAt: data.created_at,
+      checkoutUrl: data.checkout_url
+    };
+  },
+  upgradePlan: async (targetRole: UserRole, paymentId: string): Promise<{ role: UserRole; expireAt: string | null }> => {
+    const data = await request<{ role: UserRole; expire_at: string | null }>("/user/upgrade", {
+      method: "POST",
+      body: JSON.stringify({ target_role: targetRole, payment_id: paymentId })
+    });
+    return { role: data.role, expireAt: data.expire_at };
+  },
+  fetchProfile: async (): Promise<{ userId: number; phone: string; role: UserRole; expireAt: string | null }> => {
+    const data = await request<{ user_id: number; phone: string; role: UserRole; expire_at: string | null }>("/user/profile");
+    return { userId: data.user_id, phone: data.phone, role: data.role, expireAt: data.expire_at };
+  },
   fetchTrainingLog: async (
     params: { taskId: number; offset?: number; limit?: number }
   ): Promise<{ content: string; nextOffset: number; complete: boolean }> => {
@@ -198,28 +285,36 @@ export const robotCloudApi = {
     );
     return { content: data.content, nextOffset: data.next_offset, complete: data.complete };
   },
-  requestOtp: (phone: string) =>
-    request<{ sent: boolean }>("/auth/send_code", {
+  requestOtp: async (phone: string) => {
+    const data = await request<{ sent: boolean; code?: string }>("/auth/send_code", {
       method: "POST",
       body: JSON.stringify({ phone })
-    }),
+    });
+    return data;
+  },
+  loginWithCode: async (payload: { phone: string; code: string }): Promise<AuthSession> => {
+    const data = await request<BackendLoginResponse>("/auth/login_code", {
+      method: "POST",
+      body: JSON.stringify({
+        phone: payload.phone,
+        code: payload.code
+      })
+    });
+    return {
+      token: data.token,
+      userId: data.user_id,
+      phone: data.phone,
+      role: data.role,
+      expireAt: data.expire_at
+    };
+  },
   verifyOtp: (payload: OtpPayload) =>
     request<{ user_id: number }>("/auth/register", {
       method: "POST",
       body: JSON.stringify({
         phone: payload.phone,
         password: payload.password,
-        code: payload.code,
-        invitation_code: payload.invitationCode
-      })
-    }),
-  registerWithInvitation: (payload: InviteRegistrationPayload) =>
-    request<{ user_id: number }>("/auth/register_invite", {
-      method: "POST",
-      body: JSON.stringify({
-        phone: payload.phone,
-        password: payload.password,
-        invitation_code: payload.invitationCode
+        code: payload.code
       })
     }),
   fetchDashboard: async (): Promise<DashboardSummary> => {

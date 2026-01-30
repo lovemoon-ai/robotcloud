@@ -18,6 +18,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "django-cors-headers>=4.3",
     "requests>=2.31",
+    "whitenoise>=6.6",
+    "python-alipay-sdk>=3.0",
 ]
 
 [tool.setuptools]

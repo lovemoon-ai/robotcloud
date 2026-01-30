@@ -11,20 +11,17 @@ from robotcloud_backend.sms import InMemorySmsGateway
 def _setup_user_and_dataset(
     client: APIClient,
     sms_gateway: InMemorySmsGateway,
-    create_invitation,
     phone: str,
 ) -> tuple[str, int]:
     send_resp = client.post("/api/v1/auth/send_code", {"phone": phone}, format="json")
     assert send_resp.status_code == 200
     code = sms_gateway.get_code(phone)
-    invitation_code = create_invitation()
     client.post(
         "/api/v1/auth/register",
         {
             "phone": phone,
             "password": "trainpw",
             "code": code,
-            "invitation_code": invitation_code,
         },
         format="json",
     )
@@ -48,9 +45,9 @@ def _setup_user_and_dataset(
 
 
 def test_scheduler_assigns_and_updates_training_task(
-    client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation, monkeypatch
+    client: APIClient, sms_gateway: InMemorySmsGateway, monkeypatch
 ) -> None:
-    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, create_invitation, "13800000002")
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13800000002")
 
     register_resp = client.post(
         "/api/v1/internal/agent/register",

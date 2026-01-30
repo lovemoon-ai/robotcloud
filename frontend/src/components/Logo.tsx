@@ -7,35 +7,165 @@ export function Logo({ className = "h-9 w-auto", title = "RobotCloud" }: LogoPro
   return (
     <svg
       className={className}
-      viewBox="0 0 64 40"
+      viewBox="0 0 64 64"
       role="img"
       aria-label={title}
       xmlns="http://www.w3.org/2000/svg"
     >
-      <defs>
-        <linearGradient id="robotcloud-logo-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#5eead4" />
-          <stop offset="55%" stopColor="#2dd4bf" />
-          <stop offset="100%" stopColor="#0ea5e9" />
-        </linearGradient>
-      </defs>
+      {/* Cloud behind robot */}
       <path
-        fill="url(#robotcloud-logo-gradient)"
-        d="M22 32h20c6.627 0 12-5.373 12-12 0-5.351-3.546-9.884-8.543-11.422C43.812 4.416 38.342 0 32 0 25.218 0 19.527 4.935 18.44 11.323 13.188 12.507 9 17.055 9 22.667 9 28.557 13.612 32 22 32Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M44 52h12c4.4 0 8-3.6 8-8 0-3.6-2.4-6.6-5.7-7.6.1-.5.1-1 .1-1.4 0-5.5-4.5-10-10-10-1.4 0-2.7.3-3.9.8"
       />
-      <rect x="24" y="14" width="16" height="14" rx="5" fill="#0f172a" opacity="0.92" />
       <path
-        d="M32 6.75a2.75 2.75 0 0 0-2.75 2.75v2h5.5v-2A2.75 2.75 0 0 0 32 6.75Z"
-        fill="#0f172a"
-        opacity="0.72"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M52 44c2.2 0 4-1.8 4-4s-1.8-4-4-4"
       />
-      <circle cx="28.5" cy="21" r="2.2" fill="#f8fafc" />
-      <circle cx="35.5" cy="21" r="2.2" fill="#f8fafc" />
-      <circle cx="28.5" cy="21" r="1" fill="#0f172a" />
-      <circle cx="35.5" cy="21" r="1" fill="#0f172a" />
-      <rect x="29" y="25.5" width="6" height="1.5" rx="0.75" fill="#38bdf8" />
-      <rect x="31.25" y="4.2" width="1.5" height="3.2" rx="0.75" fill="#38bdf8" />
-      <circle cx="32" cy="3" r="1.4" fill="#38bdf8" />
+
+      {/* Robot antenna */}
+      <line
+        x1="24"
+        y1="12"
+        x2="24"
+        y2="6"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+      <circle
+        cx="24"
+        cy="4"
+        r="2.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+
+      {/* Robot head */}
+      <rect
+        x="10"
+        y="12"
+        width="28"
+        height="22"
+        rx="6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+      />
+
+      {/* Robot eyes */}
+      <circle cx="18" cy="22" r="3" fill="currentColor" />
+      <circle cx="30" cy="22" r="3" fill="currentColor" />
+
+      {/* Robot mouth */}
+      <line
+        x1="18"
+        y1="28"
+        x2="30"
+        y2="28"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+
+      {/* Robot ears */}
+      <rect
+        x="4"
+        y="18"
+        width="4"
+        height="8"
+        rx="1.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <rect
+        x="40"
+        y="18"
+        width="4"
+        height="8"
+        rx="1.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+
+      {/* Robot body */}
+      <rect
+        x="14"
+        y="36"
+        width="20"
+        height="16"
+        rx="3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+      />
+
+      {/* Robot body details */}
+      <circle cx="24" cy="42" r="2" fill="currentColor" />
+      <line
+        x1="20"
+        y1="47"
+        x2="28"
+        y2="47"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+
+      {/* Robot arms */}
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M14 40 L8 44 L8 50"
+      />
+      <circle cx="8" cy="52" r="2" fill="currentColor" />
+
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M34 40 L40 44 L40 50"
+      />
+      <circle cx="40" cy="52" r="2" fill="currentColor" />
+
+      {/* Robot legs */}
+      <line
+        x1="20"
+        y1="52"
+        x2="20"
+        y2="58"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+      <line
+        x1="28"
+        y1="52"
+        x2="28"
+        y2="58"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+
+      {/* Robot feet */}
+      <ellipse cx="20" cy="60" rx="3" ry="2" fill="none" stroke="currentColor" strokeWidth="2" />
+      <ellipse cx="28" cy="60" rx="3" ry="2" fill="none" stroke="currentColor" strokeWidth="2" />
     </svg>
   );
 }

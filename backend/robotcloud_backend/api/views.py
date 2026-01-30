@@ -10,10 +10,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .services import RobotCloudService
-from ..sms import ConsoleSmsGateway, SmsGateway
+from ..sms import ConsoleSmsGateway, SmsGateway, get_default_sms_gateway
 
 
-_sms_gateway: SmsGateway = ConsoleSmsGateway()
+_sms_gateway: SmsGateway = get_default_sms_gateway()
 _service: RobotCloudService | None = None
 
 
@@ -90,21 +90,6 @@ class RegisterView(RobotCloudAPIView):
                 payload.get("phone", ""),
                 payload.get("password", ""),
                 payload.get("code", ""),
-                payload.get("invitation_code", ""),
-            )
-        )
-
-
-class RegisterInviteView(RobotCloudAPIView):
-    parser_classes = [JSONParser]
-
-    def post(self, request: Request) -> Response:
-        payload = request.data
-        return self._execute(
-            lambda: self._service().register_with_invitation(
-                payload.get("phone", ""),
-                payload.get("password", ""),
-                payload.get("invitation_code", ""),
             )
         )
 
@@ -115,6 +100,20 @@ class LoginView(RobotCloudAPIView):
     def post(self, request: Request) -> Response:
         payload = request.data
         return self._execute(lambda: self._service().login(payload.get("phone", ""), payload.get("password", "")))
+
+
+class LoginWithCodeView(RobotCloudAPIView):
+    """Login or register with SMS verification code."""
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute(
+            lambda: self._service().login_with_code(
+                payload.get("phone", ""),
+                payload.get("code", ""),
+            )
+        )
 
 
 class VerifyTokenView(RobotCloudAPIView):
@@ -136,6 +135,59 @@ class UpgradeView(RobotCloudAPIView):
             request,
             lambda token: self._service().upgrade(token, payload.get("target_role", ""), payload.get("payment_id", "")),
         )
+
+
+class PaymentCreateView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        base_url = request.build_absolute_uri("/").rstrip("/")
+        return self._execute_with_token(
+            request,
+            lambda token: self._service().create_payment(
+                token, payload.get("target_role", ""), payload.get("provider", "alipay"), base_url
+            ),
+        )
+
+
+class PaymentStatusView(RobotCloudAPIView):
+    def get(self, request: Request, payment_id: str) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().payment_status(token, payment_id))
+
+
+class PaymentMockCallbackView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        return self._execute(
+            lambda: self._service().mock_payment_callback(payload.get("payment_id", ""), payload.get("status", "succeeded"))
+        )
+
+
+class AlipayNotifyView(RobotCloudAPIView):
+    """Handle Alipay async notification callback."""
+    parser_classes = [JSONParser, MultiPartParser]
+
+    def post(self, request: Request) -> Response:
+        data = {}
+        if hasattr(request.data, "items"):
+            for key, value in request.data.items():
+                data[key] = str(value) if value else ""
+        else:
+            data = dict(request.data)
+
+        success = self._service().alipay_notify(data)
+        from django.http import HttpResponse
+        return HttpResponse("success" if success else "failure", content_type="text/plain")
+
+
+class AlipayQueryView(RobotCloudAPIView):
+    """Query Alipay order status."""
+
+    def get(self, request: Request, payment_id: str) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().alipay_query(token, payment_id))
 
 
 class UsageView(RobotCloudAPIView):

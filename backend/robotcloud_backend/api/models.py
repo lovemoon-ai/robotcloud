@@ -170,28 +170,6 @@ class AdminLog(models.Model):
         return f"{self.action} ({self.target_type}#{self.target_id})"
 
 
-class InvitationCode(models.Model):
-    code = models.CharField(max_length=32, unique=True)
-    used = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-    used_at = models.DateTimeField(null=True, blank=True)
-    note = models.CharField(max_length=255, null=True, blank=True)
-    assigned_user = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        related_name="invitation_codes",
-        null=True,
-        blank=True,
-    )
-    assigned_phone = models.CharField(max_length=11, null=True, blank=True, validators=[PHONE_VALIDATOR])
-
-    class Meta:
-        ordering = ["code"]
-
-    def __str__(self) -> str:
-        return f"Invitation {self.code} ({'used' if self.used else 'available'})"
-
-
 class WorkerNode(models.Model):
     STATUS_ONLINE = "online"
     STATUS_OFFLINE = "offline"
@@ -219,3 +197,37 @@ class WorkerNode(models.Model):
 
     def __str__(self) -> str:
         return f"{self.node_name} ({self.status})"
+
+
+class Payment(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_SUCCEEDED = "succeeded"
+    STATUS_FAILED = "failed"
+    STATUS_CANCELED = "canceled"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_SUCCEEDED, "Succeeded"),
+        (STATUS_FAILED, "Failed"),
+        (STATUS_CANCELED, "Canceled"),
+    ]
+
+    payment_id = models.CharField(max_length=64, unique=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="payments")
+    target_role = models.CharField(max_length=16, choices=User.ROLE_CHOICES)
+    amount_cents = models.IntegerField()
+    currency = models.CharField(max_length=8, default="CNY")
+    provider = models.CharField(max_length=32, default="mock")
+    provider_reference = models.CharField(max_length=128, blank=True)
+    description = models.CharField(max_length=255, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    applied_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.payment_id} ({self.status})"

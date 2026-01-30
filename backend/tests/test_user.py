@@ -13,9 +13,23 @@ def test_profile(client: APIClient, create_user_token, auth_header) -> None:
 
 def test_upgrade_and_usage(client: APIClient, create_user_token, auth_header) -> None:
     token = create_user_token("13800000001", "abcdef")
+    payment_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus"},
+        format="json",
+        **auth_header(token),
+    )
+    assert payment_resp.status_code == 200
+    payment_id = payment_resp.json()["data"]["payment_id"]
+    callback_resp = client.post(
+        "/api/v1/payment/callback/mock",
+        {"payment_id": payment_id, "status": "succeeded"},
+        format="json",
+    )
+    assert callback_resp.status_code == 200
     upgrade_resp = client.post(
         "/api/v1/user/upgrade",
-        {"target_role": "plus", "payment_id": "pay_123"},
+        {"target_role": "plus", "payment_id": payment_id},
         format="json",
         **auth_header(token),
     )

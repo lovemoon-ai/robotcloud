@@ -7,13 +7,6 @@ export interface OtpPayload {
   phone: string;
   password: string;
   code: string;
-  invitationCode: string;
-}
-
-export interface InviteRegistrationPayload {
-  phone: string;
-  password: string;
-  invitationCode: string;
 }
 
 export type UserRole = "free" | "plus" | "pro" | "admin";
@@ -107,4 +100,19 @@ export interface AdminUser {
   phone: string;
   role: UserRole;
   createdAt: string;
+}
+
+export type PaymentStatus = "pending" | "succeeded" | "failed" | "canceled";
+
+export interface Payment {
+  paymentId: string;
+  targetRole: UserRole;
+  amountCents: number;
+  currency: string;
+  provider: string;
+  status: PaymentStatus;
+  appliedAt: string | null;
+  createdAt: string;
+  checkoutUrl?: string;
+  payCode?: string;
 }

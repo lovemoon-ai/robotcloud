@@ -6,10 +6,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load environment variables from .env if present
-load_dotenv()
-
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from .env if present (in project root)
+load_dotenv(BASE_DIR.parent / ".env")
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "robotcloud-development-secret-key")
 
@@ -43,6 +43,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -160,6 +161,16 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# Frontend static files (Next.js export output)
+STATICFILES_DIRS = [
+    BASE_DIR / "public",
+]
+
+# WhiteNoise configuration for serving static files
+WHITENOISE_ROOT = BASE_DIR / "public"
+WHITENOISE_INDEX_FILE = True
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -176,3 +187,27 @@ REST_FRAMEWORK = {
 }
 
 DATASET_STORAGE_DIR = Path(os.getenv("DATASET_STORAGE_DIR", BASE_DIR / "storage" / "datasets")).resolve()
+
+# SMS Configuration (Volcengine)
+VOLC_ACCESS_KEY_ID = os.getenv("VOLC_ACCESS_KEY_ID", "")
+VOLC_SECRET_ACCESS_KEY = os.getenv("VOLC_SECRET_ACCESS_KEY", "")
+VOLC_SMS_ACCOUNT = os.getenv("VOLC_SMS_ACCOUNT", "")
+VOLC_SMS_SIGN_NAME = os.getenv("VOLC_SMS_SIGN_NAME", "")
+VOLC_SMS_TEMPLATE_ID = os.getenv("VOLC_SMS_TEMPLATE_ID", "")
+
+# Auth Configuration
+# In development mode, use this fixed code instead of sending real SMS
+AUTH_DEV_CODE = os.getenv("AUTH_DEV_CODE", "000000" if DEBUG else "")
+
+# Alipay Configuration
+ALIPAY_APP_ID = os.getenv("ALIPAY_APP_ID", "")
+ALIPAY_PRIVATE_KEY = os.getenv("ALIPAY_PRIVATE_KEY", "")
+ALIPAY_PUBLIC_KEY = os.getenv("ALIPAY_PUBLIC_KEY", "")
+ALIPAY_GATEWAY = os.getenv("ALIPAY_GATEWAY", "https://openapi.alipay.com/gateway.do")
+
+# Payment Configuration
+# In development mode, use 1 cent (0.01 RMB) for testing
+PAYMENT_DEV_AMOUNT_CENTS = 1  # 0.01 RMB
+
+# Plus subscription price: 200 RMB/month (20000 cents)
+PLUS_PRICE_CNY = 20000

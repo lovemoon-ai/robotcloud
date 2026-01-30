@@ -93,44 +93,44 @@ export default function InferencePage() {
     <main className="space-y-6">
       <header className="space-y-2">
         <h1 className="text-3xl font-bold">{copy.title}</h1>
-        <p className="text-sm text-slate-300">{copy.subtitle}</p>
+        <p className="text-sm text-muted">{copy.subtitle}</p>
       </header>
       <section className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-        <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-          <h2 className="text-xl font-semibold text-teal-300">{copy.formHeading}</h2>
+        <div className="space-y-4 rounded-xl border border-theme p-5" style={{ backgroundColor: 'var(--color-card)' }}>
+          <h2 className="text-xl font-semibold accent-text">{copy.formHeading}</h2>
           <label className="block text-sm">
-            <span className="text-slate-300">{copy.datasetIdLabel}</span>
+            <span className="text-muted">{copy.datasetIdLabel}</span>
             <input
               value={datasetId}
               onChange={(event) => setDatasetId(event.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
+              className="mt-1 w-full rounded-md border border-theme bg-surface-secondary/50 p-2"
               placeholder={copy.datasetPlaceholder}
             />
           </label>
           <label className="block text-sm">
-            <span className="text-slate-300">{copy.modelIdLabel}</span>
+            <span className="text-muted">{copy.modelIdLabel}</span>
             <input
               value={modelId}
               onChange={(event) => setModelId(event.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
+              className="mt-1 w-full rounded-md border border-theme bg-surface-secondary/50 p-2"
               placeholder={copy.modelPlaceholder}
             />
           </label>
           <button
             onClick={runJob}
-            className="w-full rounded-md bg-teal-500 py-2 font-semibold text-slate-950 transition hover:bg-teal-400"
+            className="w-full rounded-md gradient-primary py-2 font-semibold text-inverse transition hover:bg-primary-hover"
             disabled={!datasetId || !modelId || mutation.isPending}
           >
             {mutation.isPending ? copy.submitting : copy.submit}
           </button>
         </div>
         <div className="space-y-3">
-          <h2 className="text-xl font-semibold text-teal-300">{copy.jobsHeading}</h2>
-          {loginNotice ? <p className="text-sm text-teal-200">{loginNotice}</p> : null}
+          <h2 className="text-xl font-semibold accent-text">{copy.jobsHeading}</h2>
+          {loginNotice ? <p className="text-sm text-body">{loginNotice}</p> : null}
           {!token ? (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-muted">
               {copy.loginPrompt}{" "}
-              <Link href="/login" className="text-teal-300 hover:text-teal-200">
+              <Link href="/login" className="accent-text hover:text-body">
                 {copy.loginLink}
               </Link>
             </p>
@@ -141,13 +141,13 @@ export default function InferencePage() {
             <div className="grid gap-3">
               {data?.map((job) => (
                 <Card key={job.id} title={copy.modelTitle(job.modelId)} description={copy.datasetLabel(job.datasetId)}>
-                  <p className="text-xs text-slate-300">{copy.statusLabel(job.status)}</p>
-                  <p className="text-[11px] text-slate-500">
+                  <p className="text-xs text-muted">{copy.statusLabel(job.status)}</p>
+                  <p className="text-[11px] text-muted">
                     {job.resultPath ? copy.resultLabel(job.resultPath) : copy.pending}
                   </p>
                 </Card>
               ))}
-              {!data?.length ? <p className="text-sm text-slate-400">{copy.empty}</p> : null}
+              {!data?.length ? <p className="text-sm text-muted">{copy.empty}</p> : null}
             </div>
           ) : null}
         </div>

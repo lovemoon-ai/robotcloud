@@ -68,10 +68,4 @@ class AdminLogAdmin(admin.ModelAdmin):
     list_select_related = ("admin",)
 
 
-@admin.register(models.InvitationCode)
-class InvitationCodeAdmin(admin.ModelAdmin):
-    list_display = ("code", "used", "assigned_user", "assigned_phone", "note", "created_at", "used_at")
-    list_filter = ("used",)
-    search_fields = ("code", "assigned_phone", "assigned_user__phone")
-    readonly_fields = ("created_at", "used_at")
-    list_select_related = ("assigned_user",)
+

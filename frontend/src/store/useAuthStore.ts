@@ -9,6 +9,7 @@ interface AuthState {
   userId?: number;
   expireAt?: string | null;
   setAuth: (session: AuthSession) => void;
+  setRole: (role: UserRole, expireAt?: string | null) => void;
   reset: () => void;
 }
 
@@ -62,6 +63,12 @@ export const useAuthStore = create<AuthState>()(
           userId: session.userId,
           expireAt: session.expireAt
         }),
+      setRole: (role, expireAt) =>
+        set((state) => ({
+          ...state,
+          role,
+          expireAt: expireAt ?? state.expireAt
+        })),
       reset: () => {
         set(initialState());
         if (typeof window !== "undefined" && window.localStorage) {
