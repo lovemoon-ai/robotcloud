@@ -28,8 +28,10 @@ test:
 build:
 	bash scripts/build_and_deploy.sh
 
-run: build
+run:
 	cd backend && USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 uv run python manage.py runserver $(BACKEND_HOST):$(BACKEND_PORT)
+
+build-run: build run
 
 ####### DEPLOY ########
 run-all:
