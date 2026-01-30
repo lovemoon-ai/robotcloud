@@ -29,7 +29,7 @@ build:
 	bash scripts/build_and_deploy.sh
 
 run:
-	cd backend && USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 uv run python manage.py runserver $(BACKEND_HOST):$(BACKEND_PORT)
+	cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) DJANGO_CORS_ALLOWED_ORIGINS=$(DJANGO_CORS_ALLOWED_ORIGINS) USE_IN_MEMORY_CACHE=1 uv run python manage.py runserver $(BACKEND_HOST):$(BACKEND_PORT) 
 
 build-run: build run
 

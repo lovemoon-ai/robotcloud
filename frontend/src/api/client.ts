@@ -33,8 +33,7 @@ const runtimeConfig: RuntimeConfig | undefined = (() => {
   }
 })();
 
-const RAW_API_BASE =
-  runtimeConfig?.publicRuntimeConfig?.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
+const RAW_API_BASE = runtimeConfig?.publicRuntimeConfig?.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
 const API_BASE = RAW_API_BASE.replace(/\/$/, "");
 
 interface ApiResponse<T> {
