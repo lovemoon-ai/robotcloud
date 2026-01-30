@@ -21,7 +21,6 @@ from .models import (
     AdminLog,
     Dataset,
     Device,
-    InvitationCode,
     InferenceTask,
     Payment,
     SimulationTask,
@@ -268,7 +267,7 @@ class RobotCloudService:
             self.sms_gateway.send_verification_code(phone, code)
         return self._response({"sent": True, "code": code if dev_code else None})
 
-    def login_with_code(self, phone: str, code: str, invitation_code: str | None = None) -> Dict[str, Any]:
+    def login_with_code(self, phone: str, code: str) -> Dict[str, Any]:
         """Login or register with SMS verification code."""
         self._ensure_phone(phone)
         if not code:
@@ -284,14 +283,8 @@ class RobotCloudService:
 
         user = User.objects.filter(phone=phone).first()
         if not user:
-            if invitation_code:
-                invitation = self._get_invitation(invitation_code)
-            else:
-                invitation = None
             with transaction.atomic():
                 user = self._create_user_without_password(phone)
-                if invitation:
-                    self._mark_invitation_used(invitation, user, phone)
             self.verification_cache.delete(self._verification_key(phone))
 
         token = secrets.token_urlsafe(16)
@@ -307,12 +300,11 @@ class RobotCloudService:
             }
         )
 
-    def register(self, phone: str, password: str, code: str, invitation_code: str) -> Dict[str, Any]:
+    def register(self, phone: str, password: str, code: str) -> Dict[str, Any]:
         self._ensure_phone(phone)
         self._ensure_password(password)
         if not code:
             raise ValueError("Verification code required")
-        invitation = self._get_invitation(invitation_code)
         stored_code = self.verification_cache.get(self._verification_key(phone))
         if stored_code != code:
             raise ValueError("Invalid verification code")
@@ -321,21 +313,10 @@ class RobotCloudService:
 
         with transaction.atomic():
             user = self._create_user(phone, password)
-            self._mark_invitation_used(invitation, user, phone)
             self.verification_cache.delete(self._verification_key(phone))
         return self._response({"user_id": user.id})
 
-    def register_with_invitation(self, phone: str, password: str, invitation_code: str) -> Dict[str, Any]:
-        self._ensure_phone(phone)
-        self._ensure_password(password)
-        invitation = self._get_invitation(invitation_code)
-        if User.objects.filter(phone=phone).exists():
-            raise ValueError("Phone already registered")
 
-        with transaction.atomic():
-            user = self._create_user(phone, password)
-            self._mark_invitation_used(invitation, user, phone)
-        return self._response({"user_id": user.id})
 
     def login(self, phone: str, password: str) -> Dict[str, Any]:
         self._ensure_phone(phone)
@@ -456,8 +437,22 @@ class RobotCloudService:
             raise ValueError("Payment not found")
         if payment.status == Payment.STATUS_SUCCEEDED:
             return self._response(self._payment_to_dict(payment))
-        payment.status = status_value
-        payment.save(update_fields=["status", "updated_at"])
+
+        # Update payment status and auto-apply upgrade if succeeded
+        with transaction.atomic():
+            payment.status = status_value
+            if status_value == Payment.STATUS_SUCCEEDED:
+                payment.applied_at = timezone.now()
+            payment.save(update_fields=["status", "applied_at", "updated_at"])
+
+            # Auto upgrade user role if payment succeeded
+            if status_value == Payment.STATUS_SUCCEEDED:
+                user = payment.user
+                if user.role == User.ROLE_FREE and payment.target_role == User.ROLE_PLUS:
+                    user.role = payment.target_role
+                    user.expire_at = timezone.now() + timedelta(days=30)
+                    user.save(update_fields=["role", "expire_at"])
+
         return self._response(self._payment_to_dict(payment))
 
     def alipay_notify(self, data: Dict[str, str]) -> bool:
@@ -492,8 +487,19 @@ class RobotCloudService:
         if total_cents > 0 and total_cents != payment.amount_cents:
             return False
 
-        payment.status = Payment.STATUS_SUCCEEDED
-        payment.save(update_fields=["status", "updated_at"])
+        # Update payment status and auto-apply upgrade
+        with transaction.atomic():
+            payment.status = Payment.STATUS_SUCCEEDED
+            payment.applied_at = timezone.now()
+            payment.save(update_fields=["status", "applied_at", "updated_at"])
+
+            # Auto upgrade user role
+            user = payment.user
+            if user.role == User.ROLE_FREE and payment.target_role == User.ROLE_PLUS:
+                user.role = payment.target_role
+                user.expire_at = timezone.now() + timedelta(days=30)
+                user.save(update_fields=["role", "expire_at"])
+
         return True
 
     def alipay_query(self, token: str, payment_id: str) -> Dict[str, Any]:
@@ -507,6 +513,15 @@ class RobotCloudService:
             raise ValueError("Payment not found")
 
         if payment.status == Payment.STATUS_SUCCEEDED:
+            # Payment already succeeded, ensure user role is upgraded
+            if user.role == User.ROLE_FREE and payment.target_role == User.ROLE_PLUS:
+                with transaction.atomic():
+                    user.role = payment.target_role
+                    user.expire_at = timezone.now() + timedelta(days=30)
+                    user.save(update_fields=["role", "expire_at"])
+                    if not payment.applied_at:
+                        payment.applied_at = timezone.now()
+                        payment.save(update_fields=["applied_at", "updated_at"])
             return self._response(self._payment_to_dict(payment))
 
         alipay = get_alipay()
@@ -515,8 +530,17 @@ class RobotCloudService:
             if result:
                 trade_status = result.get("trade_status", "")
                 if trade_status in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
-                    payment.status = Payment.STATUS_SUCCEEDED
-                    payment.save(update_fields=["status", "updated_at"])
+                    # Update payment status and auto-apply upgrade (same as alipay_notify)
+                    with transaction.atomic():
+                        payment.status = Payment.STATUS_SUCCEEDED
+                        payment.applied_at = timezone.now()
+                        payment.save(update_fields=["status", "applied_at", "updated_at"])
+
+                        # Auto upgrade user role
+                        if user.role == User.ROLE_FREE and payment.target_role == User.ROLE_PLUS:
+                            user.role = payment.target_role
+                            user.expire_at = timezone.now() + timedelta(days=30)
+                            user.save(update_fields=["role", "expire_at"])
 
         return self._response(self._payment_to_dict(payment))
 
@@ -1011,36 +1035,6 @@ class RobotCloudService:
             }
         )
 
-    # -------------------- Invitation utilities --------------------
-    def add_invitation_code(self, code: str, note: Optional[str] = None) -> InvitationCode:
-        if not code:
-            raise ValueError("Invitation code required")
-        invitation, created = InvitationCode.objects.get_or_create(code=code, defaults={"note": note})
-        if not created:
-            raise ValueError("Invitation code already exists")
-        if note and invitation.note != note:
-            invitation.note = note
-            invitation.save(update_fields=["note"])
-        return invitation
-
-    def generate_invitation_code(self, prefix: str = "INV", length: int = 8, note: Optional[str] = None) -> InvitationCode:
-        code = f"{prefix}-{secrets.token_hex(length // 2).upper()}"
-        return self.add_invitation_code(code, note)
-
-    def list_invitation_codes(self) -> Dict[str, Any]:
-        items = [
-            {
-                "code": inv.code,
-                "used": inv.used,
-                "used_at": inv.used_at.isoformat() if inv.used_at else None,
-                "assigned_user_id": inv.assigned_user_id,
-                "assigned_phone": inv.assigned_phone,
-                "note": inv.note,
-            }
-            for inv in InvitationCode.objects.all().order_by("code")
-        ]
-        return self._response({"items": items, "total": len(items)})
-
     # -------------------- Internal helpers --------------------
     def _create_user(self, phone: str, password: str) -> User:
         now = timezone.now()
@@ -1060,24 +1054,6 @@ class RobotCloudService:
             role=User.ROLE_FREE,
             expire_at=now + timedelta(days=30),
         )
-
-    def _mark_invitation_used(self, invitation: InvitationCode, user: User, phone: str) -> None:
-        invitation.used = True
-        invitation.used_at = timezone.now()
-        invitation.assigned_user = user
-        invitation.assigned_phone = phone
-        invitation.save(update_fields=["used", "used_at", "assigned_user", "assigned_phone"])
-
-    def _get_invitation(self, code: str) -> InvitationCode:
-        if not code:
-            raise ValueError("Invalid invitation code")
-        try:
-            invitation = InvitationCode.objects.get(code=code)
-        except InvitationCode.DoesNotExist as exc:
-            raise ValueError("Invalid invitation code") from exc
-        if invitation.used:
-            raise ValueError("Invitation code already used")
-        return invitation
 
     def _ensure_phone(self, phone: str) -> None:
         if not phone:
@@ -1108,9 +1084,20 @@ class RobotCloudService:
         if not user_id:
             raise ValueError("Invalid token")
         try:
-            return User.objects.get(id=user_id)
+            user = User.objects.get(id=user_id)
         except User.DoesNotExist as exc:
             raise ValueError("User not found") from exc
+        # Check subscription expiration and auto-downgrade
+        self._check_subscription_expiration(user)
+        return user
+
+    def _check_subscription_expiration(self, user: User) -> None:
+        """Check if user's subscription has expired and downgrade to free if so."""
+        if user.role in (User.ROLE_PLUS, User.ROLE_PRO) and user.expire_at:
+            if timezone.now() > user.expire_at:
+                user.role = User.ROLE_FREE
+                user.expire_at = None
+                user.save(update_fields=["role", "expire_at"])
 
     def _get_dataset(self, dataset_id: int) -> Dataset:
         try:

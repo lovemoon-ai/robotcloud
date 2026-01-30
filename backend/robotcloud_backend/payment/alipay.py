@@ -10,6 +10,22 @@ logger = logging.getLogger("robotcloud.payment.alipay")
 _alipay_instance: Optional[Any] = None
 
 
+def _to_pem(key: str, key_type: str) -> str:
+    """Convert raw base64 key to PEM format if needed."""
+    if not key or key.startswith("-----BEGIN"):
+        return key
+    # Wrap raw base64 in PEM headers
+    if key_type == "private":
+        header = "-----BEGIN RSA PRIVATE KEY-----"
+        footer = "-----END RSA PRIVATE KEY-----"
+    else:
+        header = "-----BEGIN PUBLIC KEY-----"
+        footer = "-----END PUBLIC KEY-----"
+    # Split into 64-char lines
+    lines = [key[i:i+64] for i in range(0, len(key), 64)]
+    return f"{header}\n" + "\n".join(lines) + f"\n{footer}"
+
+
 class AlipayClient:
     """Alipay SDK wrapper for payment processing."""
 
@@ -41,8 +57,8 @@ class AlipayClient:
             self._sdk = AliPay(
                 appid=self.app_id,
                 app_notify_url=None,
-                app_private_key_string=self.private_key,
-                alipay_public_key_string=self.public_key,
+                app_private_key_string=_to_pem(self.private_key, "private"),
+                alipay_public_key_string=_to_pem(self.public_key, "public"),
                 sign_type="RSA2",
                 debug=False,
             )
