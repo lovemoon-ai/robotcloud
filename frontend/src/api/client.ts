@@ -9,7 +9,6 @@ import {
   DatasetUploadInput,
   DatasetUploadResult,
   InferenceJob,
-  InviteRegistrationPayload,
   OtpPayload,
   Payment,
   SimulatorSession,
@@ -272,6 +271,10 @@ export const robotCloudApi = {
     });
     return { role: data.role, expireAt: data.expire_at };
   },
+  fetchProfile: async (): Promise<{ userId: number; phone: string; role: UserRole; expireAt: string | null }> => {
+    const data = await request<{ user_id: number; phone: string; role: UserRole; expire_at: string | null }>("/user/profile");
+    return { userId: data.user_id, phone: data.phone, role: data.role, expireAt: data.expire_at };
+  },
   fetchTrainingLog: async (
     params: { taskId: number; offset?: number; limit?: number }
   ): Promise<{ content: string; nextOffset: number; complete: boolean }> => {
@@ -289,13 +292,12 @@ export const robotCloudApi = {
     });
     return data;
   },
-  loginWithCode: async (payload: { phone: string; code: string; invitationCode?: string }): Promise<AuthSession> => {
+  loginWithCode: async (payload: { phone: string; code: string }): Promise<AuthSession> => {
     const data = await request<BackendLoginResponse>("/auth/login_code", {
       method: "POST",
       body: JSON.stringify({
         phone: payload.phone,
-        code: payload.code,
-        invitation_code: payload.invitationCode
+        code: payload.code
       })
     });
     return {
@@ -312,17 +314,7 @@ export const robotCloudApi = {
       body: JSON.stringify({
         phone: payload.phone,
         password: payload.password,
-        code: payload.code,
-        invitation_code: payload.invitationCode
-      })
-    }),
-  registerWithInvitation: (payload: InviteRegistrationPayload) =>
-    request<{ user_id: number }>("/auth/register_invite", {
-      method: "POST",
-      body: JSON.stringify({
-        phone: payload.phone,
-        password: payload.password,
-        invitation_code: payload.invitationCode
+        code: payload.code
       })
     }),
   fetchDashboard: async (): Promise<DashboardSummary> => {

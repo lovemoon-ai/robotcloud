@@ -23,19 +23,20 @@ export default function HomePage() {
   return (
     <main className="space-y-8">
       <header className="space-y-2">
-        <h1 className="text-4xl font-bold">{copy.title}</h1>
-        <p className="text-slate-300">{copy.description}</p>
+        <h1 className="text-4xl font-bold text-body">{copy.title}</h1>
+        <p className="text-muted">{copy.description}</p>
       </header>
       <section className="grid gap-4 md:grid-cols-2">
         {sections.map((section) => (
           <Link
             key={section.href}
             href={section.href}
-            className="rounded-xl border border-slate-800 bg-slate-900/60 p-6 shadow-lg transition hover:border-teal-400 hover:shadow-teal-500/20"
+            className="rounded-xl border border-theme p-6 shadow-lg transition hover:border-primary hover:shadow-primary/20"
+            style={{ backgroundColor: 'var(--color-card)' }}
           >
-            <h2 className="text-2xl font-semibold text-teal-300">{section.title}</h2>
-            <p className="mt-2 text-sm text-slate-300">{section.description}</p>
-            <span className="mt-4 inline-block text-sm text-teal-400">{copy.enter}</span>
+            <h2 className="text-2xl font-semibold accent-text">{section.title}</h2>
+            <p className="mt-2 text-sm text-muted">{section.description}</p>
+            <span className="mt-4 inline-block text-sm accent-text">{copy.enter}</span>
           </Link>
         ))}
       </section>

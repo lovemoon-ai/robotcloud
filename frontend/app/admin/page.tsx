@@ -46,7 +46,7 @@ export default function AdminPage() {
     return (
       <main className="space-y-4">
         <h1 className="text-3xl font-bold">{copy.title}</h1>
-        <p className="text-sm text-slate-300">{copy.restrictedMessage}</p>
+        <p className="text-sm text-muted">{copy.restrictedMessage}</p>
       </main>
     );
   }
@@ -55,26 +55,26 @@ export default function AdminPage() {
     <main className="space-y-6">
       <header className="space-y-2">
         <h1 className="text-3xl font-bold">{copy.title}</h1>
-        <p className="text-sm text-slate-300">{copy.subtitle}</p>
+        <p className="text-sm text-muted">{copy.subtitle}</p>
       </header>
       {!token ? (
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-muted">
           {copy.loginPrompt}
-          <Link href="/login" className="ml-1 text-teal-300 hover:text-teal-200">
+          <Link href="/login" className="ml-1 accent-text hover:opacity-80">
             {copy.loginLink}
           </Link>
         </p>
       ) : null}
       {token && isLoading ? <p>{copy.loading}</p> : null}
-      {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
+      {token && error instanceof Error ? <p className="text-red-500">{error.message}</p> : null}
       {token ? (
         <div className="space-y-3">
           {data?.map((user) => (
             <Card key={user.id} title={user.phone} description={copy.role(user.role)}>
-              <p className="text-xs text-slate-300">{copy.createdAt(new Date(user.createdAt).toLocaleString())}</p>
+              <p className="text-xs text-muted">{copy.createdAt(new Date(user.createdAt).toLocaleString())}</p>
             </Card>
           ))}
-          {!data?.length ? <p className="text-sm text-slate-400">{copy.empty}</p> : null}
+          {!data?.length ? <p className="text-sm text-muted">{copy.empty}</p> : null}
         </div>
       ) : null}
     </main>

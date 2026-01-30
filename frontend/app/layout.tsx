@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ReactQueryProvider } from "@/components/providers/ReactQueryProvider";
 import { AppChrome } from "@/components/AppChrome";
+import { ThemeInit } from "@/components/ThemeInit";
 
 export const metadata: Metadata = {
   title: "RobotCloud Platform",
@@ -20,8 +21,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
+        <ThemeInit />
         <ReactQueryProvider>
           <AppChrome>{children}</AppChrome>
         </ReactQueryProvider>

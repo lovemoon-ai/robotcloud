@@ -170,53 +170,53 @@ export default function DatasetsPage() {
     <main className="space-y-6">
       <header className="space-y-2">
         <h1 className="text-3xl font-bold">{copy.title}</h1>
-        <p className="text-sm text-slate-300">{copy.subtitle}</p>
+        <p className="text-sm text-muted">{copy.subtitle}</p>
       </header>
       <section className="grid gap-4 md:grid-cols-2">
-        <form onSubmit={onSubmit} className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-          <h2 className="text-xl font-semibold text-teal-300">{copy.upload.heading}</h2>
+        <form onSubmit={onSubmit} className="space-y-4 rounded-xl border border-theme bg-card p-5">
+          <h2 className="text-xl font-semibold accent-text">{copy.upload.heading}</h2>
           <label className="block text-sm">
-            <span className="text-slate-300">{copy.upload.nameLabel}</span>
+            <span className="text-muted">{copy.upload.nameLabel}</span>
             <input
               {...form.register("name", { required: copy.upload.nameRequired })}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
+              className="mt-1 w-full rounded-md border border-theme bg-surface p-2"
             />
           </label>
           <label className="block text-sm">
-            <span className="text-slate-300">{copy.upload.descriptionLabel}</span>
+            <span className="text-muted">{copy.upload.descriptionLabel}</span>
             <textarea
               {...form.register("description")}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
+              className="mt-1 w-full rounded-md border border-theme bg-surface p-2"
               rows={3}
               placeholder={copy.upload.descriptionPlaceholder}
             />
           </label>
           <label className="block text-sm">
-            <span className="text-slate-300">{copy.upload.fileLabel}</span>
+            <span className="text-muted">{copy.upload.fileLabel}</span>
             <input
               type="file"
               accept=".zip,.tar,.gz,.tgz,.rar"
               {...form.register("file", { required: copy.upload.fileRequired })}
-              className="mt-1 w-full rounded-md border border-dashed border-slate-700 bg-slate-950/50 p-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-teal-500 file:px-3 file:py-1 file:font-semibold file:text-slate-950 hover:file:bg-teal-400"
+              className="mt-1 w-full rounded-md border border-dashed border-theme bg-surface p-2 text-sm file:mr-3 file:rounded-md file:border-0 file:gradient-primary file:px-3 file:py-1 file:font-semibold file:text-on-primary hover:file:bg-primary"
             />
             {form.formState.errors.file ? (
               <span className="text-xs text-red-400">{form.formState.errors.file.message as string}</span>
             ) : null}
           </label>
           <label className="block text-sm">
-            <span className="text-slate-300">{copy.upload.visibilityLabel}</span>
+            <span className="text-muted">{copy.upload.visibilityLabel}</span>
             <select
               {...form.register("visibility")}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
+              className="mt-1 w-full rounded-md border border-theme bg-surface p-2"
             >
               <option value="private">{copy.upload.visibility.private}</option>
               <option value="public">{copy.upload.visibility.public}</option>
             </select>
           </label>
           {!token ? (
-            <p className="rounded-md border border-teal-500/30 bg-teal-500/10 p-3 text-sm text-teal-200">
+            <p className="rounded-md border border-primary/30 accent-bg p-3 text-sm text-primary-light">
               {copy.upload.notLoggedPrefix}
-              <Link href="/login" className="mx-1 text-teal-100 underline underline-offset-4">
+              <Link href="/login" className="mx-1 text-primary-lighter link">
                 {copy.upload.loginLink}
               </Link>
               {copy.upload.notLoggedSuffix}
@@ -224,20 +224,20 @@ export default function DatasetsPage() {
           ) : null}
           <button
             type="submit"
-            className="w-full rounded-md bg-teal-500 py-2 font-semibold text-slate-950 transition hover:bg-teal-400"
+            className="w-full rounded-md gradient-primary py-2 font-semibold text-on-primary transition hover:bg-primary"
             disabled={mutation.isPending}
           >
             {mutation.isPending ? copy.upload.uploading : copy.upload.uploadButton}
           </button>
           {formError ? <p className="text-sm text-red-400">{formError}</p> : null}
-          {success ? <p className="text-sm text-teal-300">{success}</p> : null}
+          {success ? <p className="text-sm accent-text">{success}</p> : null}
         </form>
         <div className="space-y-4">
-          <h2 className="text-xl font-semibold text-teal-300">{copy.list.heading}</h2>
+          <h2 className="text-xl font-semibold accent-text">{copy.list.heading}</h2>
           {!token ? (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-muted">
               {copy.list.loginPrompt}
-              <Link href="/login" className="ml-1 text-teal-300 hover:text-teal-200">
+              <Link href="/login" className="ml-1 accent-text hover:text-primary-light">
                 {copy.list.loginLink}
               </Link>
             </p>
@@ -248,7 +248,7 @@ export default function DatasetsPage() {
             <div className="space-y-3">
               {data?.map((dataset) => (
                 <Card key={dataset.id} title={dataset.name} description={dataset.description || copy.list.noDescription}>
-                  <div className="flex items-center justify-between text-xs text-slate-300">
+                  <div className="flex items-center justify-between text-xs text-muted">
                     <span>{copy.list.status(dataset.status)}</span>
                     <span>{copy.list.visibility(dataset.visibility)}</span>
                   </div>
@@ -265,15 +265,15 @@ export default function DatasetsPage() {
                       segments.push(copy.list.meta.preview);
                     }
                     return segments.length ? (
-                      <p className="mt-2 text-[11px] text-slate-400">{segments.join(" • ")}</p>
+                      <p className="mt-2 text-[11px] text-muted">{segments.join(" • ")}</p>
                     ) : null;
                   })()}
-                  <p className="mt-2 text-[11px] text-slate-500">
+                  <p className="mt-2 text-[11px] text-muted">
                     {copy.list.createdAt(new Date(dataset.createdAt).toLocaleString())}
                   </p>
                 </Card>
               ))}
-              {!data?.length ? <p className="text-sm text-slate-400">{copy.list.empty}</p> : null}
+              {!data?.length ? <p className="text-sm text-muted">{copy.list.empty}</p> : null}
             </div>
           ) : null}
         </div>

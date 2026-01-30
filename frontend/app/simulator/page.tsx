@@ -21,7 +21,7 @@ export default function SimulatorPage() {
   const copy = isZh
     ? {
         restrictedTitle: "仿真与硬件",
-        restrictedMessage: "仅 Pro 套餐可用，请升级后解锁 IsaacSim / Gazebo 云仿真能力。",
+        restrictedMessage: "待解锁 IsaacSim / Gazebo 云仿真能力。",
         title: "仿真与硬件控制台",
         subtitle: "管理仿真场景与已绑定的真实机器人设备。",
         loginPrompt: "请登录后查看仿真任务。",
@@ -35,7 +35,7 @@ export default function SimulatorPage() {
       }
     : {
         restrictedTitle: "Simulation & Hardware",
-        restrictedMessage: "Available to Pro plans only. Upgrade to unlock IsaacSim/Gazebo cloud simulation.",
+        restrictedMessage: "Wait to unlock IsaacSim/Gazebo cloud simulation.",
         title: "Simulation & Hardware Console",
         subtitle: "Manage simulation scenes and linked physical robots.",
         loginPrompt: "Log in to view simulation sessions.",
@@ -52,7 +52,7 @@ export default function SimulatorPage() {
     return (
       <main className="space-y-4">
         <h1 className="text-3xl font-bold">{copy.restrictedTitle}</h1>
-        <p className="text-sm text-slate-300">{copy.restrictedMessage}</p>
+        <p className="text-sm text-muted">{copy.restrictedMessage}</p>
       </main>
     );
   }
@@ -61,12 +61,12 @@ export default function SimulatorPage() {
     <main className="space-y-6">
       <header className="space-y-2">
         <h1 className="text-3xl font-bold">{copy.title}</h1>
-        <p className="text-sm text-slate-300">{copy.subtitle}</p>
+        <p className="text-sm text-muted">{copy.subtitle}</p>
       </header>
       {!token ? (
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-muted">
           {copy.loginPrompt}
-          <Link href="/login" className="ml-1 text-teal-300 hover:text-teal-200">
+          <Link href="/login" className="ml-1 accent-text hover:text-primary">
             {copy.loginLink}
           </Link>
         </p>
@@ -81,12 +81,12 @@ export default function SimulatorPage() {
               title={session.sceneFile}
               description={copy.cardDescription(session.status, session.robotType)}
             >
-              <p className="text-xs text-slate-300">{copy.jobId(session.id)}</p>
-              <p className="text-[11px] text-slate-500">{copy.modelMode(session.modelId, session.trainingMode)}</p>
-              <p className="text-[11px] text-slate-500">{copy.createdAt(new Date(session.createdAt).toLocaleString())}</p>
+              <p className="text-xs text-muted">{copy.jobId(session.id)}</p>
+              <p className="text-[11px] text-muted">{copy.modelMode(session.modelId, session.trainingMode)}</p>
+              <p className="text-[11px] text-muted">{copy.createdAt(new Date(session.createdAt).toLocaleString())}</p>
             </Card>
           ))}
-          {!data?.length ? <p className="text-sm text-slate-400">{copy.empty}</p> : null}
+          {!data?.length ? <p className="text-sm text-muted">{copy.empty}</p> : null}
         </div>
       ) : null}
     </main>

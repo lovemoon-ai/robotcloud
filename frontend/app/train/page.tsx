@@ -179,14 +179,14 @@ export default function TrainPage() {
     <main className="space-y-6">
       <header className="space-y-2">
         <h1 className="text-3xl font-bold">{copy.title}</h1>
-        <p className="text-sm text-slate-300">{copy.subtitle}</p>
+        <p className="text-sm text-muted">{copy.subtitle}</p>
       </header>
       <section className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-        <form onSubmit={onSubmit} className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-          <h2 className="text-xl font-semibold text-teal-300">{copy.formHeading}</h2>
+        <form onSubmit={onSubmit} className="space-y-3 rounded-xl border border-theme bg-card p-5">
+          <h2 className="text-xl font-semibold accent-text">{copy.formHeading}</h2>
           <label className="block text-sm">
-            <span className="text-slate-300">{copy.modelLabel}</span>
-            <select {...form.register("model")} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2">
+            <span className="text-muted">{copy.modelLabel}</span>
+            <select {...form.register("model")} className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2">
               <option value="ACT">ACT</option>
               <option value="DiffusionPolicy">DiffusionPolicy</option>
               <option value="SmolVLA">SmolVLA</option>
@@ -196,42 +196,42 @@ export default function TrainPage() {
             </select>
           </label>
           <label className="block text-sm">
-            <span className="text-slate-300">{copy.datasetLabel}</span>
+            <span className="text-muted">{copy.datasetLabel}</span>
             <input
               {...form.register("datasetId", { required: copy.datasetRequired })}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
+              className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2"
             />
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block text-sm">
-              <span className="text-slate-300">{copy.learningRateLabel}</span>
+              <span className="text-muted">{copy.learningRateLabel}</span>
               <input
                 type="number"
                 step="0.0001"
                 {...form.register("learningRate", { valueAsNumber: true })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
+                className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2"
               />
             </label>
             <label className="block text-sm">
-              <span className="text-slate-300">{copy.batchSizeLabel}</span>
+              <span className="text-muted">{copy.batchSizeLabel}</span>
               <input
                 type="number"
                 {...form.register("batchSize", { valueAsNumber: true })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
+                className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2"
               />
             </label>
           </div>
           <label className="block text-sm">
-            <span className="text-slate-300">{copy.epochsLabel}</span>
+            <span className="text-muted">{copy.epochsLabel}</span>
             <input
               type="number"
               {...form.register("steps", { valueAsNumber: true })}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
+              className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2"
             />
           </label>
           <button
             type="submit"
-            className="w-full rounded-md bg-teal-500 py-2 font-semibold text-slate-950 transition hover:bg-teal-400"
+            className="w-full rounded-md gradient-primary py-2 font-semibold text-white transition hover:opacity-90"
             disabled={mutation.isPending}
           >
             {mutation.isPending ? copy.submitting : copy.submit}
@@ -239,25 +239,25 @@ export default function TrainPage() {
         </form>
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
-            <h2 className="text-xl font-semibold text-teal-300">{copy.queueHeading}</h2>
-            {token ? <span className="text-xs text-slate-400">{copy.totalLabel(taskCount)}</span> : null}
+            <h2 className="text-xl font-semibold accent-text">{copy.queueHeading}</h2>
+            {token ? <span className="text-xs text-muted">{copy.totalLabel(taskCount)}</span> : null}
           </div>
-          {loginNotice ? <p className="text-sm text-teal-200">{loginNotice}</p> : null}
+          {loginNotice ? <p className="text-sm text-primary">{loginNotice}</p> : null}
           {!token ? (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-muted">
               {copy.loginPrompt}
-              <Link href="/login" className="ml-1 text-teal-300 hover:text-teal-200">
+              <Link href="/login" className="ml-1 accent-text hover:text-primary">
                 {copy.loginLink}
               </Link>
             </p>
           ) : null}
           {token && isLoading ? <p>{copy.loading}</p> : null}
-          {token && error instanceof Error ? <p className="text-red-400">{error.message}</p> : null}
+          {token && error instanceof Error ? <p className="text-red-500">{error.message}</p> : null}
           {token ? (
             <div className="grid max-h-[24rem] gap-2 overflow-y-auto pr-2">
               {data?.map((job) => (
                 <Card key={job.id} title={`${job.model} · ${job.status}`} compact>
-                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                  <div className="flex items-center justify-between text-[10px] text-muted">
                     <span>{copy.stats(job.datasetId.toString(), job.progress)}</span>
                     <div className="flex items-center gap-3">
                       {job.status === "queued" ? (
@@ -265,7 +265,7 @@ export default function TrainPage() {
                       ) : (
                         <button
                           onClick={() => openLog(job.id)}
-                          className="font-semibold text-teal-300 hover:text-teal-200"
+                          className="font-semibold accent-text hover:text-primary"
                           type="button"
                         >
                           {copy.logsLabel(true)}
@@ -274,7 +274,7 @@ export default function TrainPage() {
                       {job.status !== "running" ? (
                         <button
                           onClick={() => setDeleteTarget(job.id)}
-                          className="font-semibold text-red-400 hover:text-red-300"
+                          className="font-semibold text-red-500 hover:text-red-400"
                           type="button"
                         >
                           {copy.delete}
@@ -282,34 +282,34 @@ export default function TrainPage() {
                       ) : null}
                     </div>
                   </div>
-                  <div className="mt-2 h-1.5 rounded-full bg-slate-800">
-                    <div className="h-full rounded-full bg-teal-400 transition-all" style={{ width: `${job.progress}%` }} />
+                  <div className="mt-2 h-1.5 rounded-full bg-surface-secondary">
+                    <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${job.progress}%` }} />
                   </div>
                 </Card>
               ))}
-              {!data?.length ? <p className="text-sm text-slate-400">{copy.empty}</p> : null}
+              {!data?.length ? <p className="text-sm text-muted">{copy.empty}</p> : null}
             </div>
           ) : null}
         </div>
       </section>
       {logTaskId ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-3xl rounded-lg border border-slate-700 bg-slate-900 p-4 shadow-xl">
+          <div className="w-full max-w-3xl rounded-lg border border-theme p-4 shadow-xl" style={{ backgroundColor: 'var(--color-card)' }}>
             <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-teal-300">Task #{logTaskId} Logs</h3>
-              <button onClick={closeLog} className="text-slate-300 hover:text-white" type="button">
+              <h3 className="text-lg font-semibold accent-text">Task #{logTaskId} Logs</h3>
+              <button onClick={closeLog} className="text-muted hover:text-body" type="button">
                 Close
               </button>
             </div>
-            <div className="h-96 overflow-auto rounded bg-black p-3 text-xs text-slate-200">
+            <div className="h-96 overflow-auto rounded bg-black p-3 text-xs text-body">
               <pre className="whitespace-pre-wrap leading-relaxed">{logBuffer || (logError ? `Error: ${logError}` : "Waiting for logs...")}</pre>
             </div>
-            <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
+            <div className="mt-2 flex items-center justify-between text-xs text-muted">
               <span>Offset: {logOffset}{logComplete ? " · Completed" : ""}</span>
               {!logComplete ? (
                 <button
                   onClick={() => setPollTick((x) => x + 1)}
-                  className="text-teal-300 hover:text-teal-200"
+                  className="accent-text hover:text-primary"
                   type="button"
                 >
                   Refresh
@@ -321,16 +321,16 @@ export default function TrainPage() {
       ) : null}
       {deleteTarget ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-lg rounded-lg border border-slate-700 bg-slate-900 p-4 shadow-xl">
+          <div className="w-full max-w-lg rounded-lg border border-theme p-4 shadow-xl" style={{ backgroundColor: 'var(--color-card)' }}>
             <div className="mb-2">
-              <h3 className="text-lg font-semibold text-red-300">{copy.confirmDeleteTitle(deleteTarget)}</h3>
-              <p className="mt-1 text-sm text-slate-300">{copy.confirmDeleteMessage}</p>
-              {deleteError ? <p className="mt-2 text-sm text-red-400">{deleteError}</p> : null}
+              <h3 className="text-lg font-semibold text-red-500">{copy.confirmDeleteTitle(deleteTarget)}</h3>
+              <p className="mt-1 text-sm text-muted">{copy.confirmDeleteMessage}</p>
+              {deleteError ? <p className="mt-2 text-sm text-red-500">{deleteError}</p> : null}
             </div>
             <div className="mt-3 flex items-center justify-end gap-3">
               <button
                 onClick={() => setDeleteTarget(null)}
-                className="rounded-md border border-slate-600 px-3 py-1.5 text-slate-200 hover:bg-slate-800"
+                className="rounded-md border border-theme px-3 py-1.5 text-body hover:bg-surface-secondary"
                 type="button"
                 disabled={deleteMutation.isPending}
               >
@@ -338,7 +338,7 @@ export default function TrainPage() {
               </button>
               <button
                 onClick={() => deleteMutation.mutate(deleteTarget)}
-                className="rounded-md bg-red-500 px-3 py-1.5 font-semibold text-slate-950 hover:bg-red-400 disabled:opacity-60"
+                className="rounded-md bg-red-500 px-3 py-1.5 font-semibold text-white hover:opacity-90 disabled:opacity-60"
                 type="button"
                 disabled={deleteMutation.isPending}
               >

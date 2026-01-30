@@ -19,7 +19,7 @@ const sectionsByLocale = {
     },
     {
       title: "套餐购买",
-      description: "选择 Free / Plus / Pro 套餐，获取更高算力与并发。",
+      description: "选择 Free / Plus 套餐，获取更高算力与并发。",
       href: "/plans"
     },
     {
@@ -51,7 +51,7 @@ const sectionsByLocale = {
     },
     {
       title: "Plans",
-      description: "Pick the Free, Plus, or Pro plan to unlock more compute and concurrency.",
+      description: "Pick the Free, Plus plan to unlock more compute and concurrency.",
       href: "/plans"
     },
     {
