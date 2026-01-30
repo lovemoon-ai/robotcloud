@@ -25,6 +25,9 @@ test:
 	cd backend && USE_SQLITE_FOR_TESTS=1 USE_IN_MEMORY_CACHE=1 uv run python -m pytest
 	cd frontend && npm install && npm test
 
+migrate:
+	cd backend && uv run python manage.py migrate
+
 build:
 	bash scripts/build_and_deploy.sh
 
@@ -34,6 +37,10 @@ run:
 build-run: build run
 
 ####### DEPLOY ########
+serve:
+	cd backend && \
+	uv run gunicorn robotcloud_backend.wsgi:application -b $(BACKEND_HOST):$(BACKEND_PORT)
+
 run-all:
 	@set -e; \
 	( cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) DJANGO_CORS_ALLOWED_ORIGINS=$(DJANGO_CORS_ALLOWED_ORIGINS) USE_IN_MEMORY_CACHE=1 uv run python manage.py runserver $(BACKEND_HOST):$(BACKEND_PORT) ) & \

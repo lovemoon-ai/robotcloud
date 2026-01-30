@@ -118,7 +118,7 @@ export default function InferencePage() {
           </label>
           <button
             onClick={runJob}
-            className="w-full rounded-md gradient-primary py-2 font-semibold text-inverse transition hover:bg-primary-hover"
+            className="w-full rounded-md gradient-primary py-2 font-semibold text-white transition hover:bg-primary-hover"
             disabled={!datasetId || !modelId || mutation.isPending}
           >
             {mutation.isPending ? copy.submitting : copy.submit}
