@@ -186,6 +186,72 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload.data;
 }
 
+function uploadWithProgress<T>(
+  url: string,
+  body: FormData,
+  onProgress?: (percent: number) => void
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const token = useAuthStore.getState().token;
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && onProgress) {
+        const percent = Math.round((event.loaded / event.total) * 100);
+        onProgress(percent);
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const payload = JSON.parse(xhr.responseText) as ApiResponse<T>;
+          if (payload.code !== 0) {
+            reject(new Error(payload.message || "Request failed"));
+          } else {
+            resolve(payload.data);
+          }
+        } catch {
+          reject(new Error("Invalid response format"));
+        }
+      } else {
+        let message = xhr.responseText.trim();
+        try {
+          const parsed = JSON.parse(xhr.responseText);
+          if (typeof parsed.detail === "string" && parsed.detail) {
+            message = parsed.detail;
+          } else if (typeof parsed.message === "string" && parsed.message) {
+            message = parsed.message;
+          }
+        } catch {
+          // ignore
+        }
+        if (!message) {
+          message = `Request failed with status ${xhr.status}`;
+        }
+        if (isAuthError(xhr.status, message)) {
+          try {
+            useAuthStore.getState().reset();
+          } catch {
+            // ignore
+          }
+        }
+        reject(new Error(message));
+      }
+    };
+
+    xhr.onerror = () => {
+      reject(new Error("Network error"));
+    };
+
+    xhr.open("POST", url);
+    if (token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    }
+    xhr.send(body);
+  });
+}
+
 export const robotCloudApi = {
   loginWithPassword: async (payload: AuthCredentials): Promise<AuthSession> => {
     const data = await request<BackendLoginResponse>("/auth/login", {
@@ -341,22 +407,19 @@ export const robotCloudApi = {
       previewAvailable: Boolean(item.preview_available)
     }));
   },
-  uploadDataset: async (form: DatasetUploadInput) => {
+  uploadDataset: async (form: DatasetUploadInput & { onProgress?: (percent: number) => void }) => {
     const body = new FormData();
     body.append("file", form.file);
     body.append("name", form.name);
     body.append("description", form.description);
     body.append("visibility", form.visibility);
-    const response = await request<{
+    const response = await uploadWithProgress<{
       dataset_id: number;
       status: string;
       file_name: string;
       file_size: number;
       total_files: number;
-    }>("/dataset/upload", {
-      method: "POST",
-      body
-    });
+    }>(`${API_BASE}/dataset/upload`, body, form.onProgress);
     const result: DatasetUploadResult = {
       datasetId: response.dataset_id,
       status: response.status,
