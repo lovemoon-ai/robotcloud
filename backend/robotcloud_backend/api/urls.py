@@ -9,7 +9,7 @@ urlpatterns = [
     # Authentication
     path("auth/send_code", views.SendCodeView.as_view(), name="auth-send-code"),
     path("auth/register", views.RegisterView.as_view(), name="auth-register"),
-    path("auth/register_invite", views.RegisterInviteView.as_view(), name="auth-register-invite"),
+
     path("auth/login", views.LoginView.as_view(), name="auth-login"),
     path("auth/login_code", views.LoginWithCodeView.as_view(), name="auth-login-code"),
     path("auth/verify_token", views.VerifyTokenView.as_view(), name="auth-verify-token"),

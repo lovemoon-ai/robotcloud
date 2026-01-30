@@ -7,19 +7,16 @@ from robotcloud_backend.sms import InMemorySmsGateway
 def _create_user_with_dataset(
     client: APIClient,
     sms_gateway: InMemorySmsGateway,
-    create_invitation,
 ) -> int:
     send_resp = client.post("/api/v1/auth/send_code", {"phone": "13900000004"}, format="json")
     assert send_resp.status_code == 200
     code = sms_gateway.get_code("13900000004")
-    invitation_code = create_invitation()
     client.post(
         "/api/v1/auth/register",
         {
             "phone": "13900000004",
             "password": "adminpw",
             "code": code,
-            "invitation_code": invitation_code,
         },
         format="json",
     )
@@ -50,8 +47,8 @@ def _admin_token(client: APIClient) -> str:
     return login_resp.json()["data"]["token"]
 
 
-def test_admin_endpoints(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
-    dataset_id = _create_user_with_dataset(client, sms_gateway, create_invitation)
+def test_admin_endpoints(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    dataset_id = _create_user_with_dataset(client, sms_gateway)
     admin_token = _admin_token(client)
 
     users_resp = client.get(

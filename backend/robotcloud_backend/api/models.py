@@ -170,28 +170,6 @@ class AdminLog(models.Model):
         return f"{self.action} ({self.target_type}#{self.target_id})"
 
 
-class InvitationCode(models.Model):
-    code = models.CharField(max_length=32, unique=True)
-    used = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-    used_at = models.DateTimeField(null=True, blank=True)
-    note = models.CharField(max_length=255, null=True, blank=True)
-    assigned_user = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        related_name="invitation_codes",
-        null=True,
-        blank=True,
-    )
-    assigned_phone = models.CharField(max_length=11, null=True, blank=True, validators=[PHONE_VALIDATOR])
-
-    class Meta:
-        ordering = ["code"]
-
-    def __str__(self) -> str:
-        return f"Invitation {self.code} ({'used' if self.used else 'available'})"
-
-
 class WorkerNode(models.Model):
     STATUS_ONLINE = "online"
     STATUS_OFFLINE = "offline"

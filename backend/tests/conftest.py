@@ -41,18 +41,6 @@ def client(db, sms_gateway: InMemorySmsGateway) -> APIClient:
 
 
 @pytest.fixture
-def create_invitation(db, sms_gateway: InMemorySmsGateway) -> Callable[..., str]:
-    service = get_service()
-
-    def _create(code: str | None = None, note: str | None = None) -> str:
-        actual_code = code or f"INV-{os.urandom(4).hex().upper()}"
-        service.add_invitation_code(actual_code, note)
-        return actual_code
-
-    return _create
-
-
-@pytest.fixture
 def auth_header() -> Callable[[str], Dict[str, str]]:
     def _builder(token: str) -> Dict[str, str]:
         return {"HTTP_AUTHORIZATION": f"Bearer {token}"}
@@ -65,13 +53,16 @@ def create_user_token(
     db,
     client: APIClient,
     sms_gateway: InMemorySmsGateway,
-    create_invitation: Callable[..., str],
 ) -> Callable[[str, str], str]:
     def _create(phone: str = "13800000000", password: str = "123456") -> str:
-        invitation_code = create_invitation()
+        # Register with SMS code
+        send_resp = client.post("/api/v1/auth/send_code", {"phone": phone}, format="json")
+        assert send_resp.status_code == 200
+        code = sms_gateway.get_code(phone)
+
         register_resp = client.post(
-            "/api/v1/auth/register_invite",
-            {"phone": phone, "password": password, "invitation_code": invitation_code},
+            "/api/v1/auth/register",
+            {"phone": phone, "password": password, "code": code},
             format="json",
         )
         assert register_resp.status_code == 200

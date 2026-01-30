@@ -90,21 +90,6 @@ class RegisterView(RobotCloudAPIView):
                 payload.get("phone", ""),
                 payload.get("password", ""),
                 payload.get("code", ""),
-                payload.get("invitation_code", ""),
-            )
-        )
-
-
-class RegisterInviteView(RobotCloudAPIView):
-    parser_classes = [JSONParser]
-
-    def post(self, request: Request) -> Response:
-        payload = request.data
-        return self._execute(
-            lambda: self._service().register_with_invitation(
-                payload.get("phone", ""),
-                payload.get("password", ""),
-                payload.get("invitation_code", ""),
             )
         )
 
@@ -127,7 +112,6 @@ class LoginWithCodeView(RobotCloudAPIView):
             lambda: self._service().login_with_code(
                 payload.get("phone", ""),
                 payload.get("code", ""),
-                payload.get("invitation_code"),
             )
         )
 

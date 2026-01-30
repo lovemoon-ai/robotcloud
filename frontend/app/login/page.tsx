@@ -11,13 +11,12 @@ import { useLocaleStore } from "@/store/useLocaleStore";
 type LoginFormValues = {
   phone: string;
   code: string;
-  invitationCode: string;
 };
 
 export default function LoginPage() {
   const locale = useLocaleStore((state) => state.locale);
   const form = useForm<LoginFormValues>({
-    defaultValues: { phone: "", code: "", invitationCode: "" }
+    defaultValues: { phone: "", code: "" }
   });
   const setAuth = useAuthStore((state) => state.setAuth);
   const [message, setMessage] = useState<string | null>(null);
@@ -25,7 +24,6 @@ export default function LoginPage() {
   const [codeSent, setCodeSent] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [devCode, setDevCode] = useState<string | null>(null);
-  const [showInviteCode, setShowInviteCode] = useState(false);
   const router = useRouter();
   const isZh = locale === "zh";
 
@@ -43,8 +41,6 @@ export default function LoginPage() {
         sendCode: "获取验证码",
         sendingCode: "发送中...",
         resendCode: (s: number) => `${s}秒后重发`,
-        invitationLabel: "邀请码（可选）",
-        invitationPlaceholder: "请输入邀请码",
         submitLogin: "登录 / 注册",
         submittingLogin: "登录中...",
         loginSuccess: (phone: string) => `欢迎，${phone}！`,
@@ -52,8 +48,7 @@ export default function LoginPage() {
         devCodeHint: (code: string) => `开发模式验证码：${code}`,
         genericError: "登录失败",
         footerPrompt: "还没有账号？",
-        footerLink: "了解平台功能",
-        showInviteCode: "有邀请码？"
+        footerLink: "了解平台功能"
       }
     : {
         title: "Phone Login",
@@ -68,8 +63,6 @@ export default function LoginPage() {
         sendCode: "Send Code",
         sendingCode: "Sending...",
         resendCode: (s: number) => `Resend in ${s}s`,
-        invitationLabel: "Invitation Code (Optional)",
-        invitationPlaceholder: "Enter invitation code",
         submitLogin: "Login / Register",
         submittingLogin: "Logging in...",
         loginSuccess: (phone: string) => `Welcome, ${phone}!`,
@@ -77,8 +70,7 @@ export default function LoginPage() {
         devCodeHint: (code: string) => `Dev mode code: ${code}`,
         genericError: "Login failed",
         footerPrompt: "Don't have an account?",
-        footerLink: "Explore the platform",
-        showInviteCode: "Have an invite code?"
+        footerLink: "Explore the platform"
       };
 
   useEffect(() => {
@@ -115,8 +107,7 @@ export default function LoginPage() {
     try {
       const session = await robotCloudApi.loginWithCode({
         phone: values.phone,
-        code: values.code,
-        invitationCode: values.invitationCode || undefined
+        code: values.code
       });
       setAuth(session);
       setMessage(copy.loginSuccess(session.phone));
@@ -134,12 +125,16 @@ export default function LoginPage() {
   return (
     <main className="mx-auto max-w-xl space-y-6">
       <header className="space-y-2 text-center">
-        <h1 className="text-3xl font-bold">{copy.title}</h1>
-        <p className="text-sm text-slate-300">{copy.subtitle}</p>
+        <h1 className="text-3xl font-bold text-body">{copy.title}</h1>
+        <p className="text-sm text-muted">{copy.subtitle}</p>
       </header>
-      <form onSubmit={onSubmit} className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-6">
+      <form 
+        onSubmit={onSubmit} 
+        className="space-y-4 rounded-xl border border-theme p-6"
+        style={{ backgroundColor: 'var(--color-card)' }}
+      >
         <label className="block space-y-1 text-sm">
-          <span className="text-slate-300">{copy.phoneLabel}</span>
+          <span className="text-muted">{copy.phoneLabel}</span>
           <input
             {...form.register("phone", {
               required: copy.phoneRequired,
@@ -148,19 +143,19 @@ export default function LoginPage() {
                 message: copy.phoneInvalid
               }
             })}
-            className="w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
+            className="w-full rounded-md border border-theme p-2 bg-surface text-body"
             placeholder={copy.phonePlaceholder}
           />
           {form.formState.errors.phone ? (
-            <span className="text-xs text-red-400">{form.formState.errors.phone.message}</span>
+            <span className="text-xs text-red-500">{form.formState.errors.phone.message}</span>
           ) : null}
         </label>
         <label className="block space-y-1 text-sm">
-          <span className="text-slate-300">{copy.codeLabel}</span>
+          <span className="text-muted">{copy.codeLabel}</span>
           <div className="flex gap-2">
             <input
               {...form.register("code", { required: copy.codeRequired })}
-              className="flex-1 rounded-md border border-slate-700 bg-slate-950/50 p-2"
+              className="flex-1 rounded-md border border-theme p-2 bg-surface text-body"
               placeholder={copy.codePlaceholder}
               maxLength={6}
             />
@@ -168,49 +163,31 @@ export default function LoginPage() {
               type="button"
               onClick={handleSendCode}
               disabled={countdown > 0}
-              className="rounded-md border border-teal-500 px-4 py-2 text-sm font-semibold text-teal-300 transition hover:bg-teal-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-md border border-primary px-4 py-2 text-sm font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
             >
               {countdown > 0 ? copy.resendCode(countdown) : copy.sendCode}
             </button>
           </div>
           {form.formState.errors.code ? (
-            <span className="text-xs text-red-400">{form.formState.errors.code.message}</span>
+            <span className="text-xs text-red-500">{form.formState.errors.code.message}</span>
           ) : null}
           {devCode ? (
-            <span className="text-xs text-teal-400">{copy.devCodeHint(devCode)}</span>
+            <span className="text-xs accent-text">{copy.devCodeHint(devCode)}</span>
           ) : null}
         </label>
-        {!showInviteCode ? (
-          <button
-            type="button"
-            onClick={() => setShowInviteCode(true)}
-            className="text-xs text-teal-400 hover:text-teal-300"
-          >
-            {copy.showInviteCode}
-          </button>
-        ) : (
-          <label className="block space-y-1 text-sm">
-            <span className="text-slate-300">{copy.invitationLabel}</span>
-            <input
-              {...form.register("invitationCode")}
-              className="w-full rounded-md border border-slate-700 bg-slate-950/50 p-2"
-              placeholder={copy.invitationPlaceholder}
-            />
-          </label>
-        )}
         <button
           type="submit"
-          className="w-full rounded-md bg-teal-500 py-2 font-semibold text-slate-950 transition hover:bg-teal-400"
+          className="w-full rounded-md py-2 font-semibold text-white transition hover:opacity-90 gradient-primary"
           disabled={form.formState.isSubmitting}
         >
           {form.formState.isSubmitting ? copy.submittingLogin : copy.submitLogin}
         </button>
-        {message ? <p className="text-sm text-teal-300">{message}</p> : null}
-        {error ? <p className="text-sm text-red-400">{error}</p> : null}
+        {message ? <p className="text-sm accent-text">{message}</p> : null}
+        {error ? <p className="text-sm text-red-500">{error}</p> : null}
       </form>
-      <footer className="text-center text-xs text-slate-500">
+      <footer className="text-center text-xs text-muted">
         {copy.footerPrompt}{" "}
-        <Link href="/" className="text-teal-300 hover:text-teal-200">
+        <Link href="/" className="accent-text hover:opacity-80">
           {copy.footerLink}
         </Link>
       </footer>

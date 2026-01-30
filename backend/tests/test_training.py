@@ -4,18 +4,16 @@ from rest_framework.test import APIClient
 from robotcloud_backend.sms import InMemorySmsGateway
 
 
-def _setup_user_and_dataset(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation, phone: str) -> tuple[str, int]:
+def _setup_user_and_dataset(client: APIClient, sms_gateway: InMemorySmsGateway, phone: str) -> tuple[str, int]:
     send_resp = client.post("/api/v1/auth/send_code", {"phone": phone}, format="json")
     assert send_resp.status_code == 200
     code = sms_gateway.get_code(phone)
-    invitation_code = create_invitation()
     client.post(
         "/api/v1/auth/register",
         {
             "phone": phone,
             "password": "trainpw",
             "code": code,
-            "invitation_code": invitation_code,
         },
         format="json",
     )
@@ -38,8 +36,8 @@ def _setup_user_and_dataset(client: APIClient, sms_gateway: InMemorySmsGateway, 
     return token, dataset_id
 
 
-def test_training_lifecycle(client: APIClient, sms_gateway: InMemorySmsGateway, create_invitation) -> None:
-    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, create_invitation, "13900000001")
+def test_training_lifecycle(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13900000001")
 
     create_resp = client.post(
         "/api/v1/training/create",
