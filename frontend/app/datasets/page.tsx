@@ -202,7 +202,7 @@ export default function DatasetsPage() {
               type="file"
               accept=".zip,.tar,.gz,.tgz,.rar"
               {...form.register("file", { required: copy.upload.fileRequired })}
-              className="mt-1 w-full rounded-md border border-dashed border-theme bg-surface p-2 text-sm file:mr-3 file:rounded-md file:border-0 file:gradient-primary file:px-3 file:py-1 file:font-semibold file:text-on-primary hover:file:bg-primary"
+              className="mt-1 w-full rounded-md border border-dashed border-theme bg-surface p-2 text-sm file:mr-3 file:rounded-md file:border-0 file:gradient-primary file:px-3 file:py-1 file:font-semibold file:text-white hover:file:bg-primary"
             />
             {form.formState.errors.file ? (
               <span className="text-xs text-red-400">{form.formState.errors.file.message as string}</span>
@@ -229,7 +229,7 @@ export default function DatasetsPage() {
           ) : null}
           <button
             type="submit"
-            className="w-full rounded-md gradient-primary py-2 font-semibold text-on-primary transition hover:bg-primary"
+            className="w-full rounded-md gradient-primary py-2 font-semibold text-white transition hover:bg-primary"
             disabled={mutation.isPending}
           >
             {mutation.isPending ? `${copy.upload.uploading} ${uploadProgress}%` : copy.upload.uploadButton}
