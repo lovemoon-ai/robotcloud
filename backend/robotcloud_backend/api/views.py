@@ -237,6 +237,11 @@ class DatasetPreviewView(RobotCloudAPIView):
         return self._execute(lambda: self._service().dataset_preview(dataset_id))
 
 
+class DatasetDeleteView(RobotCloudAPIView):
+    def post(self, request: Request, dataset_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().delete_dataset(token, dataset_id))
+
+
 class TrainingCreateView(RobotCloudAPIView):
     parser_classes = [JSONParser]
 

@@ -76,7 +76,11 @@ export default function DatasetsPage() {
             files: (count: number) => `文件数：${count}`,
             size: (size: string) => `总大小：${size}`,
             preview: "预览可用"
-          }
+          },
+          deleteButton: "删除",
+          deleteConfirm: "确定要删除这个数据集吗？此操作不可撤销。",
+          deleteSuccess: "数据集已删除",
+          deleteError: "删除失败，请稍后重试。"
         }
       }
     : {
@@ -120,7 +124,11 @@ export default function DatasetsPage() {
             files: (count: number) => `Files: ${count}`,
             size: (size: string) => `Size: ${size}`,
             preview: "Preview available"
-          }
+          },
+          deleteButton: "Delete",
+          deleteConfirm: "Are you sure you want to delete this dataset? This action cannot be undone.",
+          deleteSuccess: "Dataset deleted",
+          deleteError: "Delete failed, please try again later."
         }
       };
   const formatBytes = (size?: number | null): string | null => {
@@ -147,6 +155,24 @@ export default function DatasetsPage() {
       setFormError(uploadError instanceof Error ? uploadError.message : copy.upload.fallbackError);
     }
   });
+
+  const deleteMutation = useMutation({
+    mutationFn: robotCloudApi.deleteDataset,
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["datasets"] });
+    }
+  });
+
+  const handleDelete = async (datasetId: number) => {
+    if (!window.confirm(copy.list.deleteConfirm)) {
+      return;
+    }
+    try {
+      await deleteMutation.mutateAsync(datasetId);
+    } catch {
+      // Error is handled by mutation state
+    }
+  };
 
   const onSubmit = form.handleSubmit(async (values) => {
     if (!token) {
@@ -273,9 +299,19 @@ export default function DatasetsPage() {
                       <p className="mt-2 text-[11px] text-muted">{segments.join(" • ")}</p>
                     ) : null;
                   })()}
-                  <p className="mt-2 text-[11px] text-muted">
-                    {copy.list.createdAt(new Date(dataset.createdAt).toLocaleString())}
-                  </p>
+                  <div className="mt-2 flex items-center justify-between">
+                    <p className="text-[11px] text-muted">
+                      {copy.list.createdAt(new Date(dataset.createdAt).toLocaleString())}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(dataset.id)}
+                      disabled={deleteMutation.isPending}
+                      className="rounded px-2 py-1 text-xs text-red-500 hover:bg-red-500/10 transition disabled:opacity-50"
+                    >
+                      {copy.list.deleteButton}
+                    </button>
+                  </div>
                 </Card>
               ))}
               {!data?.length ? <p className="text-sm text-muted">{copy.list.empty}</p> : null}
