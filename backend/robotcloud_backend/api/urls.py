@@ -31,6 +31,7 @@ urlpatterns = [
     path("dataset/<int:dataset_id>", views.DatasetDetailView.as_view(), name="dataset-detail"),
     path("dataset/<int:dataset_id>/stats", views.DatasetStatsView.as_view(), name="dataset-stats"),
     path("dataset/<int:dataset_id>/preview", views.DatasetPreviewView.as_view(), name="dataset-preview"),
+    path("dataset/<int:dataset_id>/delete", views.DatasetDeleteView.as_view(), name="dataset-delete"),
     # Training
     path("training/create", views.TrainingCreateView.as_view(), name="training-create"),
     path("training/list", views.TrainingListView.as_view(), name="training-list"),

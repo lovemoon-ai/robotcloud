@@ -406,6 +406,8 @@ export const robotCloudApi = {
       previewAvailable: Boolean(item.preview_available)
     }));
   },
+  deleteDataset: async (datasetId: number): Promise<{ deleted: boolean }> =>
+    request<{ deleted: boolean }>(`/dataset/${datasetId}/delete`, { method: "POST" }),
   uploadDataset: async (form: DatasetUploadInput & { onProgress?: (percent: number) => void }) => {
     const body = new FormData();
     body.append("file", form.file);

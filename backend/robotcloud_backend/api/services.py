@@ -660,6 +660,27 @@ class RobotCloudService:
         preview = self._build_preview_payload(dataset, metadata)
         return self._response({"dataset_id": dataset.id, "preview": preview})
 
+    def delete_dataset(self, token: str, dataset_id: int) -> Dict[str, Any]:
+        """Delete a dataset that belongs to the current user.
+
+        Only datasets with no associated training tasks can be deleted.
+        This removes the database record and the storage file.
+        """
+        user = self._get_user_by_token(token)
+        dataset = self._get_dataset(dataset_id)
+        if dataset.owner_id != user.id:
+            raise PermissionError("You do not own this dataset")
+        # Check if there are any training tasks using this dataset
+        if dataset.train_tasks.exists():
+            raise ValueError("Cannot delete dataset with associated training tasks")
+        # Delete the storage file if it exists
+        if dataset.storage_path:
+            storage_file = self.dataset_root / dataset.storage_path
+            if storage_file.exists():
+                storage_file.unlink()
+        dataset.delete()
+        return self._response({"deleted": True})
+
     # -------------------- Training Module --------------------
     def create_training_task(
         self,

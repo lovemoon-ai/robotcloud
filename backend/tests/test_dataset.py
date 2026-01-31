@@ -69,3 +69,42 @@ def test_dataset_crud(client: APIClient, create_user_token) -> None:
     assert len(preview_payload) == 3
     assert preview_payload[0]["type"] == "image"
     assert preview_payload[0]["url"].endswith("images%2F0001.png")
+
+
+def test_dataset_delete(client: APIClient, create_user_token) -> None:
+    """Test deleting a dataset."""
+    token = create_user_token("13900000001", "passwd")
+    upload_payload = _upload_dataset(client, token)
+    dataset_id = upload_payload["dataset_id"]
+
+    # Delete the dataset
+    delete_resp = client.post(
+        f"/api/v1/dataset/{dataset_id}/delete",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert delete_resp.status_code == 200
+    assert delete_resp.json()["data"]["deleted"] is True
+
+    # Verify dataset is gone from list
+    list_resp = client.get("/api/v1/dataset/list", {"page": 1, "size": 10})
+    assert list_resp.status_code == 200
+    items = list_resp.json()["data"]["items"]
+    assert all(item["dataset_id"] != dataset_id for item in items)
+
+
+def test_dataset_delete_not_owner(client: APIClient, create_user_token) -> None:
+    """Test that a user cannot delete another user's dataset."""
+    token1 = create_user_token("13900000002", "passwd")
+    token2 = create_user_token("13900000003", "passwd")
+
+    # User 1 uploads a dataset
+    upload_payload = _upload_dataset(client, token1)
+    dataset_id = upload_payload["dataset_id"]
+
+    # User 2 tries to delete it
+    delete_resp = client.post(
+        f"/api/v1/dataset/{dataset_id}/delete",
+        HTTP_AUTHORIZATION=f"Bearer {token2}",
+    )
+    assert delete_resp.status_code == 403
+    assert "do not own" in delete_resp.json()["detail"]
