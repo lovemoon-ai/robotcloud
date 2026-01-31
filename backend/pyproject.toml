@@ -20,6 +20,7 @@ dependencies = [
     "requests>=2.31",
     "whitenoise>=6.6",
     "python-alipay-sdk>=3.0",
+    "gunicorn>=23.0.0",
 ]
 
 [tool.setuptools]
