@@ -1000,7 +1000,13 @@ class Agent:
                 self.logger.info("Agent registered with scheduler (token=%s)", self.agent_token[:8])
                 return
             except Exception as exc:
-                self.logger.error("Failed to register agent: %s", exc)
+                detail = ""
+                if "response" in locals():
+                    try:
+                        detail = f" status={response.status_code} body={response.text}"
+                    except Exception:
+                        detail = ""
+                self.logger.error("Failed to register agent: %s%s", exc, detail)
                 time.sleep(5)
 
     def _start_heartbeat(self) -> None:

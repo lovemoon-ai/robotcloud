@@ -3,12 +3,7 @@ import { Locale } from "@/store/useLocaleStore";
 const sectionsByLocale = {
   zh: [
     {
-      title: "控制面板",
-      description: "快速查看数据、任务与套餐状态，洞察研发效率。",
-      href: "/dashboard"
-    },
-    {
-      title: "数据集管理",
+      title: "数据管理",
       description: "上传、预览与分析多模态数据集，保障数据资产安全。",
       href: "/datasets"
     },
@@ -18,9 +13,9 @@ const sectionsByLocale = {
       href: "/train"
     },
     {
-      title: "套餐购买",
-      description: "选择 Free / Plus 套餐，获取更高算力与并发。",
-      href: "/plans"
+      title: "模型管理",
+      description: "统一管理模型版本、部署状态与生命周期。",
+      href: "/simulator"
     },
     {
       title: "云端推理",
@@ -28,19 +23,19 @@ const sectionsByLocale = {
       href: "/inference"
     },
     {
-      title: "仿真与硬件",
-      description: "连接 IsaacSim / Gazebo 仿真与真实机器人。",
-      href: "/simulator"
+      title: "控制面板",
+      description: "快速查看数据、任务与套餐状态，洞察研发效率。",
+      href: "/dashboard"
+    },
+    {
+      title: "套餐购买",
+      description: "选择 Free / Plus 套餐，获取更高算力与并发。",
+      href: "/plans"
     }
   ],
   en: [
     {
-      title: "Dashboard",
-      description: "Monitor data, jobs, and plan status to keep robotics workflows efficient.",
-      href: "/dashboard"
-    },
-    {
-      title: "Datasets",
+      title: "Data Management",
       description: "Upload, preview, and analyze multimodal datasets while protecting data assets.",
       href: "/datasets"
     },
@@ -50,9 +45,9 @@ const sectionsByLocale = {
       href: "/train"
     },
     {
-      title: "Plans",
-      description: "Pick the Free, Plus plan to unlock more compute and concurrency.",
-      href: "/plans"
+      title: "Model Management",
+      description: "Manage model versions, deployment status, and lifecycle in one place.",
+      href: "/simulator"
     },
     {
       title: "Inference",
@@ -60,9 +55,14 @@ const sectionsByLocale = {
       href: "/inference"
     },
     {
-      title: "Simulation & Hardware",
-      description: "Connect IsaacSim/Gazebo simulations with physical robots in the field.",
-      href: "/simulator"
+      title: "Dashboard",
+      description: "Monitor data, jobs, and plan status to keep robotics workflows efficient.",
+      href: "/dashboard"
+    },
+    {
+      title: "Plans",
+      description: "Pick the Free, Plus plan to unlock more compute and concurrency.",
+      href: "/plans"
     }
   ]
 } as const satisfies Record<Locale, readonly { title: string; description: string; href: string }[]>;
