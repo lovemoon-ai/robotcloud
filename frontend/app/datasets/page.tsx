@@ -77,6 +77,7 @@ export default function DatasetsPage() {
             size: (size: string) => `总大小：${size}`,
             preview: "预览可用"
           },
+          trainButton: "训练",
           deleteButton: "删除",
           deleteConfirm: "确定要删除这个数据集吗？此操作不可撤销。",
           deleteSuccess: "数据集已删除",
@@ -125,6 +126,7 @@ export default function DatasetsPage() {
             size: (size: string) => `Size: ${size}`,
             preview: "Preview available"
           },
+          trainButton: "Train",
           deleteButton: "Delete",
           deleteConfirm: "Are you sure you want to delete this dataset? This action cannot be undone.",
           deleteSuccess: "Dataset deleted",
@@ -303,14 +305,23 @@ export default function DatasetsPage() {
                     <p className="text-[11px] text-muted">
                       {copy.list.createdAt(new Date(dataset.createdAt).toLocaleString())}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(dataset.id)}
-                      disabled={deleteMutation.isPending}
-                      className="rounded px-2 py-1 text-xs text-red-500 hover:bg-red-500/10 transition disabled:opacity-50"
-                    >
-                      {copy.list.deleteButton}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => router.push(`/train?datasetId=${dataset.id}`)}
+                        className="rounded-md gradient-primary px-3 py-1 text-xs font-semibold text-white hover:opacity-90 transition"
+                      >
+                        {copy.list.trainButton}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(dataset.id)}
+                        disabled={deleteMutation.isPending}
+                        className="rounded px-2 py-1 text-xs text-red-500 hover:bg-red-500/10 transition disabled:opacity-50"
+                      >
+                        {copy.list.deleteButton}
+                      </button>
+                    </div>
                   </div>
                 </Card>
               ))}

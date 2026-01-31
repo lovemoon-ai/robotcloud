@@ -1,23 +1,27 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useForm } from "react-hook-form";
 import { TrainingConfig, TrainingJob } from "@/types";
 import { useAuthStore } from "@/store/useAuthStore";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useLocaleStore } from "@/store/useLocaleStore";
+import { useThemeStore } from "@/store/useThemeStore";
 
 const ACTIVE_TRAINING_STATUSES: Array<TrainingJob["status"]> = ["queued", "running"];
 
-export default function TrainPage() {
+function TrainPageContent() {
   const locale = useLocaleStore((state) => state.locale);
+  const theme = useThemeStore((state) => state.theme);
   const client = useQueryClient();
   const token = useAuthStore((state) => state.token);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialDatasetId = searchParams.get("datasetId") || "";
   const [loginNotice, setLoginNotice] = useState<string | null>(null);
   const { data, isLoading, error } = useQuery({
     queryKey: ["training-jobs"],
@@ -34,7 +38,7 @@ export default function TrainPage() {
     refetchIntervalInBackground: true
   });
   const form = useForm<TrainingConfig>({
-    defaultValues: { model: "ACT", datasetId: "", learningRate: 0.001, steps: 5000, batchSize: 16 }
+    defaultValues: { model: "ACT", datasetId: initialDatasetId, learningRate: 0.001, steps: 5000, batchSize: 16 }
   });
   const isZh = locale === "zh";
   const copy = isZh
@@ -52,7 +56,12 @@ export default function TrainPage() {
         submitting: "创建中...",
         queueHeading: "训练任务队列",
         totalLabel: (count: number) => `共 ${count} 个任务`,
-        stats: (datasetId: string, progress: number) => `数据集 ID：${datasetId} · 进度：${progress}%`,
+        stats: (datasetId: string) => `数据集 ID：${datasetId}`,
+        statusLabel: {
+          queued: "等待中",
+          running: "训练中",
+          completed: "已完成"
+        },
         logsLabel: (hasLog: boolean) => (hasLog ? "查看日志" : "日志生成中"),
         delete: "删除",
         confirmDeleteTitle: (id: number) => `删除训练任务 #${id}`,
@@ -79,7 +88,12 @@ export default function TrainPage() {
         submitting: "Creating...",
         queueHeading: "Training Queue",
         totalLabel: (count: number) => `Total ${count} task${count === 1 ? "" : "s"}`,
-        stats: (datasetId: string, progress: number) => `Dataset: ${datasetId} · Progress: ${progress}%`,
+        stats: (datasetId: string) => `Dataset: ${datasetId}`,
+        statusLabel: {
+          queued: "Queued",
+          running: "Training",
+          completed: "Completed"
+        },
         logsLabel: (hasLog: boolean) => (hasLog ? "View logs" : "Logs pending"),
         delete: "Delete",
         confirmDeleteTitle: (id: number) => `Delete training task #${id}`,
@@ -98,6 +112,8 @@ export default function TrainPage() {
   const [logOffset, setLogOffset] = useState<number>(0);
   const [logComplete, setLogComplete] = useState<boolean>(false);
   const [logError, setLogError] = useState<string | null>(null);
+  const [isLogMaximized, setIsLogMaximized] = useState<boolean>(false);
+  const [completedTaskIds, setCompletedTaskIds] = useState<Set<number>>(new Set());
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.createTrainingJob,
@@ -128,6 +144,7 @@ export default function TrainPage() {
     setLogOffset(0);
     setLogComplete(false);
     setLogError(null);
+    setIsLogMaximized(false);
   };
 
   const openLog = (taskId: number) => {
@@ -148,10 +165,15 @@ export default function TrainPage() {
       try {
         const chunk = await robotCloudApi.fetchTrainingLog({ taskId: logTaskId!, offset: logOffset });
         if (aborted) return;
-        if (chunk.content) setLogBuffer((prev) => prev + chunk.content);
+        const newContent = chunk.content || "";
+        if (newContent) setLogBuffer((prev) => prev + newContent);
         setLogOffset(chunk.nextOffset);
         setLogComplete(chunk.complete);
         setLogError(null);
+        // Check if log contains "End of training" to mark task as completed
+        if (newContent.includes("End of training") || (logBuffer + newContent).includes("End of training")) {
+          setCompletedTaskIds((prev) => new Set(prev).add(logTaskId!));
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setLogError(message);
@@ -163,7 +185,18 @@ export default function TrainPage() {
       aborted = true;
       clearInterval(t);
     };
-  }, [shouldPoll, logTaskId, logOffset, pollTick, token]);
+  }, [shouldPoll, logTaskId, logOffset, pollTick, token, logBuffer]);
+
+  // Helper function to get display status for a job
+  const getDisplayStatus = (job: TrainingJob): "queued" | "running" | "completed" => {
+    if (job.status === "completed" || completedTaskIds.has(job.id)) {
+      return "completed";
+    }
+    if (job.status === "running") {
+      return "running";
+    }
+    return "queued";
+  };
 
   const onSubmit = form.handleSubmit(async (values) => {
     if (!token) {
@@ -255,38 +288,38 @@ export default function TrainPage() {
           {token && error instanceof Error ? <p className="text-red-500">{error.message}</p> : null}
           {token ? (
             <div className="grid max-h-[24rem] gap-2 overflow-y-auto pr-2">
-              {data?.map((job) => (
-                <Card key={job.id} title={`${job.model} · ${job.status}`} compact>
-                  <div className="flex items-center justify-between text-[10px] text-muted">
-                    <span>{copy.stats(job.datasetId.toString(), job.progress)}</span>
-                    <div className="flex items-center gap-3">
-                      {job.status === "queued" ? (
-                        <span>{copy.logsLabel(false)}</span>
-                      ) : (
-                        <button
-                          onClick={() => openLog(job.id)}
-                          className="font-semibold accent-text hover:text-primary"
-                          type="button"
-                        >
-                          {copy.logsLabel(true)}
-                        </button>
-                      )}
-                      {job.status !== "running" ? (
-                        <button
-                          onClick={() => setDeleteTarget(job.id)}
-                          className="font-semibold text-red-500 hover:text-red-400"
-                          type="button"
-                        >
-                          {copy.delete}
-                        </button>
-                      ) : null}
+              {data?.map((job) => {
+                const displayStatus = getDisplayStatus(job);
+                return (
+                  <Card key={job.id} title={`${job.model} · ${copy.statusLabel[displayStatus]}`} compact>
+                    <div className="flex items-center justify-between text-[10px] text-muted">
+                      <span>{copy.stats(job.datasetId.toString())}</span>
+                      <div className="flex items-center gap-3">
+                        {job.status === "queued" ? (
+                          <span>{copy.logsLabel(false)}</span>
+                        ) : (
+                          <button
+                            onClick={() => openLog(job.id)}
+                            className="font-semibold accent-text hover:text-primary"
+                            type="button"
+                          >
+                            {copy.logsLabel(true)}
+                          </button>
+                        )}
+                        {displayStatus !== "running" ? (
+                          <button
+                            onClick={() => setDeleteTarget(job.id)}
+                            className="font-semibold text-red-500 hover:text-red-400"
+                            type="button"
+                          >
+                            {copy.delete}
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
-                  </div>
-                  <div className="mt-2 h-1.5 rounded-full bg-surface-secondary">
-                    <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${job.progress}%` }} />
-                  </div>
-                </Card>
-              ))}
+                  </Card>
+                );
+              })}
               {!data?.length ? <p className="text-sm text-muted">{copy.empty}</p> : null}
             </div>
           ) : null}
@@ -294,14 +327,28 @@ export default function TrainPage() {
       </section>
       {logTaskId ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-3xl rounded-lg border border-theme p-4 shadow-xl" style={{ backgroundColor: 'var(--color-card)' }}>
+          <div
+            className={`rounded-lg border border-theme p-4 shadow-xl transition-all ${isLogMaximized ? "w-full h-full max-w-none" : "w-full max-w-3xl"}`}
+            style={{ backgroundColor: 'var(--color-card)' }}
+          >
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-lg font-semibold accent-text">Task #{logTaskId} Logs</h3>
-              <button onClick={closeLog} className="text-muted hover:text-body" type="button">
-                Close
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setIsLogMaximized(!isLogMaximized)}
+                  className="text-muted hover:text-body"
+                  type="button"
+                >
+                  {isLogMaximized ? "⊖" : "⊕"}
+                </button>
+                <button onClick={closeLog} className="text-muted hover:text-body" type="button">
+                  Close
+                </button>
+              </div>
             </div>
-            <div className="h-96 overflow-auto rounded bg-black p-3 text-xs text-body">
+            <div
+              className={`overflow-auto rounded p-3 text-xs font-mono ${isLogMaximized ? "h-[calc(100%-5rem)]" : "h-96"} ${theme === "light" ? "bg-white text-black border border-gray-200" : "bg-black text-white"}`}
+            >
               <pre className="whitespace-pre-wrap leading-relaxed">{logBuffer || (logError ? `Error: ${logError}` : "Waiting for logs...")}</pre>
             </div>
             <div className="mt-2 flex items-center justify-between text-xs text-muted">
@@ -349,5 +396,13 @@ export default function TrainPage() {
         </div>
       ) : null}
     </main>
+  );
+}
+
+export default function TrainPage() {
+  return (
+    <Suspense fallback={<div className="p-6">Loading...</div>}>
+      <TrainPageContent />
+    </Suspense>
   );
 }

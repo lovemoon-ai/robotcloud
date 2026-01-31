@@ -18,11 +18,6 @@ const sectionsByLocale = {
       href: "/models"
     },
     {
-      title: "套餐购买",
-      description: "选择 Free / Plus 套餐，获取更高算力与并发。",
-      href: "/plans"
-    },
-    {
       title: "云端推理",
       description: "对数据集执行推理任务，快速验证模型效果。",
       href: "/inference"
@@ -53,11 +48,6 @@ const sectionsByLocale = {
       title: "Models",
       description: "View and manage trained models, trace training parameters and datasets.",
       href: "/models"
-    },
-    {
-      title: "Plans",
-      description: "Pick the Free, Plus plan to unlock more compute and concurrency.",
-      href: "/plans"
     },
     {
       title: "Inference",
