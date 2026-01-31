@@ -1,15 +1,15 @@
 .PHONY: test run run-all scheduler agent agent-4090 frontend-test invite-codes kill
 
-ifneq (,$(wildcard .env))
-include .env
-export $(shell sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .env)
+ENV_FILE ?= .env.dev
+
+ifneq (,$(wildcard $(ENV_FILE)))
+include $(ENV_FILE)
+export $(shell sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' $(ENV_FILE))
 endif
 
 REQUIRED_ENV_VARS := \
 	BACKEND_HOST \
 	BACKEND_PORT \
-	FRONTEND_HOST \
-	FRONTEND_PORT \
 	PUBLIC_API_BASE_URL \
 	DJANGO_ALLOWED_HOSTS \
 	DJANGO_CORS_ALLOWED_ORIGINS \
@@ -39,6 +39,7 @@ build-run: build run
 ####### DEPLOY ########
 serve:
 	cd backend && \
+	USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) DJANGO_CORS_ALLOWED_ORIGINS=$(DJANGO_CORS_ALLOWED_ORIGINS) USE_IN_MEMORY_CACHE=1 \
 	uv run gunicorn robotcloud_backend.wsgi:application -b $(BACKEND_HOST):$(BACKEND_PORT)
 
 run-all:

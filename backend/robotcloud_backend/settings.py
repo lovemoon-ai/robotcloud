@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Load environment variables from .env if present (in project root)
-load_dotenv(BASE_DIR.parent / ".env")
+env_file = os.getenv("ENV_FILE", ".env")
+load_dotenv(BASE_DIR.parent / env_file)
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "robotcloud-development-secret-key")
 

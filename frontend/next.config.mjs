@@ -7,8 +7,8 @@ const { loadEnvConfig } = nextEnv;
 const dev = process.env.NODE_ENV !== "production";
 const repoRoot = path.join(__dirname, "..");
 
-// Load root .env first, then frontend .env so local overrides still win.
-loadEnvConfig(repoRoot, dev);
+const envFile = process.env.ENV_FILE || ".env";
+loadEnvConfig(repoRoot, dev, envFile);
 loadEnvConfig(__dirname, dev);
 const RAW_API_BASE_URL =
   process.env.PUBLIC_API_BASE_URL ??
