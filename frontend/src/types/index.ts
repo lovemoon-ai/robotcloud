@@ -116,3 +116,14 @@ export interface Payment {
   checkoutUrl?: string;
   payCode?: string;
 }
+
+export interface Model {
+  modelId: number;
+  name: string;
+  modelType: string;
+  datasetId: number;
+  datasetName: string | null;
+  modelPath: string | null;
+  createdAt: string;
+  params?: Record<string, unknown>;
+}

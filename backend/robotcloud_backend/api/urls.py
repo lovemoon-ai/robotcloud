@@ -57,4 +57,7 @@ urlpatterns = [
     path("admin/users", views.AdminUsersView.as_view(), name="admin-users"),
     path("admin/dataset/<int:dataset_id>/review", views.AdminDatasetReviewView.as_view(), name="admin-dataset-review"),
     path("admin/overview", views.AdminOverviewView.as_view(), name="admin-overview"),
+    # Model
+    path("model/list", views.ModelListView.as_view(), name="model-list"),
+    path("model/<int:model_id>", views.ModelDetailView.as_view(), name="model-detail"),
 ]

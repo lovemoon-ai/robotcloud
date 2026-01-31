@@ -445,3 +445,15 @@ class AdminDatasetReviewView(RobotCloudAPIView):
 class AdminOverviewView(RobotCloudAPIView):
     def get(self, request: Request) -> Response:
         return self._execute_with_token(request, lambda token: self._service().admin_overview(token))
+
+
+class ModelListView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        page = int(request.query_params.get("page", 1))
+        size = int(request.query_params.get("size", 20))
+        return self._execute_with_token(request, lambda token: self._service().list_models(token, page, size))
+
+
+class ModelDetailView(RobotCloudAPIView):
+    def get(self, request: Request, model_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().get_model(token, model_id))

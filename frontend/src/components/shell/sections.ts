@@ -18,6 +18,11 @@ const sectionsByLocale = {
       href: "/train"
     },
     {
+      title: "模型管理",
+      description: "查看与管理训练完成的模型，追溯训练参数与数据集。",
+      href: "/models"
+    },
+    {
       title: "套餐购买",
       description: "选择 Free / Plus 套餐，获取更高算力与并发。",
       href: "/plans"
@@ -48,6 +53,11 @@ const sectionsByLocale = {
       title: "Training",
       description: "Configure training parameters and watch logs in real time to manage GPU usage.",
       href: "/train"
+    },
+    {
+      title: "Models",
+      description: "View and manage trained models, trace training parameters and datasets.",
+      href: "/models"
     },
     {
       title: "Plans",

@@ -9,6 +9,7 @@ import {
   DatasetUploadInput,
   DatasetUploadResult,
   InferenceJob,
+  Model,
   OtpPayload,
   Payment,
   SimulatorSession,
@@ -89,6 +90,17 @@ type BackendAdminUser = {
   phone: string;
   role: UserRole;
   created_at: string;
+};
+
+type BackendModel = {
+  model_id: number;
+  name: string;
+  model_type: string;
+  dataset_id: number;
+  dataset_name: string | null;
+  model_path: string | null;
+  created_at: string;
+  params?: Record<string, unknown>;
 };
 
 type BackendPayment = {
@@ -493,6 +505,31 @@ export const robotCloudApi = {
       role: user.role,
       createdAt: user.created_at
     }));
+  },
+  fetchModels: async (): Promise<Model[]> => {
+    const data = await request<{ items: BackendModel[]; total: number }>("/model/list?page=1&size=50");
+    return data.items.map((item) => ({
+      modelId: item.model_id,
+      name: item.name,
+      modelType: item.model_type,
+      datasetId: item.dataset_id,
+      datasetName: item.dataset_name,
+      modelPath: item.model_path,
+      createdAt: item.created_at
+    }));
+  },
+  getModel: async (modelId: number): Promise<Model> => {
+    const item = await request<BackendModel>(`/model/${modelId}`);
+    return {
+      modelId: item.model_id,
+      name: item.name,
+      modelType: item.model_type,
+      datasetId: item.dataset_id,
+      datasetName: item.dataset_name,
+      modelPath: item.model_path,
+      createdAt: item.created_at,
+      params: item.params
+    };
   }
 };
 

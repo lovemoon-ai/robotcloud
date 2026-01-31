@@ -1038,6 +1038,41 @@ class RobotCloudService:
             }
         )
 
+    # -------------------- Model Module --------------------
+    def list_models(self, token: str, page: int, size: int) -> Dict[str, Any]:
+        """List completed training tasks as available models."""
+        user = self._get_user_by_token(token)
+        queryset = user.train_tasks.filter(status="completed").order_by("-created_at")
+        total = queryset.count()
+        start = (page - 1) * size
+        items = [self._model_to_dict(t) for t in queryset[start : start + size]]
+        return self._response({"items": items, "total": total})
+
+    def get_model(self, token: str, model_id: int) -> Dict[str, Any]:
+        """Get a single model (completed training task) by ID."""
+        user = self._get_user_by_token(token)
+        try:
+            task = user.train_tasks.get(id=model_id, status="completed")
+        except TrainTask.DoesNotExist as exc:
+            raise ValueError("Model not found") from exc
+        return self._response(self._model_to_dict(task, include_params=True))
+
+    def _model_to_dict(self, task: TrainTask, include_params: bool = False) -> Dict[str, Any]:
+        """Convert a completed TrainTask to a model dict."""
+        dataset = task.dataset
+        result = {
+            "model_id": task.id,
+            "name": f"{task.model_type}-{dataset.name}" if dataset else f"{task.model_type}-{task.id}",
+            "model_type": task.model_type,
+            "dataset_id": task.dataset_id,
+            "dataset_name": dataset.name if dataset else None,
+            "model_path": task.model_path,
+            "created_at": task.created_at.isoformat(),
+        }
+        if include_params:
+            result["params"] = task.params or {}
+        return result
+
     # -------------------- Dashboard Module --------------------
     def dashboard_summary(self, token: str) -> Dict[str, Any]:
         user = self._get_user_by_token(token)
