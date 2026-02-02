@@ -56,8 +56,7 @@ describe("/login page", () => {
     await waitFor(() => {
       expect(mockedApi.loginWithCode).toHaveBeenCalledWith({
         phone: "13800000001",
-        code: "000000",
-        invitationCode: undefined
+        code: "000000"
       });
     });
 
@@ -77,7 +76,7 @@ describe("/login page", () => {
     });
   });
 
-  it("allows login with invitation code", async () => {
+  it("logs in after sending code", async () => {
     mockedApi.requestOtp.mockResolvedValueOnce({ sent: true, code: "000000" });
     mockedApi.loginWithCode.mockResolvedValueOnce({
       token: "token",
@@ -88,27 +87,21 @@ describe("/login page", () => {
     });
 
     render(<LoginPage />);
-    
-    // Show invitation code input
-    fireEvent.click(screen.getByText("Have an invite code?"));
 
     fireEvent.change(screen.getByPlaceholderText("e.g. 13800001234"), { target: { value: "13800000001" } });
-    fireEvent.change(screen.getByPlaceholderText("Enter invitation code"), { target: { value: "INV-2024" } });
     fireEvent.click(screen.getByRole("button", { name: "Send Code" }));
 
     await waitFor(() => {
       expect(mockedApi.requestOtp).toHaveBeenCalledWith("13800000001");
     });
 
-    // Enter verification code
     fireEvent.change(screen.getByPlaceholderText("Enter 6-digit code"), { target: { value: "000000" } });
     fireEvent.click(screen.getByRole("button", { name: "Login / Register" }));
 
     await waitFor(() => {
       expect(mockedApi.loginWithCode).toHaveBeenCalledWith({
         phone: "13800000001",
-        code: "000000",
-        invitationCode: "INV-2024"
+        code: "000000"
       });
     });
   });

@@ -35,6 +35,8 @@ const setAuthenticatedUser = () => {
 describe("robotCloudApi", () => {
   let mockedFetch: jest.MockedFunction<typeof fetch>;
   const originalFetch = global.fetch;
+  let lastXhr: XMLHttpRequest | null = null;
+  let nextXhrResponseText: string | null = null;
 
   beforeEach(() => {
     mockedFetch = jest.fn().mockResolvedValue({
@@ -44,11 +46,52 @@ describe("robotCloudApi", () => {
       text: jest.fn().mockResolvedValue("")
     }) as unknown as jest.MockedFunction<typeof fetch>;
     global.fetch = mockedFetch as unknown as typeof fetch;
+    class MockXHR {
+      upload = { onprogress: null as null | ((event: ProgressEvent) => void) };
+      onload: null | (() => void) = null;
+      onerror: null | (() => void) = null;
+      status = 200;
+      responseText = "";
+      _method = "";
+      _url = "";
+      _headers: Record<string, string> = {};
+      _body: Document | BodyInit | null = null;
+
+      open(method: string, url: string) {
+        this._method = method;
+        this._url = url;
+      }
+
+      setRequestHeader(key: string, value: string) {
+        this._headers[key] = value;
+      }
+
+      send(body?: Document | BodyInit | null) {
+        this._body = body ?? null;
+        if (!this.responseText) {
+          this.responseText = JSON.stringify({ code: 0, data: {} });
+        }
+        if (this.onload) {
+          this.onload();
+        }
+      }
+    }
+    global.XMLHttpRequest = jest.fn(() => {
+      const instance = new MockXHR() as unknown as XMLHttpRequest;
+      if (nextXhrResponseText) {
+        (instance as unknown as { responseText: string }).responseText = nextXhrResponseText;
+        nextXhrResponseText = null;
+      }
+      lastXhr = instance;
+      return instance;
+    }) as unknown as typeof XMLHttpRequest;
   });
 
   afterEach(() => {
     global.fetch = originalFetch as typeof fetch;
     useAuthStore.getState().reset();
+    lastXhr = null;
+    nextXhrResponseText = null;
   });
 
   it("loginWithPassword sends credentials and maps response", async () => {
@@ -93,25 +136,13 @@ describe("robotCloudApi", () => {
   });
 
   it("verifyOtp forwards payload to register endpoint", async () => {
-    await robotCloudApi.verifyOtp({ phone: "138", password: "pwd", code: "1234", invitationCode: "INV-001" });
+    await robotCloudApi.verifyOtp({ phone: "138", password: "pwd", code: "1234" });
     const [url, init] = mockedFetch.mock.calls[0];
     expect(url).toBe(`${API_BASE}/auth/register`);
     expect(JSON.parse(init?.body as string)).toEqual({
       phone: "138",
       password: "pwd",
-      code: "1234",
-      invitation_code: "INV-001"
-    });
-  });
-
-  it("registerWithInvitation posts invite payload", async () => {
-    await robotCloudApi.registerWithInvitation({ phone: "138", password: "pwd", invitationCode: "INV-ABC" });
-    const [url, init] = mockedFetch.mock.calls[0];
-    expect(url).toBe(`${API_BASE}/auth/register_invite`);
-    expect(JSON.parse(init?.body as string)).toEqual({
-      phone: "138",
-      password: "pwd",
-      invitation_code: "INV-ABC"
+      code: "1234"
     });
   });
 
@@ -188,20 +219,16 @@ describe("robotCloudApi", () => {
 
   it("uploadDataset sends multipart form data and maps response", async () => {
     setAuthenticatedUser();
-    mockedFetch.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: jest.fn().mockResolvedValue({
-        code: 0,
-        data: {
-          dataset_id: 2,
-          status: "ready",
-          file_name: "dataset.zip",
-          file_size: 2048,
-          total_files: 5
-        }
-      })
-    } as unknown as Response);
+    nextXhrResponseText = JSON.stringify({
+      code: 0,
+      data: {
+        dataset_id: 2,
+        status: "ready",
+        file_name: "dataset.zip",
+        file_size: 2048,
+        total_files: 5
+      }
+    });
     const file = new File(["content"], "dataset.zip", { type: "application/zip" });
     const result = await robotCloudApi.uploadDataset({
       file,
@@ -209,10 +236,15 @@ describe("robotCloudApi", () => {
       description: "desc",
       visibility: "public"
     });
-    const [, init] = mockedFetch.mock.calls[0];
-    expect(init?.method).toBe("POST");
-    expect(init?.body).toBeInstanceOf(FormData);
-    const form = init?.body as FormData;
+    const xhr = lastXhr as unknown as {
+      _method: string;
+      _url: string;
+      _body: FormData | null;
+    };
+    expect(xhr._method).toBe("POST");
+    expect(xhr._url).toBe(`${API_BASE}/dataset/upload`);
+    expect(xhr._body).toBeInstanceOf(FormData);
+    const form = xhr._body as FormData;
     expect(form.get("name")).toBe("demo");
     expect(form.get("description")).toBe("desc");
     expect(form.get("visibility")).toBe("public");
@@ -317,7 +349,18 @@ describe("robotCloudApi", () => {
 
     const result = await robotCloudApi.fetchInferenceJobs();
     expect(result).toEqual<Array<InferenceJob>>([
-      { id: 5, modelId: 3, datasetId: 2, status: "running", resultPath: undefined }
+      {
+        id: 5,
+        modelId: 3,
+        datasetId: 2,
+        status: "running",
+        progress: undefined,
+        serverHost: undefined,
+        serverPort: undefined,
+        checkpointPath: undefined,
+        resultPath: undefined,
+        errorMessage: undefined
+      }
     ]);
   });
 
