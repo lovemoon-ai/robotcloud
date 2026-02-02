@@ -983,6 +983,7 @@ class InferenceJob(threading.Thread):
         self.logger = agent.logger.getChild(f"infer-{task_id}")
         self._process: Optional[subprocess.Popen[str]] = None
         self.server_port: Optional[int] = None
+        self._script_aliases = self._build_script_aliases()
 
     def run(self) -> None:
         try:
@@ -1065,8 +1066,36 @@ class InferenceJob(threading.Thread):
 
     def _build_command(self, host: str, port: int) -> List[str]:
         base = shlex.split(self.cmd)
+        base = self._resolve_executable(base)
         args = [f"--host={host}", f"--port={port}"]
         return base + args
+
+    def _resolve_executable(self, tokens: List[str]) -> List[str]:
+        if not tokens:
+            return tokens
+        first = tokens[0]
+        alias = self._script_aliases.get(first)
+        if alias and alias.exists():
+            tokens[0] = str(alias)
+            return tokens
+        path = Path(first)
+        if not path.is_absolute():
+            candidate = (self.work_dir / first).resolve()
+            if candidate.exists():
+                tokens[0] = str(candidate)
+                return tokens
+        elif path.exists():
+            tokens[0] = str(path)
+        return tokens
+
+    def _build_script_aliases(self) -> Dict[str, Path]:
+        scripts_dir = self.work_dir / "scripts"
+        aliases: Dict[str, Path] = {}
+        lerobot_infer = scripts_dir / "lerobot-infer.sh"
+        if lerobot_infer.exists():
+            aliases["lerobot-infer"] = lerobot_infer
+            aliases["lerobot-infer.sh"] = lerobot_infer
+        return aliases
 
     def _pick_port(self) -> int:
         start = int(os.getenv("AGENT_INFERENCE_PORT_START", "6153"))

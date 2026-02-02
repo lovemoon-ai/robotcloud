@@ -240,7 +240,7 @@ class SchedulerService:
         payload = {
             "task_id": task.id,
             "gpus": [gpu_index],
-            "cmd": "python -m lerobot.async_inference.policy_server",
+            "cmd": "lerobot-infer",
             "params": {"host": "0.0.0.0", "port": 6152},
             "checkpoint_path": task.checkpoint_path,
         }
