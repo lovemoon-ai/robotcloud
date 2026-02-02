@@ -231,6 +231,8 @@ Response
 }
 ```
 
+说明：`model_id` 绑定训练任务（TrainTask.id），仅允许已完成的训练任务，且必须存在 `checkpoint_path`。
+
 ### 2. 查询推理结果
 
 **GET** `/api/v1/inference/{task_id}/result`
@@ -240,10 +242,12 @@ Response
   "code":0,
   "data":{
     "task_id":88,
-    "status":"completed",
-    "results":[
-      {"sample_id":"00001","output_url":"/storage/results/00001.png"}
-    ]
+    "status":"running",
+    "server_host":"115.190.130.100",
+    "server_port":6153,
+    "checkpoint_path":"backend/storage/train_runs/task_88/checkpoints/last/pretrained_model",
+    "result_path":null,
+    "error_message":null
   }
 }
 ```
@@ -338,6 +342,7 @@ Response
   progress     FLOAT                                           
   logs_url     VARCHAR(255)                                    
   model_path   VARCHAR(255)                                    
+  checkpoint_path VARCHAR(255)                                 
   created_at   DATETIME                                        
 
 ### 4. 推理任务表 `inference_tasks`
@@ -348,8 +353,17 @@ Response
   model_id      INT FK                                          
   dataset_id    INT FK                                          
   user_id       INT FK                                          
+  progress      FLOAT                                           
+  assigned_node VARCHAR(64)                                     
+  assigned_gpus VARCHAR(64)                                     
+  server_host   VARCHAR(128)                                    
+  server_port   INT                                             
+  checkpoint_path VARCHAR(255)                                  
   result_path   VARCHAR(255)                                    
   status        ENUM('queued','running','completed','failed')   
+  error_message TEXT                                            
+  started_at    DATETIME                                        
+  finished_at   DATETIME                                        
   created_at    DATETIME                                        
 
 ### 5. 仿真任务表 `sim_tasks`
