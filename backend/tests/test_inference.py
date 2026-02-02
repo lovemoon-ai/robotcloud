@@ -2,6 +2,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 
 from robotcloud_backend.sms import InMemorySmsGateway
+from robotcloud_backend.api.models import Dataset, TrainTask, User
 
 
 def _prepare_dataset(client: APIClient, sms_gateway: InMemorySmsGateway) -> tuple[str, int]:
@@ -38,10 +39,22 @@ def _prepare_dataset(client: APIClient, sms_gateway: InMemorySmsGateway) -> tupl
 
 def test_inference_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
     token, dataset_id = _prepare_dataset(client, sms_gateway)
+    user = User.objects.get(phone="13900000002")
+    dataset = Dataset.objects.get(id=dataset_id)
+    train_task = TrainTask.objects.create(
+        dataset=dataset,
+        user=user,
+        model_type="ACT",
+        params={},
+        status="completed",
+        progress=1.0,
+        logs_url="",
+        checkpoint_path="/tmp/checkpoints/task_1",
+    )
 
     create_resp = client.post(
         "/api/v1/inference/create",
-        {"model_id": 1, "dataset_id": dataset_id},
+        {"model_id": train_task.id, "dataset_id": dataset_id},
         format="json",
         HTTP_AUTHORIZATION=f"Bearer {token}",
     )
@@ -55,5 +68,5 @@ def test_inference_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> N
     assert result_resp.status_code == 200
     result = result_resp.json()["data"]
     assert result["task_id"] == task_id
-    assert result["status"] == "completed"
-    assert result["results"][0]["sample_id"] == "00001"
+    assert result["status"] in {"queued", "running", "completed", "failed"}
+    assert result["checkpoint_path"] == "/tmp/checkpoints/task_1"

@@ -1,6 +1,8 @@
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 
+from robotcloud_backend.api.models import TrainTask
+
 
 def test_profile(client: APIClient, create_user_token, auth_header) -> None:
     token = create_user_token()
@@ -59,10 +61,12 @@ def test_upgrade_and_usage(client: APIClient, create_user_token, auth_header) ->
         **auth_header(token),
     )
     assert train_resp.status_code == 200
+    train_task_id = train_resp.json()["data"]["task_id"]
+    TrainTask.objects.filter(id=train_task_id).update(status="completed", checkpoint_path="/tmp/checkpoints/task_1")
 
     infer_resp = client.post(
         "/api/v1/inference/create",
-        {"model_id": 1, "dataset_id": dataset_id},
+        {"model_id": train_task_id, "dataset_id": dataset_id},
         format="json",
         **auth_header(token),
     )
