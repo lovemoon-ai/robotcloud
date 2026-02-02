@@ -89,6 +89,7 @@ export interface InferenceJob {
   resultPath?: string | null;
   errorMessage?: string | null;
   createdAt: string;
+  startedAt?: string | null;
 }
 
 export interface SimulatorSession {

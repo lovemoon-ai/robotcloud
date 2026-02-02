@@ -12,6 +12,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 export default function ModelsClient() {
   const locale = useLocaleStore((state) => state.locale);
   const token = useAuthStore((state) => state.token);
+  const role = useAuthStore((state) => state.role);
   const router = useRouter();
   const searchParams = useSearchParams();
   const client = useQueryClient();
@@ -56,7 +57,8 @@ export default function ModelsClient() {
             checkpoint: (value: string | null) => (value ? `Checkpoint：${value}` : null),
             detail: "查看详情",
             delete: "删除",
-            infer: "推理"
+            infer: "推理",
+            inferDisabled: "免费用户不可推理"
           }
         }
       }
@@ -78,7 +80,8 @@ export default function ModelsClient() {
             checkpoint: (value: string | null) => (value ? `Checkpoint: ${value}` : null),
             detail: "View details",
             delete: "Delete",
-            infer: "Inference"
+            infer: "Inference",
+            inferDisabled: "Free plan only"
           }
         }
       };
@@ -143,7 +146,9 @@ export default function ModelsClient() {
                       <button
                         type="button"
                         onClick={() => router.push(`/inference?modelId=${model.modelId}`)}
-                        className="text-xs font-semibold accent-text hover:text-primary"
+                        className={`text-xs font-semibold ${role === "free" ? "text-muted cursor-not-allowed" : "accent-text hover:text-primary"}`}
+                        disabled={role === "free"}
+                        title={role === "free" ? copy.list.meta.inferDisabled : undefined}
                       >
                         {copy.list.meta.infer}
                       </button>

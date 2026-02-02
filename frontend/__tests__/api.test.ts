@@ -335,6 +335,7 @@ describe("robotCloudApi", () => {
             dataset_id: 2,
             status: "running",
             result_path: null,
+            started_at: "2024-01-01T00:00:05Z",
             created_at: "2024-01-01T00:00:00Z"
           }
         ],
@@ -360,7 +361,8 @@ describe("robotCloudApi", () => {
         checkpointPath: undefined,
         resultPath: undefined,
         errorMessage: undefined,
-        createdAt: "2024-01-01T00:00:00Z"
+        createdAt: "2024-01-01T00:00:00Z",
+        startedAt: "2024-01-01T00:00:05Z"
       }
     ]);
   });

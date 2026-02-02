@@ -999,6 +999,8 @@ class RobotCloudService:
     # -------------------- Inference Module --------------------
     def create_inference_task(self, token: str, model_id: int, dataset_id: Optional[int]) -> Dict[str, Any]:
         user = self._get_user_by_token(token)
+        if user.role == User.ROLE_FREE:
+            raise PermissionError("Inference is not available for free users")
         if model_id is None:
             raise ValueError("model_id required")
         dataset = self._get_dataset(dataset_id) if dataset_id is not None else None
@@ -1159,6 +1161,27 @@ class RobotCloudService:
             task = user.train_tasks.get(id=model_id, status="completed")
         except TrainTask.DoesNotExist as exc:
             raise ValueError("Model not found") from exc
+        if task.assigned_node:
+            node = WorkerNode.objects.filter(node_name=task.assigned_node).first()
+            if node:
+                paths: list[str] = []
+                if task.checkpoint_path:
+                    paths.append(task.checkpoint_path)
+                if task.model_path:
+                    paths.append(task.model_path)
+                output_dir = None
+                if isinstance(task.params, dict):
+                    output_dir = task.params.get("output_dir")
+                if isinstance(output_dir, str) and output_dir:
+                    paths.append(output_dir)
+                if paths:
+                    url = f"http://{node.ip}:{node.api_port}/api/v1/agent/delete_model"
+                    headers = {"Content-Type": "application/json", "X-Agent-Token": node.auth_token}
+                    try:
+                        response = requests.post(url, json={"paths": paths}, headers=headers, timeout=10)
+                        response.raise_for_status()
+                    except Exception as exc:
+                        raise ValueError(f"Failed to delete model on agent: {exc}") from exc
         task.delete()
         return self._response({"deleted": True})
 

@@ -77,6 +77,7 @@ type BackendInferenceTask = {
   checkpoint_path?: string | null;
   result_path?: string | null;
   error_message?: string | null;
+  started_at?: string | null;
   created_at: string;
 };
 
@@ -489,7 +490,8 @@ export const robotCloudApi = {
       checkpointPath: task.checkpoint_path ?? undefined,
       resultPath: task.result_path ?? undefined,
       errorMessage: task.error_message ?? undefined,
-      createdAt: task.created_at
+      createdAt: task.created_at,
+      startedAt: task.started_at ?? undefined
     }));
   },
   runInference: async (params: { modelId: number }) =>

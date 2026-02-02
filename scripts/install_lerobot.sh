@@ -133,7 +133,7 @@ install_lerobot() {
   local extras="feetech"
 
   if [[ "${INSTALL_GAMEPAD_EXTRA}" == "1" ]]; then
-    extras="${extras},gamepad"
+    extras="${extras},gamepad,async"
   fi
 
   pushd "${LEROBOT_DIR}" >/dev/null

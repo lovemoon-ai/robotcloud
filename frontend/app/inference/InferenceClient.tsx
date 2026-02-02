@@ -13,6 +13,7 @@ export default function InferenceClient() {
   const locale = useLocaleStore((state) => state.locale);
   const client = useQueryClient();
   const token = useAuthStore((state) => state.token);
+  const role = useAuthStore((state) => state.role);
   const router = useRouter();
   const searchParams = useSearchParams();
   const { data, isLoading, error } = useQuery({
@@ -45,6 +46,7 @@ export default function InferenceClient() {
         loginNotice: "请先登录后执行推理任务，正在跳转至登录页...",
         loginPrompt: "登录后可查看推理记录。",
         loginLink: "前往登录",
+        upgradeNotice: "免费用户不可使用云端推理，请升级套餐。",
         loading: "加载中...",
         modelTitle: (id: number) => `模型 ${id}`,
         statusLabel: (status: string) => `状态：${status}`,
@@ -53,6 +55,7 @@ export default function InferenceClient() {
         checkpointLabel: (path: string) => `模型路径：${path}`,
         errorLabel: (message: string) => `错误：${message}`,
         countdownLabel: (value: string) => `剩余：${value}`,
+        waiting: "排队中",
         delete: "删除",
         pending: "等待云端完成",
         empty: "暂无推理记录。"
@@ -69,6 +72,7 @@ export default function InferenceClient() {
         loginNotice: "Log in before running inference jobs. Redirecting to the login page...",
         loginPrompt: "Log in to see inference history.",
         loginLink: "Go to login",
+        upgradeNotice: "Cloud inference is not available on the Free plan.",
         loading: "Loading...",
         modelTitle: (id: number) => `Model ${id}`,
         statusLabel: (status: string) => `Status: ${status}`,
@@ -77,6 +81,7 @@ export default function InferenceClient() {
         checkpointLabel: (path: string) => `Checkpoint: ${path}`,
         errorLabel: (message: string) => `Error: ${message}`,
         countdownLabel: (value: string) => `Time left: ${value}`,
+        waiting: "Waiting",
         delete: "Delete",
         pending: "Waiting for cloud completion",
         empty: "No inference jobs found."
@@ -115,11 +120,11 @@ export default function InferenceClient() {
     return () => clearInterval(timer);
   }, []);
 
-  const formatCountdown = (createdAt: string, status: string) => {
-    if (!["queued", "running"].includes(status)) return "00:00";
-    const createdMs = new Date(createdAt).getTime();
-    if (Number.isNaN(createdMs)) return "00:00";
-    const remaining = Math.max(0, 600000 - (now - createdMs));
+  const formatCountdown = (startedAt: string | null | undefined, status: string) => {
+    if (status !== "running" || !startedAt) return copy.waiting;
+    const startedMs = new Date(startedAt).getTime();
+    if (Number.isNaN(startedMs)) return copy.waiting;
+    const remaining = Math.max(0, 600000 - (now - startedMs));
     const totalSeconds = Math.floor(remaining / 1000);
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
@@ -130,6 +135,10 @@ export default function InferenceClient() {
     if (!token) {
       setLoginNotice(copy.loginNotice);
       router.push("/login");
+      return;
+    }
+    if (role === "free") {
+      setLoginNotice(copy.upgradeNotice);
       return;
     }
     setLoginNotice(null);
@@ -158,7 +167,7 @@ export default function InferenceClient() {
           <button
             onClick={runJob}
             className="w-full rounded-md gradient-primary py-2 font-semibold text-white transition hover:bg-primary-hover"
-            disabled={!modelId || mutation.isPending}
+            disabled={!modelId || mutation.isPending || role === "free"}
           >
             {mutation.isPending ? copy.submitting : copy.submit}
           </button>
@@ -186,7 +195,7 @@ export default function InferenceClient() {
                 >
                   <div className="flex items-center justify-between text-xs text-muted">
                     <span>{copy.statusLabel(job.status)}</span>
-                    <span>{copy.countdownLabel(formatCountdown(job.createdAt, job.status))}</span>
+                    <span>{copy.countdownLabel(formatCountdown(job.startedAt, job.status))}</span>
                   </div>
                   {job.serverHost && job.serverPort ? (
                     <p className="text-[11px] text-muted">{copy.serverLabel(job.serverHost, job.serverPort)}</p>

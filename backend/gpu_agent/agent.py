@@ -43,6 +43,9 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/v1/agent/infer":
             self._handle_infer()
             return
+        if parsed.path == "/api/v1/agent/delete_model":
+            self._handle_delete_model()
+            return
         if parsed.path != "/api/v1/agent/run":
             self.send_error(404, "Not Found")
             return
@@ -76,6 +79,27 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             result = self.server.agent.enqueue_inference(payload)
+        except ValueError as exc:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"detail": str(exc)}).encode("utf-8"))
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(result).encode("utf-8"))
+
+    def _handle_delete_model(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length) if content_length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON payload")
+            return
+        try:
+            result = self.server.agent.delete_model_files(payload)
         except ValueError as exc:
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
@@ -1064,6 +1088,16 @@ class InferenceJob(threading.Thread):
         env["INFER_TASK_ID"] = str(self.task_id)
         return env
 
+    def _terminate_process(self) -> None:
+        process = self._process
+        if not process or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
     def _build_command(self, host: str, port: int) -> List[str]:
         base = shlex.split(self.cmd)
         base = self._resolve_executable(base)
@@ -1298,6 +1332,42 @@ class Agent:
 
     def validate_scheduler_token(self, incoming: str) -> bool:
         return bool(self.agent_token) and incoming == self.agent_token
+
+    def delete_model_files(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        paths = payload.get("paths")
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("paths required")
+        removed: List[str] = []
+        skipped: List[str] = []
+        base_dir = self.config.work_dir.resolve()
+        for raw in paths:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            try:
+                path = Path(raw).expanduser().resolve()
+            except Exception:
+                skipped.append(str(raw))
+                continue
+            try:
+                common = Path(os.path.commonpath([str(base_dir), str(path)]))
+            except ValueError:
+                skipped.append(str(path))
+                continue
+            if common != base_dir:
+                skipped.append(str(path))
+                continue
+            if not path.exists():
+                skipped.append(str(path))
+                continue
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                removed.append(str(path))
+            except OSError:
+                skipped.append(str(path))
+        return {"status": "ok", "removed": removed, "skipped": skipped}
 
     def enqueue_task(self, payload: Dict) -> Dict[str, str]:
         task_id = payload.get("task_id")
