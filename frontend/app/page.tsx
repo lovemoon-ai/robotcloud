@@ -10,12 +10,12 @@ export default function HomePage() {
   const copy = isZh
     ? {
         title: "RobotCloud 控制面板",
-        description: "管理数据、训练模型并连接仿真与硬件资源的统一入口。",
+        description: "管理数据、训练模型、云端推理的统一入口。",
         enter: "进入 →"
       }
     : {
         title: "RobotCloud Control Panel",
-        description: "Manage datasets, train models, and bridge simulation with hardware from one workspace.",
+        description: "Manage datasets, train models, and remote inference from one workspace.",
         enter: "Open →"
       };
   const sections = getSections(locale);

@@ -408,6 +408,15 @@ class InferenceResultView(RobotCloudAPIView):
         return self._execute_with_token(request, lambda token: self._service().inference_result(token, task_id))
 
 
+class InferenceLogsView(RobotCloudAPIView):
+    def get(self, request: Request, task_id: int) -> Response:
+        offset = int(request.query_params.get("offset", 0))
+        limit = int(request.query_params.get("limit", 65536))
+        return self._execute_with_token(
+            request, lambda token: self._service().inference_logs(token, task_id, offset, limit)
+        )
+
+
 class InferenceDeleteView(RobotCloudAPIView):
     def post(self, request: Request, task_id: int) -> Response:
         return self._execute_with_token(request, lambda token: self._service().delete_inference_task(token, task_id))

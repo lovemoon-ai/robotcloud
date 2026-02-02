@@ -1041,6 +1041,33 @@ class RobotCloudService:
             }
         )
 
+    def inference_logs(self, token: str, task_id: int, offset: int, limit: int) -> Dict[str, Any]:
+        """Proxy inference log chunks from the assigned agent."""
+        user = self._get_user_by_token(token)
+        task = self._get_inference_task(task_id, user)
+        if not task.assigned_node:
+            return self._response({"content": "", "next_offset": max(offset, 0), "complete": False})
+        try:
+            node = WorkerNode.objects.get(node_name=task.assigned_node)
+        except WorkerNode.DoesNotExist:
+            return self._response({"content": "", "next_offset": max(offset, 0), "complete": False})
+
+        url = f"http://{node.ip}:{node.api_port}/api/v1/agent/inference_logs"
+        headers = {"X-Agent-Token": node.auth_token, "Content-Type": "application/json"}
+        params = {"task_id": task_id, "offset": max(offset, 0), "limit": max(limit, 1)}
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("Invalid agent response")
+            content = str(data.get("content", ""))
+            next_offset = int(data.get("next_offset", params["offset"]))
+            complete = bool(data.get("complete", False))
+            return self._response({"content": content, "next_offset": next_offset, "complete": complete})
+        except Exception:
+            return self._response({"content": "", "next_offset": max(offset, 0), "complete": False})
+
     def delete_inference_task(self, token: str, task_id: int) -> Dict[str, Any]:
         """Delete an inference task that belongs to the current user."""
         user = self._get_user_by_token(token)

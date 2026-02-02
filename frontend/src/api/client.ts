@@ -369,6 +369,16 @@ export const robotCloudApi = {
     );
     return { content: data.content, nextOffset: data.next_offset, complete: data.complete };
   },
+  fetchInferenceLog: async (
+    params: { taskId: number; offset?: number; limit?: number }
+  ): Promise<{ content: string; nextOffset: number; complete: boolean }> => {
+    const offset = params.offset ?? 0;
+    const limit = params.limit ?? 65536;
+    const data = await request<{ content: string; next_offset: number; complete: boolean }>(
+      `/inference/${params.taskId}/logs?offset=${offset}&limit=${limit}`
+    );
+    return { content: data.content, nextOffset: data.next_offset, complete: data.complete };
+  },
   requestOtp: async (phone: string) => {
     const data = await request<{ sent: boolean; code?: string }>("/auth/send_code", {
       method: "POST",

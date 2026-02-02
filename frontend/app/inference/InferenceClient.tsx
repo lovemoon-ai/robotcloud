@@ -32,6 +32,12 @@ export default function InferenceClient() {
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [logTaskId, setLogTaskId] = useState<number | null>(null);
+  const [logBuffer, setLogBuffer] = useState<string>("");
+  const [logOffset, setLogOffset] = useState<number>(0);
+  const [logComplete, setLogComplete] = useState<boolean>(false);
+  const [logError, setLogError] = useState<string | null>(null);
+  const [isLogMaximized, setIsLogMaximized] = useState<boolean>(false);
   const isZh = locale === "zh";
   const copy = isZh
     ? {
@@ -56,6 +62,7 @@ export default function InferenceClient() {
         errorLabel: (message: string) => `错误：${message}`,
         countdownLabel: (value: string) => `剩余：${value}`,
         waiting: "排队中",
+        logsLabel: (hasLog: boolean) => (hasLog ? "查看日志" : "日志生成中"),
         delete: "删除",
         pending: "等待云端完成",
         empty: "暂无推理记录。"
@@ -82,6 +89,7 @@ export default function InferenceClient() {
         errorLabel: (message: string) => `Error: ${message}`,
         countdownLabel: (value: string) => `Time left: ${value}`,
         waiting: "Waiting",
+        logsLabel: (hasLog: boolean) => (hasLog ? "View logs" : "Logs pending"),
         delete: "Delete",
         pending: "Waiting for cloud completion",
         empty: "No inference jobs found."
@@ -146,6 +154,50 @@ export default function InferenceClient() {
     await mutation.mutateAsync({ modelId: Number.parseInt(modelId, 10) });
   };
 
+  const closeLog = () => {
+    setLogTaskId(null);
+    setLogBuffer("");
+    setLogOffset(0);
+    setLogComplete(false);
+    setLogError(null);
+    setIsLogMaximized(false);
+  };
+
+  const openLog = (taskId: number) => {
+    setLogTaskId(taskId);
+    setLogBuffer("");
+    setLogOffset(0);
+    setLogComplete(false);
+    setLogError(null);
+  };
+
+  const [pollTick, setPollTick] = useState(0);
+  const shouldPoll = Boolean(logTaskId && token && !logComplete);
+  useEffect(() => {
+    if (!shouldPoll) return;
+    let aborted = false;
+    const fetchChunk = async () => {
+      try {
+        const chunk = await robotCloudApi.fetchInferenceLog({ taskId: logTaskId!, offset: logOffset });
+        if (aborted) return;
+        const newContent = chunk.content || "";
+        if (newContent) setLogBuffer((prev) => prev + newContent);
+        setLogOffset(chunk.nextOffset);
+        setLogComplete(chunk.complete);
+        setLogError(null);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setLogError(message);
+      }
+    };
+    fetchChunk();
+    const t = setInterval(() => setPollTick((x) => x + 1), 2000);
+    return () => {
+      aborted = true;
+      clearInterval(t);
+    };
+  }, [shouldPoll, logTaskId, logOffset, pollTick, token]);
+
   return (
     <main className="space-y-6">
       <header className="space-y-2">
@@ -209,15 +261,28 @@ export default function InferenceClient() {
                   <p className="text-[11px] text-muted">
                     {job.resultPath ? copy.resultLabel(job.resultPath) : copy.pending}
                   </p>
-                  {job.status !== "running" ? (
-                    <button
-                      type="button"
-                      onClick={() => setDeleteTarget(job.id)}
-                      className="mt-2 text-xs font-semibold text-red-500 hover:text-red-400"
-                    >
-                      {copy.delete}
-                    </button>
-                  ) : null}
+                  <div className="mt-2 flex items-center gap-3">
+                    {job.status === "queued" ? (
+                      <span className="text-xs text-muted">{copy.logsLabel(false)}</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => openLog(job.id)}
+                        className="text-xs font-semibold accent-text hover:text-primary"
+                      >
+                        {copy.logsLabel(true)}
+                      </button>
+                    )}
+                    {job.status !== "running" ? (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(job.id)}
+                        className="text-xs font-semibold text-red-500 hover:text-red-400"
+                      >
+                        {copy.delete}
+                      </button>
+                    ) : null}
+                  </div>
                 </Card>
               ))}
               {!data?.length ? <p className="text-sm text-muted">{copy.empty}</p> : null}
@@ -256,6 +321,47 @@ export default function InferenceClient() {
               >
                 {isZh ? "确认删除" : "Confirm Delete"}
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {logTaskId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div
+            className={`rounded-lg border border-theme p-4 shadow-xl transition-all ${isLogMaximized ? "w-full h-full max-w-none" : "w-full max-w-3xl"}`}
+            style={{ backgroundColor: "var(--color-card)" }}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-semibold accent-text">Task #{logTaskId} Logs</h3>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setIsLogMaximized(!isLogMaximized)}
+                  className="text-muted hover:text-body"
+                  type="button"
+                >
+                  {isLogMaximized ? "⊖" : "⊕"}
+                </button>
+                <button onClick={closeLog} className="text-muted hover:text-body" type="button">
+                  Close
+                </button>
+              </div>
+            </div>
+            <div
+              className={`overflow-auto rounded p-3 text-xs font-mono ${isLogMaximized ? "h-[calc(100%-5rem)]" : "h-96"} bg-black text-white`}
+            >
+              <pre className="whitespace-pre-wrap leading-relaxed">{logBuffer || (logError ? `Error: ${logError}` : "Waiting for logs...")}</pre>
+            </div>
+            <div className="mt-2 flex items-center justify-between text-xs text-muted">
+              <span>Offset: {logOffset}{logComplete ? " · Completed" : ""}</span>
+              {!logComplete ? (
+                <button
+                  onClick={() => setPollTick((x) => x + 1)}
+                  className="accent-text hover:text-primary"
+                  type="button"
+                >
+                  Refresh
+                </button>
+              ) : null}
             </div>
           </div>
         </div>

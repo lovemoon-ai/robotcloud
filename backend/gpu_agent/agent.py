@@ -117,7 +117,7 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         from urllib.parse import urlparse, parse_qs
 
         parsed = urlparse(self.path)
-        if parsed.path != "/api/v1/agent/logs":
+        if parsed.path not in {"/api/v1/agent/logs", "/api/v1/agent/inference_logs"}:
             self.send_error(404, "Not Found")
             return
         token = self.headers.get("X-Agent-Token", "")
@@ -145,7 +145,10 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         if limit <= 0:
             limit = 65536
 
-        content, next_offset, complete = self.server.agent.read_log_chunk(task_id, offset, limit)
+        if parsed.path == "/api/v1/agent/inference_logs":
+            content, next_offset, complete = self.server.agent.read_inference_log_chunk(task_id, offset, limit)
+        else:
+            content, next_offset, complete = self.server.agent.read_log_chunk(task_id, offset, limit)
         body = {"content": content, "next_offset": next_offset, "complete": complete}
         payload = json.dumps(body).encode("utf-8")
         self.send_response(200)
@@ -1480,6 +1483,36 @@ class Agent:
             # Consider complete if job no longer running and we've reached EOF
             with self._lock:
                 running = task_id in self._jobs
+            complete = (not running) and (next_offset >= size)
+            try:
+                text = data.decode("utf-8", errors="replace")
+            except Exception:
+                text = data.decode("latin-1", errors="replace")
+            return text, next_offset, bool(complete)
+        except OSError:
+            return "", offset, False
+
+    def _inference_log_file_path(self, task_id: int) -> Path:
+        return (self.config.log_dir / f"inference_{task_id}.log").resolve()
+
+    def read_inference_log_chunk(self, task_id: int, offset: int, limit: int) -> tuple[str, int, bool]:
+        path = self._inference_log_file_path(task_id)
+        if not path.exists() or offset < 0:
+            return "", max(offset, 0), False
+        try:
+            size = path.stat().st_size
+            if offset > size:
+                offset = size
+            to_read = min(limit, max(size - offset, 0))
+            data = b""
+            with path.open("rb") as f:
+                if offset:
+                    f.seek(offset)
+                if to_read:
+                    data = f.read(to_read)
+            next_offset = offset + len(data)
+            with self._lock:
+                running = task_id in self._inference_jobs
             complete = (not running) and (next_offset >= size)
             try:
                 text = data.decode("utf-8", errors="replace")
