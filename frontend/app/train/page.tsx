@@ -116,11 +116,17 @@ function TrainPageContent() {
   const [logError, setLogError] = useState<string | null>(null);
   const [isLogMaximized, setIsLogMaximized] = useState<boolean>(false);
   const [completedTaskIds, setCompletedTaskIds] = useState<Set<number>>(new Set());
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.createTrainingJob,
     onSuccess: () => {
+      setCreateError(null);
       client.invalidateQueries({ queryKey: ["training-jobs"] });
+    },
+    onError: (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      setCreateError(message);
     }
   });
 
@@ -215,7 +221,11 @@ function TrainPageContent() {
       return;
     }
     setLoginNotice(null);
-    await mutation.mutateAsync(values);
+    try {
+      await mutation.mutateAsync(values);
+    } catch {
+      // Error handled by mutation onError.
+    }
   });
 
   return (
@@ -274,6 +284,7 @@ function TrainPageContent() {
           >
             {mutation.isPending ? copy.submitting : copy.submit}
           </button>
+          {createError ? <p className="text-xs text-red-500">{createError}</p> : null}
         </form>
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">

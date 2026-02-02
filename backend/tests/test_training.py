@@ -2,6 +2,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 
 from robotcloud_backend.sms import InMemorySmsGateway
+from robotcloud_backend.api.models import Dataset, TrainTask, User
 
 
 def _setup_user_and_dataset(client: APIClient, sms_gateway: InMemorySmsGateway, phone: str) -> tuple[str, int]:
@@ -83,3 +84,29 @@ def test_training_lifecycle(client: APIClient, sms_gateway: InMemorySmsGateway) 
     )
     assert download_resp.status_code == 200
     assert download_resp.json()["data"]["model_path"].endswith(f"{task_id}.pt")
+
+
+def test_training_model_limit(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13900000003")
+    user = User.objects.get(phone="13900000003")
+    dataset = Dataset.objects.get(id=dataset_id)
+    for _ in range(5):
+        TrainTask.objects.create(
+            dataset=dataset,
+            user=user,
+            model_type="ACT",
+            params={},
+            status="completed",
+            progress=1.0,
+            logs_url="",
+            checkpoint_path="/tmp/checkpoints/task_1",
+        )
+
+    create_resp = client.post(
+        "/api/v1/training/create",
+        {"dataset_id": dataset_id, "model_type": "yolov8", "params": {"epochs": 10}},
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert create_resp.status_code == 400
+    assert "limit" in create_resp.json().get("message", "").lower()

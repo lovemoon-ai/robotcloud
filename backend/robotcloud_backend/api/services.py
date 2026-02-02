@@ -715,6 +715,9 @@ class RobotCloudService:
         if not model_type:
             raise ValueError("Model type required")
         user = self._get_user_by_token(token)
+        completed_models = user.train_tasks.filter(status="completed").count()
+        if completed_models >= 5:
+            raise ValueError("Saved model limit reached (5)")
         dataset = self._get_dataset(dataset_id)
         with transaction.atomic():
             task = TrainTask.objects.create(
@@ -1003,6 +1006,9 @@ class RobotCloudService:
             raise PermissionError("Inference is not available for free users")
         if model_id is None:
             raise ValueError("model_id required")
+        queued_count = user.inference_tasks.filter(status="queued").count()
+        if queued_count >= 3:
+            raise ValueError("Queued inference task limit reached (3)")
         dataset = self._get_dataset(dataset_id) if dataset_id is not None else None
         train_task = self._get_train_task(int(model_id), user)
         if train_task.status != "completed":

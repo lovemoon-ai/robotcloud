@@ -91,3 +91,36 @@ def test_inference_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> N
     )
     assert delete_resp.status_code == 200
     assert delete_resp.json()["data"]["deleted"] is True
+
+
+def test_inference_queue_limit(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    token, dataset_id = _prepare_dataset(client, sms_gateway)
+    user = User.objects.get(phone="13900000002")
+    dataset = Dataset.objects.get(id=dataset_id)
+    train_task = TrainTask.objects.create(
+        dataset=dataset,
+        user=user,
+        model_type="ACT",
+        params={},
+        status="completed",
+        progress=1.0,
+        logs_url="",
+        checkpoint_path="/tmp/checkpoints/task_1",
+    )
+    for _ in range(3):
+        resp = client.post(
+            "/api/v1/inference/create",
+            {"model_id": train_task.id},
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        assert resp.status_code == 200
+
+    overflow_resp = client.post(
+        "/api/v1/inference/create",
+        {"model_id": train_task.id},
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert overflow_resp.status_code == 400
+    assert "limit" in overflow_resp.json().get("message", "").lower()

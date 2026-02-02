@@ -298,7 +298,9 @@ export default function InferenceClient() {
                 >
                   <div className="flex items-center justify-between text-xs text-muted">
                     <span>{copy.statusLabel(job.status)}</span>
-                    <span>{copy.countdownLabel(formatCountdown(job.startedAt, job.status))}</span>
+                    {job.status === "running" ? (
+                      <span>{copy.countdownLabel(formatCountdown(job.startedAt, job.status))}</span>
+                    ) : null}
                   </div>
                   {job.serverHost && job.serverPort ? (
                     <p className="text-[11px] text-muted">{copy.serverLabel(job.serverHost, job.serverPort)}</p>
