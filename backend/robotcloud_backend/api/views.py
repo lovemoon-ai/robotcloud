@@ -355,6 +355,30 @@ class AgentTrainingUpdateView(RobotCloudAPIView):
         return self._execute(action)
 
 
+class AgentInferenceUpdateView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        payload = request.data
+        token = self._get_agent_token(request)
+
+        def action() -> Dict:
+            task_id = payload.get("task_id")
+            if task_id is None:
+                raise ValueError("task_id required")
+            return self._service().agent_update_inference(
+                token,
+                int(task_id),
+                payload.get("status", ""),
+                payload.get("progress"),
+                payload.get("server_host"),
+                payload.get("server_port"),
+                payload.get("error_message"),
+            )
+
+        return self._execute(action)
+
+
 class InferenceCreateView(RobotCloudAPIView):
     parser_classes = [JSONParser]
 

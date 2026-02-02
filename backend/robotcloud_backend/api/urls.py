@@ -44,6 +44,7 @@ urlpatterns = [
     path("internal/agent/register", views.AgentRegisterView.as_view(), name="agent-register"),
     path("internal/agent/heartbeat", views.AgentHeartbeatView.as_view(), name="agent-heartbeat"),
     path("internal/training/update", views.AgentTrainingUpdateView.as_view(), name="agent-training-update"),
+    path("internal/inference/update", views.AgentInferenceUpdateView.as_view(), name="agent-inference-update"),
     # Inference
     path("inference/create", views.InferenceCreateView.as_view(), name="inference-create"),
     path("inference/list", views.InferenceListView.as_view(), name="inference-list"),

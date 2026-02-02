@@ -14,7 +14,7 @@ from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
 
-from .models import TrainTask, User, WorkerNode
+from .models import InferenceTask, TrainTask, User, WorkerNode
 
 
 def _normalize_policy_name(model_type: str) -> str:
@@ -71,6 +71,7 @@ class SchedulerService:
         """Execute a single scheduling cycle and return number of assignments."""
         self.refresh_queue_positions()
         assigned = self.assign_pending_tasks()
+        assigned += self.assign_pending_inference_tasks()
         self.cleanup_offline_nodes()
         return assigned
 
@@ -93,6 +94,13 @@ class SchedulerService:
             status="running", assigned_node__in=[node.node_name for node in nodes]
         )
         for task in running_tasks:
+            if not task.assigned_node:
+                continue
+            node_gpu_usage[task.assigned_node].update(self._parse_assigned_gpus(task.assigned_gpus))
+        running_inference = InferenceTask.objects.filter(
+            status="running", assigned_node__in=[node.node_name for node in nodes]
+        )
+        for task in running_inference:
             if not task.assigned_node:
                 continue
             node_gpu_usage[task.assigned_node].update(self._parse_assigned_gpus(task.assigned_gpus))
@@ -131,6 +139,128 @@ class SchedulerService:
         if assignments:
             self.refresh_queue_positions()
         return assignments
+
+    def assign_pending_inference_tasks(self) -> int:
+        nodes = list(
+            WorkerNode.objects.filter(status=WorkerNode.STATUS_ONLINE, gpu_total__gt=0).order_by("node_name")
+        )
+        if not nodes:
+            return 0
+
+        node_gpu_usage: Dict[str, Set[int]] = defaultdict(set)
+        running_train = TrainTask.objects.filter(
+            status="running", assigned_node__in=[node.node_name for node in nodes]
+        )
+        for task in running_train:
+            if not task.assigned_node:
+                continue
+            node_gpu_usage[task.assigned_node].update(self._parse_assigned_gpus(task.assigned_gpus))
+        running_inference = InferenceTask.objects.filter(
+            status="running", assigned_node__in=[node.node_name for node in nodes]
+        )
+        for task in running_inference:
+            if not task.assigned_node:
+                continue
+            node_gpu_usage[task.assigned_node].update(self._parse_assigned_gpus(task.assigned_gpus))
+
+        running_counts = {
+            row["user_id"]: row["count"]
+            for row in InferenceTask.objects.filter(status="running").values("user_id").annotate(count=Count("id"))
+        }
+
+        queued_tasks = list(
+            InferenceTask.objects.filter(status="queued")
+            .select_related("user")
+            .order_by("created_at")
+        )
+
+        assignments = 0
+        for task in queued_tasks:
+            max_concurrent = self._max_inference_concurrent_for_role(task.user.role)
+            current_running = running_counts.get(task.user_id, 0)
+            if current_running >= max_concurrent:
+                continue
+            node = self._select_node(nodes, node_gpu_usage)
+            if not node:
+                break
+            assignment = self._attempt_inference_assignment(task, node, node_gpu_usage, max_concurrent)
+            if not assignment:
+                continue
+            node_ref, task_ref, gpu_index = assignment
+            if self._dispatch_inference_task(node_ref, task_ref, gpu_index):
+                node_gpu_usage[node_ref.node_name].add(gpu_index)
+                running_counts[task_ref.user_id] = running_counts.get(task_ref.user_id, 0) + 1
+                assignments += 1
+            else:
+                self._rollback_inference_assignment(task_ref.id, node_ref.id)
+        return assignments
+
+    def _attempt_inference_assignment(
+        self,
+        task: InferenceTask,
+        node: WorkerNode,
+        node_gpu_usage: Dict[str, Set[int]],
+        max_concurrent: int,
+    ) -> Optional[Tuple[WorkerNode, InferenceTask, int]]:
+        with transaction.atomic():
+            node_ref = WorkerNode.objects.select_for_update().get(pk=node.pk)
+            available_gpu = self._available_gpus(node_ref, node_gpu_usage)
+            if not available_gpu:
+                return None
+            task_ref = InferenceTask.objects.select_for_update().select_related("user").get(pk=task.pk)
+            if task_ref.status != "queued":
+                return None
+            running_for_user = (
+                InferenceTask.objects.filter(user_id=task_ref.user_id, status="running")
+                .exclude(pk=task_ref.pk)
+                .count()
+            )
+            if running_for_user >= max_concurrent:
+                return None
+            gpu_index = available_gpu[0]
+            task_ref.status = "running"
+            task_ref.assigned_node = node_ref.node_name
+            task_ref.assigned_gpus = json.dumps([gpu_index])
+            task_ref.progress = 0.0
+            task_ref.started_at = timezone.now()
+            task_ref.save(
+                update_fields=["status", "assigned_node", "assigned_gpus", "progress", "started_at"]
+            )
+
+            node_ref.gpu_busy = min(node_ref.gpu_busy + 1, node_ref.gpu_total)
+            node_ref.gpu_free = max(node_ref.gpu_total - node_ref.gpu_busy, 0)
+            node_ref.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+        return node_ref, task_ref, gpu_index
+
+    def _dispatch_inference_task(self, node: WorkerNode, task: InferenceTask, gpu_index: int) -> bool:
+        url = f"http://{node.ip}:{node.api_port}/api/v1/agent/infer"
+        payload = {
+            "task_id": task.id,
+            "gpus": [gpu_index],
+            "cmd": "python -m lerobot.async_inference.policy_server",
+            "params": {"host": "0.0.0.0"},
+            "checkpoint_path": task.checkpoint_path,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "X-Agent-Token": node.auth_token,
+        }
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            self.logger.warning("Failed to dispatch inference task %s to node %s: %s", task.id, node.node_name, exc)
+            return False
+        if isinstance(data, dict):
+            if data.get("status") == "accepted":
+                return True
+            if isinstance(data.get("data"), dict) and data["data"].get("status") == "accepted":
+                return True
+        self.logger.warning(
+            "Unexpected response when dispatching inference task %s to node %s: %s", task.id, node.node_name, data
+        )
+        return False
 
     def _attempt_assignment(
         self,
@@ -325,6 +455,25 @@ class SchedulerService:
             node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
             node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
 
+    def _rollback_inference_assignment(self, task_id: int, node_id: int) -> None:
+        with transaction.atomic():
+            try:
+                task = InferenceTask.objects.select_for_update().get(pk=task_id)
+            except InferenceTask.DoesNotExist:
+                return
+            task.status = "queued"
+            task.assigned_node = None
+            task.assigned_gpus = None
+            task.progress = 0.0
+            task.save(update_fields=["status", "assigned_node", "assigned_gpus", "progress"])
+            try:
+                node = WorkerNode.objects.select_for_update().get(pk=node_id)
+            except WorkerNode.DoesNotExist:
+                return
+            node.gpu_busy = max(node.gpu_busy - 1, 0)
+            node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
+            node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+
     def cleanup_offline_nodes(self) -> None:
         threshold = timezone.now() - self.heartbeat_timeout
         offline_nodes = WorkerNode.objects.filter(
@@ -351,6 +500,13 @@ class SchedulerService:
             task.assigned_node = None
             task.assigned_gpus = None
             task.save(update_fields=["status", "retry_count", "assigned_node", "assigned_gpus", "progress"])
+        inference_tasks = InferenceTask.objects.filter(assigned_node=node.node_name, status="running")
+        for task in inference_tasks:
+            task.status = "queued"
+            task.assigned_node = None
+            task.assigned_gpus = None
+            task.progress = 0.0
+            task.save(update_fields=["status", "assigned_node", "assigned_gpus", "progress"])
         if tasks.exists():
             self.refresh_queue_positions()
 
@@ -396,3 +552,12 @@ class SchedulerService:
             User.ROLE_ADMIN: 4,
         }
         return mapping.get(role, 2)
+
+    def _max_inference_concurrent_for_role(self, role: str) -> int:
+        mapping = {
+            User.ROLE_PRO: 2,
+            User.ROLE_PLUS: 1,
+            User.ROLE_FREE: 1,
+            User.ROLE_ADMIN: 2,
+        }
+        return mapping.get(role, 1)

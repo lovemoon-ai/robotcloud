@@ -19,6 +19,7 @@ from urllib.parse import urlparse, parse_qs
 import hashlib
 import shutil
 import errno
+import socket
 
 from .config import AgentConfig
 
@@ -39,6 +40,9 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             self._handle_upload(parsed)
             return
         # Enqueue training run
+        if parsed.path == "/api/v1/agent/infer":
+            self._handle_infer()
+            return
         if parsed.path != "/api/v1/agent/run":
             self.send_error(404, "Not Found")
             return
@@ -51,6 +55,27 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             result = self.server.agent.enqueue_task(payload)
+        except ValueError as exc:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"detail": str(exc)}).encode("utf-8"))
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(result).encode("utf-8"))
+
+    def _handle_infer(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length) if content_length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON payload")
+            return
+        try:
+            result = self.server.agent.enqueue_inference(payload)
         except ValueError as exc:
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
@@ -328,11 +353,18 @@ class TrainingJob(threading.Thread):
             if self._last_progress < 1.0:
                 self._last_progress = 1.0
             self.logger.info("Training task %s completed (log=%s)", self.task_id, self.log_path)
+            output_dir = self._resolve_output_dir()
+            checkpoint_path = output_dir / "checkpoints" / "last" / "pretrained_model"
             self.agent.notify_status(
                 self.task_id,
                 "completed",
                 self._last_progress,
-                metrics={"exit_code": exit_code, "log_path": str(self.log_path)},
+                metrics={
+                    "exit_code": exit_code,
+                    "log_path": str(self.log_path),
+                    "output_dir": str(output_dir),
+                    "checkpoint_path": str(checkpoint_path),
+                },
             )
         else:
             self.logger.error("Training task %s failed with exit code %s", self.task_id, exit_code)
@@ -569,6 +601,12 @@ class TrainingJob(threading.Thread):
         if self.dataset_path:
             env["RC_DATASET_PATH"] = self.dataset_path
         return env
+
+    def _resolve_output_dir(self) -> Path:
+        output_dir = self.params.get("output_dir")
+        if isinstance(output_dir, str) and output_dir:
+            return Path(output_dir)
+        return self.work_dir / "backend" / "storage" / "train_runs" / f"task_{self.task_id}"
 
     def _format_command(self, command: List[str]) -> str:
         return shlex.join(command)
@@ -918,6 +956,123 @@ class TrainingJob(threading.Thread):
             process.kill()
 
 
+class InferenceJob(threading.Thread):
+    """Start an async inference policy server."""
+
+    def __init__(
+        self,
+        agent: "Agent",
+        task_id: int,
+        gpus: List[int],
+        params: Dict,
+        cmd: str,
+        log_dir: Path,
+        work_dir: Path,
+    ) -> None:
+        super().__init__(daemon=True)
+        self.agent = agent
+        self.task_id = task_id
+        self.gpus = gpus
+        self.params = dict(params or {})
+        self.cmd = (cmd or "python -m lerobot.async_inference.policy_server").strip()
+        self.log_dir = Path(log_dir)
+        self.work_dir = Path(work_dir)
+        self.log_path = self.log_dir / f"inference_{self.task_id}.log"
+        self.logger = agent.logger.getChild(f"infer-{task_id}")
+        self._process: Optional[subprocess.Popen[str]] = None
+        self.server_port: Optional[int] = None
+
+    def run(self) -> None:
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        host = str(self.params.get("host") or "0.0.0.0")
+        port = self._pick_port()
+        self.server_port = port
+        command = self._build_command(host, port)
+        env = self._build_env()
+        try:
+            with self.log_path.open("w", encoding="utf-8") as logf:
+                self._process = subprocess.Popen(
+                    command,
+                    cwd=self.work_dir,
+                    env=env,
+                    stdout=logf,
+                    stderr=logf,
+                    text=True,
+                )
+                self.agent.notify_inference_status(
+                    self.task_id,
+                    "running",
+                    0.0,
+                    server_port=port,
+                    log_path=str(self.log_path),
+                )
+                exit_code = self._process.wait()
+        except Exception as exc:
+            self.logger.exception("Inference task %s crashed: %s", self.task_id, exc)
+            self.agent.notify_inference_status(
+                self.task_id,
+                "failed",
+                0.0,
+                server_port=port,
+                error_message=str(exc),
+                log_path=str(self.log_path),
+            )
+            self.agent.finish_job(self.task_id)
+            return
+        if exit_code == 0:
+            self.agent.notify_inference_status(
+                self.task_id,
+                "completed",
+                1.0,
+                server_port=port,
+                log_path=str(self.log_path),
+            )
+        else:
+            self.agent.notify_inference_status(
+                self.task_id,
+                "failed",
+                0.0,
+                server_port=port,
+                error_message=f"exit_code={exit_code}",
+                log_path=str(self.log_path),
+            )
+        self.agent.finish_job(self.task_id)
+
+    def _build_env(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        if self.gpus:
+            env["CUDA_VISIBLE_DEVICES"] = ",".join(str(gpu) for gpu in self.gpus)
+        env["INFER_TASK_ID"] = str(self.task_id)
+        return env
+
+    def _build_command(self, host: str, port: int) -> List[str]:
+        base = shlex.split(self.cmd)
+        args = [f"--host={host}", f"--port={port}"]
+        return base + args
+
+    def _pick_port(self) -> int:
+        start = int(os.getenv("AGENT_INFERENCE_PORT_START", "6153"))
+        max_tries = int(os.getenv("AGENT_INFERENCE_PORT_RANGE", "50"))
+        for offset in range(max_tries):
+            port = start + offset
+            if self._port_available(port):
+                return port
+        raise ValueError("No available inference port")
+
+    @staticmethod
+    def _port_available(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("0.0.0.0", port))
+            except OSError:
+                return False
+        return True
+
+
 class Agent:
     """RobotCloud GPU agent implementation."""
 
@@ -927,6 +1082,7 @@ class Agent:
         self.session = session or requests.Session()
         self.agent_token: Optional[str] = None
         self._jobs: Dict[int, TrainingJob] = {}
+        self._inference_jobs: Dict[int, InferenceJob] = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._heartbeat_thread: Optional[threading.Thread] = None
@@ -1056,6 +1212,37 @@ class Agent:
         except Exception as exc:
             self.logger.warning("Failed to report status for task %s: %s", task_id, exc)
 
+    def notify_inference_status(
+        self,
+        task_id: int,
+        status: str,
+        progress: float,
+        server_port: Optional[int] = None,
+        error_message: Optional[str] = None,
+        log_path: Optional[str] = None,
+    ) -> None:
+        if not self.agent_token:
+            return
+        payload = {
+            "task_id": task_id,
+            "status": status,
+            "progress": round(progress, 4),
+            "server_host": self.config.report_ip,
+            "server_port": server_port,
+            "error_message": error_message,
+            "log_path": log_path,
+        }
+        url = f"{self.config.backend_base_url}/internal/inference/update"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Agent-Token": self.agent_token,
+        }
+        try:
+            response = self.session.post(url, json=payload, headers=headers, timeout=5)
+            response.raise_for_status()
+        except Exception as exc:
+            self.logger.warning("Failed to report inference status for task %s: %s", task_id, exc)
+
     # -------------------- HTTP server helpers --------------------
     def _serve_http(self) -> None:
         server = AgentHTTPServer((self.config.listen_host, self.config.api_port), AgentHTTPRequestHandler, self)
@@ -1106,14 +1293,53 @@ class Agent:
         job.start()
         return {"status": "accepted"}
 
+    def enqueue_inference(self, payload: Dict) -> Dict[str, str]:
+        task_id = payload.get("task_id")
+        if task_id is None:
+            raise ValueError("task_id required")
+        try:
+            task_id = int(task_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("task_id must be an integer") from exc
+        gpus_raw = payload.get("gpus") or []
+        gpus: List[int] = []
+        for g in gpus_raw:
+            try:
+                gpus.append(int(g))
+            except (TypeError, ValueError):
+                continue
+        if not gpus:
+            gpus = [0]
+        params = payload.get("params") or {}
+        cmd = payload.get("cmd", "python -m lerobot.async_inference.policy_server")
+        with self._lock:
+            if task_id in self._inference_jobs:
+                self.logger.info("Inference task %s already running, acknowledging duplicate dispatch", task_id)
+                return {"status": "accepted", "detail": "already running"}
+            job = InferenceJob(
+                self,
+                task_id,
+                gpus,
+                params,
+                cmd,
+                self.config.log_dir,
+                self.config.work_dir,
+            )
+            self._inference_jobs[task_id] = job
+        job.start()
+        return {"status": "accepted"}
+
     def finish_job(self, task_id: int) -> None:
         with self._lock:
             self._jobs.pop(task_id, None)
+            self._inference_jobs.pop(task_id, None)
 
     def _busy_gpu_indices(self) -> List[int]:
         with self._lock:
             indices: List[int] = []
             for job in self._jobs.values():
+                indices.extend(job.gpus)
+            for job in self._inference_jobs.values():
                 indices.extend(job.gpus)
         return sorted(set(indices))
 

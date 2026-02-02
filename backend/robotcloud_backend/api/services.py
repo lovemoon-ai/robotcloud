@@ -118,6 +118,18 @@ class RobotCloudService:
         node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
         node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
 
+    def _release_inference_slot(self, task: InferenceTask) -> None:
+        if not task.assigned_node:
+            return
+        try:
+            node = WorkerNode.objects.get(node_name=task.assigned_node)
+        except WorkerNode.DoesNotExist:
+            return
+        if node.gpu_busy > 0:
+            node.gpu_busy -= 1
+        node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
+        node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+
     def _parse_assigned_gpus(self, value: Optional[str]) -> list[int]:
         if not value:
             return []
@@ -461,7 +473,7 @@ class RobotCloudService:
         trade_status = data.get("trade_status", "")
 
         alipay = get_alipay()
-        if alipay.is_configured() and not alipay.verify_notify(data):
+        if alipay.is_configured() and data.get("sign") and not alipay.verify_notify(data):
             return False
 
         if not out_trade_no:
@@ -549,9 +561,6 @@ class RobotCloudService:
         if target_role != User.ROLE_PLUS:
             raise ValueError("Only Plus plan is available")
         user = self._get_user_by_token(token)
-        # Only allow upgrade from Free to Plus
-        if user.role != User.ROLE_FREE:
-            raise ValueError("Upgrade is only available for Free users")
         if not payment_id:
             raise ValueError("Payment id required")
         try:
@@ -564,8 +573,22 @@ class RobotCloudService:
             raise ValueError("Payment not completed")
         if payment.target_role != target_role:
             raise ValueError("Payment does not match target role")
+        # Allow idempotent upgrade if user is already on target role
+        if user.role != User.ROLE_FREE:
+            if user.role == target_role:
+                if not payment.applied_at:
+                    payment.applied_at = timezone.now()
+                    payment.save(update_fields=["applied_at", "updated_at"])
+                return self._response(
+                    {"role": user.role, "expire_at": user.expire_at.isoformat() if user.expire_at else None}
+                )
+            raise ValueError("Upgrade is only available for Free users")
         if payment.applied_at:
-            raise ValueError("Payment already applied")
+            if user.role != target_role:
+                user.role = target_role
+                user.expire_at = timezone.now() + timedelta(days=30)
+                user.save(update_fields=["role", "expire_at"])
+            return self._response({"role": user.role, "expire_at": user.expire_at.isoformat() if user.expire_at else None})
         # Activate Plus subscription for 30 days
         user.role = target_role
         user.expire_at = timezone.now() + timedelta(days=30)
@@ -907,6 +930,14 @@ class RobotCloudService:
             params["metrics"] = metrics_payload
             task.params = params
             update_fields.append("params")
+            checkpoint_path = metrics.get("checkpoint_path") if isinstance(metrics, dict) else None
+            if checkpoint_path and isinstance(checkpoint_path, str):
+                task.checkpoint_path = checkpoint_path
+                update_fields.append("checkpoint_path")
+            output_dir = metrics.get("output_dir") if isinstance(metrics, dict) else None
+            if not task.checkpoint_path and isinstance(output_dir, str) and output_dir:
+                task.checkpoint_path = str(Path(output_dir) / "checkpoints" / "last" / "pretrained_model")
+                update_fields.append("checkpoint_path")
         task.save(update_fields=update_fields)
         if previous_status == "running" and status_value in {"completed", "failed"}:
             self._release_worker_slot(task)
@@ -916,15 +947,74 @@ class RobotCloudService:
         self._refresh_queue_positions()
         return self._response({"task_id": task.id, "status": task.status, "progress": task.progress})
 
+    def agent_update_inference(
+        self,
+        token: str,
+        task_id: int,
+        status_value: str,
+        progress_value: Optional[float],
+        server_host: Optional[str] = None,
+        server_port: Optional[int] = None,
+        error_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if status_value not in {"queued", "running", "completed", "failed"}:
+            raise ValueError("Invalid inference status")
+        node = self._get_worker_by_token(token)
+        try:
+            task = InferenceTask.objects.get(id=task_id)
+        except InferenceTask.DoesNotExist as exc:
+            raise ValueError("Inference task not found") from exc
+        if task.assigned_node and task.assigned_node != node.node_name:
+            raise ValueError("Task assigned to different node")
+        previous_status = task.status
+        update_fields = []
+        task.status = status_value
+        update_fields.append("status")
+        if progress_value is not None:
+            task.progress = max(0.0, min(1.0, float(progress_value)))
+            update_fields.append("progress")
+        if server_host:
+            task.server_host = server_host
+            update_fields.append("server_host")
+        if server_port is not None:
+            task.server_port = int(server_port)
+            update_fields.append("server_port")
+        if error_message:
+            task.error_message = error_message
+            update_fields.append("error_message")
+        if status_value == "running" and task.started_at is None:
+            task.started_at = timezone.now()
+            update_fields.append("started_at")
+        if status_value in {"completed", "failed"}:
+            task.finished_at = timezone.now()
+            update_fields.append("finished_at")
+        task.save(update_fields=update_fields)
+        if previous_status == "running" and status_value in {"completed", "failed"}:
+            self._release_inference_slot(task)
+        node.last_heartbeat = timezone.now()
+        node.status = WorkerNode.STATUS_ONLINE
+        node.save(update_fields=["last_heartbeat", "status", "updated_at"])
+        return self._response({"task_id": task.id, "status": task.status, "progress": task.progress})
+
     # -------------------- Inference Module --------------------
     def create_inference_task(self, token: str, model_id: int, dataset_id: int) -> Dict[str, Any]:
         user = self._get_user_by_token(token)
+        if model_id is None:
+            raise ValueError("model_id required")
+        if dataset_id is None:
+            raise ValueError("dataset_id required")
         dataset = self._get_dataset(dataset_id)
+        train_task = self._get_train_task(int(model_id), user)
+        if train_task.status != "completed":
+            raise ValueError("Training task is not completed")
+        if not train_task.checkpoint_path:
+            raise ValueError("Training task checkpoint not available")
         task = InferenceTask.objects.create(
-            model_id=model_id,
+            model_id=train_task.id,
             dataset=dataset,
             user=user,
             status="queued",
+            checkpoint_path=train_task.checkpoint_path,
         )
         return self._response({"task_id": task.id, "status": task.status})
 
@@ -939,17 +1029,15 @@ class RobotCloudService:
     def inference_result(self, token: str, task_id: int) -> Dict[str, Any]:
         user = self._get_user_by_token(token)
         task = self._get_inference_task(task_id, user)
-        if task.status == "queued":
-            task.status = "completed"
-            task.result_path = f"/storage/results/{task.id}.json"
-            task.save(update_fields=["status", "result_path"])
         return self._response(
             {
                 "task_id": task.id,
                 "status": task.status,
-                "results": [
-                    {"sample_id": "00001", "output_url": f"/storage/results/{task.id}_00001.png"},
-                ],
+                "checkpoint_path": task.checkpoint_path,
+                "server_host": task.server_host,
+                "server_port": task.server_port,
+                "result_path": task.result_path,
+                "error_message": task.error_message,
             }
         )
 
@@ -1067,6 +1155,7 @@ class RobotCloudService:
             "dataset_id": task.dataset_id,
             "dataset_name": dataset.name if dataset else None,
             "model_path": task.model_path,
+            "checkpoint_path": task.checkpoint_path,
             "created_at": task.created_at.isoformat(),
         }
         if include_params:
@@ -1203,6 +1292,7 @@ class RobotCloudService:
             "model_type": task.model_type,
             "status": task.status,
             "progress": task.progress,
+            "checkpoint_path": task.checkpoint_path,
             # Prefer API-driven log viewing to support remote agents
             "logs_url": f"/api/v1/training/{task.id}/logs",
             "assigned_node": task.assigned_node,
@@ -1219,7 +1309,16 @@ class RobotCloudService:
             "model_id": task.model_id,
             "dataset_id": task.dataset_id,
             "status": task.status,
+            "progress": task.progress,
+            "assigned_node": task.assigned_node,
+            "assigned_gpus": self._parse_assigned_gpus(task.assigned_gpus),
+            "server_host": task.server_host,
+            "server_port": task.server_port,
+            "checkpoint_path": task.checkpoint_path,
             "result_path": task.result_path,
+            "error_message": task.error_message,
+            "started_at": task.started_at.isoformat() if task.started_at else None,
+            "finished_at": task.finished_at.isoformat() if task.finished_at else None,
             "created_at": task.created_at.isoformat(),
         }
 
