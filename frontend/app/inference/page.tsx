@@ -17,7 +17,13 @@ export default function InferencePage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["inference-jobs"],
     queryFn: robotCloudApi.fetchInferenceJobs,
-    enabled: Boolean(token)
+    enabled: Boolean(token),
+    refetchInterval: (query) => {
+      const jobs = query.state.data;
+      if (!jobs?.length) return false;
+      return jobs.some((job) => ["queued", "running"].includes(job.status)) ? 5000 : false;
+    },
+    refetchIntervalInBackground: true
   });
   const [datasetId, setDatasetId] = useState("");
   const [modelId, setModelId] = useState("");
@@ -43,6 +49,9 @@ export default function InferencePage() {
         datasetLabel: (id: number) => `数据集：${id}`,
         statusLabel: (status: string) => `状态：${status}`,
         resultLabel: (path: string) => `结果：${path}`,
+        serverLabel: (host: string, port: number) => `服务地址：${host}:${port}`,
+        checkpointLabel: (path: string) => `模型路径：${path}`,
+        errorLabel: (message: string) => `错误：${message}`,
         pending: "等待云端完成",
         empty: "暂无推理记录。"
       }
@@ -65,6 +74,9 @@ export default function InferencePage() {
         datasetLabel: (id: number) => `Dataset: ${id}`,
         statusLabel: (status: string) => `Status: ${status}`,
         resultLabel: (path: string) => `Result: ${path}`,
+        serverLabel: (host: string, port: number) => `Server: ${host}:${port}`,
+        checkpointLabel: (path: string) => `Checkpoint: ${path}`,
+        errorLabel: (message: string) => `Error: ${message}`,
         pending: "Waiting for cloud completion",
         empty: "No inference jobs found."
       };
@@ -142,6 +154,15 @@ export default function InferencePage() {
               {data?.map((job) => (
                 <Card key={job.id} title={copy.modelTitle(job.modelId)} description={copy.datasetLabel(job.datasetId)}>
                   <p className="text-xs text-muted">{copy.statusLabel(job.status)}</p>
+                  {job.serverHost && job.serverPort ? (
+                    <p className="text-[11px] text-muted">{copy.serverLabel(job.serverHost, job.serverPort)}</p>
+                  ) : null}
+                  {job.checkpointPath ? (
+                    <p className="text-[11px] text-muted">{copy.checkpointLabel(job.checkpointPath)}</p>
+                  ) : null}
+                  {job.errorMessage ? (
+                    <p className="text-[11px] text-red-400">{copy.errorLabel(job.errorMessage)}</p>
+                  ) : null}
                   <p className="text-[11px] text-muted">
                     {job.resultPath ? copy.resultLabel(job.resultPath) : copy.pending}
                   </p>

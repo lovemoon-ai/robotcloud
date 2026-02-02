@@ -71,7 +71,12 @@ type BackendInferenceTask = {
   model_id: number;
   dataset_id: number;
   status: string;
-  result_path: string | null;
+  progress?: number;
+  server_host?: string | null;
+  server_port?: number | null;
+  checkpoint_path?: string | null;
+  result_path?: string | null;
+  error_message?: string | null;
   created_at: string;
 };
 
@@ -99,6 +104,7 @@ type BackendModel = {
   dataset_id: number;
   dataset_name: string | null;
   model_path: string | null;
+  checkpoint_path?: string | null;
   created_at: string;
   params?: Record<string, unknown>;
 };
@@ -477,7 +483,12 @@ export const robotCloudApi = {
       datasetId: task.dataset_id,
       modelId: task.model_id,
       status: task.status,
-      resultPath: task.result_path ?? undefined
+      progress: task.progress,
+      serverHost: task.server_host ?? undefined,
+      serverPort: task.server_port ?? undefined,
+      checkpointPath: task.checkpoint_path ?? undefined,
+      resultPath: task.result_path ?? undefined,
+      errorMessage: task.error_message ?? undefined
     }));
   },
   runInference: async (params: { modelId: number; datasetId: number }) =>
@@ -515,6 +526,7 @@ export const robotCloudApi = {
       datasetId: item.dataset_id,
       datasetName: item.dataset_name,
       modelPath: item.model_path,
+      checkpointPath: item.checkpoint_path,
       createdAt: item.created_at
     }));
   },
@@ -527,6 +539,7 @@ export const robotCloudApi = {
       datasetId: item.dataset_id,
       datasetName: item.dataset_name,
       modelPath: item.model_path,
+      checkpointPath: item.checkpoint_path,
       createdAt: item.created_at,
       params: item.params
     };

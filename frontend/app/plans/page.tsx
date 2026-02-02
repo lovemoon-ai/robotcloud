@@ -33,7 +33,7 @@ function PlansContent() {
         // ignore
       });
     }
-  }, [searchParams, token]);
+  }, [searchParams, token, auth, role]);
 
   const copy = useMemo(
     () =>
@@ -246,4 +246,3 @@ export default function PlansPage() {
     </Suspense>
   );
 }
-

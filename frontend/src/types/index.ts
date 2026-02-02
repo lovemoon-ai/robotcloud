@@ -82,7 +82,12 @@ export interface InferenceJob {
   datasetId: number;
   modelId: number;
   status: string;
+  progress?: number;
+  serverHost?: string | null;
+  serverPort?: number | null;
+  checkpointPath?: string | null;
   resultPath?: string | null;
+  errorMessage?: string | null;
 }
 
 export interface SimulatorSession {
@@ -124,6 +129,7 @@ export interface Model {
   datasetId: number;
   datasetName: string | null;
   modelPath: string | null;
+  checkpointPath?: string | null;
   createdAt: string;
   params?: Record<string, unknown>;
 }

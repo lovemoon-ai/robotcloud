@@ -31,7 +31,8 @@ export default function ModelsPage() {
           createdAt: (value: string) => `创建时间：${value}`,
           meta: {
             id: (value: number) => `模型 ID：${value}`,
-            path: (value: string | null) => value ? `路径：${value}` : null
+            path: (value: string | null) => value ? `路径：${value}` : null,
+            detail: "查看详情"
           }
         }
       }
@@ -49,7 +50,8 @@ export default function ModelsPage() {
           createdAt: (value: string) => `Created at: ${value}`,
           meta: {
             id: (value: number) => `Model ID: ${value}`,
-            path: (value: string | null) => value ? `Path: ${value}` : null
+            path: (value: string | null) => value ? `Path: ${value}` : null,
+            detail: "View details"
           }
         }
       };
@@ -89,6 +91,9 @@ export default function ModelsPage() {
                     <p className="mt-2 text-[11px] text-muted">{segments.join(" • ")}</p>
                   ) : null;
                 })()}
+                <Link href={`/models/${model.modelId}`} className="mt-2 inline-flex text-xs accent-text hover:text-primary">
+                  {copy.list.meta.detail}
+                </Link>
                 <p className="mt-2 text-[11px] text-muted">
                   {copy.list.createdAt(new Date(model.createdAt).toLocaleString())}
                 </p>

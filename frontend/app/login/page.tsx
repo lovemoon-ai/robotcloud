@@ -1,7 +1,7 @@
 "use client";
 
 import { useForm } from "react-hook-form";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { robotCloudApi } from "@/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
 import Link from "next/link";
@@ -27,51 +27,55 @@ export default function LoginPage() {
   const router = useRouter();
   const isZh = locale === "zh";
 
-  const copy = isZh
-    ? {
-        title: "手机号登录",
-        subtitle: "使用短信验证码快速登录或注册",
-        phoneLabel: "手机号",
-        phonePlaceholder: "例如：13800001234",
-        phoneRequired: "请输入手机号",
-        phoneInvalid: "手机号格式有误，请重新输入",
-        codeLabel: "验证码",
-        codePlaceholder: "请输入6位验证码",
-        codeRequired: "请输入验证码",
-        sendCode: "获取验证码",
-        sendingCode: "发送中...",
-        resendCode: (s: number) => `${s}秒后重发`,
-        submitLogin: "登录 / 注册",
-        submittingLogin: "登录中...",
-        loginSuccess: (phone: string) => `欢迎，${phone}！`,
-        codeSentSuccess: "验证码已发送",
-        devCodeHint: (code: string) => `开发模式验证码：${code}`,
-        genericError: "登录失败",
-        footerPrompt: "还没有账号？",
-        footerLink: "了解平台功能"
-      }
-    : {
-        title: "Phone Login",
-        subtitle: "Login or register with SMS verification code",
-        phoneLabel: "Phone Number",
-        phonePlaceholder: "e.g. 13800001234",
-        phoneRequired: "Enter your phone number",
-        phoneInvalid: "Phone number format is incorrect",
-        codeLabel: "Verification Code",
-        codePlaceholder: "Enter 6-digit code",
-        codeRequired: "Enter verification code",
-        sendCode: "Send Code",
-        sendingCode: "Sending...",
-        resendCode: (s: number) => `Resend in ${s}s`,
-        submitLogin: "Login / Register",
-        submittingLogin: "Logging in...",
-        loginSuccess: (phone: string) => `Welcome, ${phone}!`,
-        codeSentSuccess: "Verification code sent",
-        devCodeHint: (code: string) => `Dev mode code: ${code}`,
-        genericError: "Login failed",
-        footerPrompt: "Don't have an account?",
-        footerLink: "Explore the platform"
-      };
+  const copy = useMemo(
+    () =>
+      isZh
+        ? {
+            title: "手机号登录",
+            subtitle: "使用短信验证码快速登录或注册",
+            phoneLabel: "手机号",
+            phonePlaceholder: "例如：13800001234",
+            phoneRequired: "请输入手机号",
+            phoneInvalid: "手机号格式有误，请重新输入",
+            codeLabel: "验证码",
+            codePlaceholder: "请输入6位验证码",
+            codeRequired: "请输入验证码",
+            sendCode: "获取验证码",
+            sendingCode: "发送中...",
+            resendCode: (s: number) => `${s}秒后重发`,
+            submitLogin: "登录 / 注册",
+            submittingLogin: "登录中...",
+            loginSuccess: (phone: string) => `欢迎，${phone}！`,
+            codeSentSuccess: "验证码已发送",
+            devCodeHint: (code: string) => `开发模式验证码：${code}`,
+            genericError: "登录失败",
+            footerPrompt: "还没有账号？",
+            footerLink: "了解平台功能"
+          }
+        : {
+            title: "Phone Login",
+            subtitle: "Login or register with SMS verification code",
+            phoneLabel: "Phone Number",
+            phonePlaceholder: "e.g. 13800001234",
+            phoneRequired: "Enter your phone number",
+            phoneInvalid: "Phone number format is incorrect",
+            codeLabel: "Verification Code",
+            codePlaceholder: "Enter 6-digit code",
+            codeRequired: "Enter verification code",
+            sendCode: "Send Code",
+            sendingCode: "Sending...",
+            resendCode: (s: number) => `Resend in ${s}s`,
+            submitLogin: "Login / Register",
+            submittingLogin: "Logging in...",
+            loginSuccess: (phone: string) => `Welcome, ${phone}!`,
+            codeSentSuccess: "Verification code sent",
+            devCodeHint: (code: string) => `Dev mode code: ${code}`,
+            genericError: "Login failed",
+            footerPrompt: "Don't have an account?",
+            footerLink: "Explore the platform"
+          },
+    [isZh]
+  );
 
   useEffect(() => {
     if (countdown > 0) {

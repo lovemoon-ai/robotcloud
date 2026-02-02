@@ -35,7 +35,7 @@ const sectionsByLocale = {
   ],
   en: [
     {
-      title: "Data Management",
+      title: "Datasets",
       description: "Upload, preview, and analyze multimodal datasets while protecting data assets.",
       href: "/datasets"
     },
