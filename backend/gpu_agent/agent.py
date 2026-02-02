@@ -614,10 +614,10 @@ class TrainingJob(threading.Thread):
     def _build_script_aliases(self) -> Dict[str, Path]:
         scripts_dir = self.work_dir / "scripts"
         aliases: Dict[str, Path] = {}
-        lerobot = scripts_dir / "lerobot.sh"
+        lerobot = scripts_dir / "lerobot-train.sh"
         if lerobot.exists():
             aliases["lerobot"] = lerobot
-            aliases["lerobot.sh"] = lerobot
+            aliases["lerobot-train.sh"] = lerobot
         return aliases
 
     # -------------------- Dataset preparation --------------------

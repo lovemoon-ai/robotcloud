@@ -1,10 +1,10 @@
 import { Suspense } from "react";
-import InferenceClient from "./InferenceClient";
+import ModelDetailClient from "./ModelDetailClient";
 
-export default function InferencePage() {
+export default function ModelDetailPage() {
   return (
     <Suspense fallback={<div className="p-6">Loading...</div>}>
-      <InferenceClient />
+      <ModelDetailClient />
     </Suspense>
   );
 }

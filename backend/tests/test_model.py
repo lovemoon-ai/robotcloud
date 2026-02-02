@@ -165,6 +165,27 @@ def test_get_model_not_completed(client: APIClient, sms_gateway: InMemorySmsGate
     assert "not found" in resp.json()["detail"].lower()
 
 
+def test_delete_model(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    """Test deleting a completed model removes it from listings."""
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13900000106")
+    model_id = _create_completed_training(client, token, dataset_id)
+
+    delete_resp = client.post(
+        f"/api/v1/model/{model_id}/delete",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert delete_resp.status_code == 200
+    assert delete_resp.json()["data"]["deleted"] is True
+
+    list_resp = client.get(
+        "/api/v1/model/list",
+        {"page": 1, "size": 10},
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert list_resp.status_code == 200
+    assert list_resp.json()["data"]["total"] == 0
+
+
 def test_model_requires_auth(client: APIClient) -> None:
     """Test that model endpoints require authentication."""
     list_resp = client.get("/api/v1/model/list")

@@ -61,4 +61,5 @@ urlpatterns = [
     # Model
     path("model/list", views.ModelListView.as_view(), name="model-list"),
     path("model/<int:model_id>", views.ModelDetailView.as_view(), name="model-detail"),
+    path("model/<int:model_id>/delete", views.ModelDeleteView.as_view(), name="model-delete"),
 ]

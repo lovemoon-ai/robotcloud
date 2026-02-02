@@ -108,7 +108,13 @@ class InferenceTask(models.Model):
     ]
 
     model_id = models.IntegerField()
-    dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="inference_tasks")
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name="inference_tasks",
+        null=True,
+        blank=True,
+    )
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="inference_tasks")
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="queued")
     progress = models.FloatField(default=0.0)

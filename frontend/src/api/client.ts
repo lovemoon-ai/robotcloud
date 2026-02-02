@@ -69,7 +69,7 @@ type BackendTrainingTask = {
 type BackendInferenceTask = {
   task_id: number;
   model_id: number;
-  dataset_id: number;
+  dataset_id?: number | null;
   status: string;
   progress?: number;
   server_host?: string | null;
@@ -480,7 +480,7 @@ export const robotCloudApi = {
     const data = await request<{ items: BackendInferenceTask[]; total: number }>("/inference/list?page=1&size=20");
     return data.items.map((task) => ({
       id: task.task_id,
-      datasetId: task.dataset_id,
+      datasetId: task.dataset_id ?? null,
       modelId: task.model_id,
       status: task.status,
       progress: task.progress,
@@ -491,10 +491,10 @@ export const robotCloudApi = {
       errorMessage: task.error_message ?? undefined
     }));
   },
-  runInference: async (params: { modelId: number; datasetId: number }) =>
+  runInference: async (params: { modelId: number }) =>
     request<{ task_id: number; status: string }>("/inference/create", {
       method: "POST",
-      body: JSON.stringify({ model_id: params.modelId, dataset_id: params.datasetId })
+      body: JSON.stringify({ model_id: params.modelId })
     }),
   fetchSimulatorSessions: async (): Promise<SimulatorSession[]> => {
     const data = await request<{ items: BackendSimulationTask[]; total: number }>("/sim/list?page=1&size=20");
@@ -543,7 +543,9 @@ export const robotCloudApi = {
       createdAt: item.created_at,
       params: item.params
     };
-  }
+  },
+  deleteModel: async (modelId: number): Promise<{ deleted: boolean }> =>
+    request<{ deleted: boolean }>(`/model/${modelId}/delete`, { method: "POST" })
 };
 
 export type RobotCloudApi = typeof robotCloudApi;

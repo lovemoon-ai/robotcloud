@@ -18,3 +18,4 @@ frontend/out
 backend/build
 02_robocloud.sh
 backend/db.sqlite3
+scripts/lerobot/

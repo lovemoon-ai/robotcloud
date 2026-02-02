@@ -63,6 +63,7 @@ function TrainPageContent() {
           completed: "已完成"
         },
         logsLabel: (hasLog: boolean) => (hasLog ? "查看日志" : "日志生成中"),
+        viewModel: "查看模型",
         delete: "删除",
         confirmDeleteTitle: (id: number) => `删除训练任务 #${id}`,
         confirmDeleteMessage: "此操作将从后端删除任务记录，且不可恢复。确认要删除吗？",
@@ -95,6 +96,7 @@ function TrainPageContent() {
           completed: "Completed"
         },
         logsLabel: (hasLog: boolean) => (hasLog ? "View logs" : "Logs pending"),
+        viewModel: "View model",
         delete: "Delete",
         confirmDeleteTitle: (id: number) => `Delete training task #${id}`,
         confirmDeleteMessage: "This will remove the task record from the backend and cannot be undone. Proceed?",
@@ -154,6 +156,14 @@ function TrainPageContent() {
     setLogComplete(false);
     setLogError(null);
   };
+
+  useEffect(() => {
+    if (!token) return;
+    const raw = searchParams.get("logTaskId");
+    const parsed = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    openLog(parsed);
+  }, [searchParams, token]);
 
   // Poll logs while modal open
   const [pollTick, setPollTick] = useState(0);
@@ -221,11 +231,6 @@ function TrainPageContent() {
             <span className="text-muted">{copy.modelLabel}</span>
             <select {...form.register("model")} className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2">
               <option value="ACT">ACT</option>
-              <option value="DiffusionPolicy">DiffusionPolicy</option>
-              <option value="SmolVLA">SmolVLA</option>
-              <option value="Pi0">Pi0</option>
-              <option value="Pi0.5">Pi0.5</option>
-              <option value="GR00T_N1.5">GR00T_N1.5</option>
             </select>
           </label>
           <label className="block text-sm">
@@ -306,6 +311,15 @@ function TrainPageContent() {
                             {copy.logsLabel(true)}
                           </button>
                         )}
+                        {displayStatus === "completed" ? (
+                          <button
+                            onClick={() => router.push(`/models?highlight=${job.id}`)}
+                            className="font-semibold accent-text hover:text-primary"
+                            type="button"
+                          >
+                            {copy.viewModel}
+                          </button>
+                        ) : null}
                         {displayStatus !== "running" ? (
                           <button
                             onClick={() => setDeleteTarget(job.id)}

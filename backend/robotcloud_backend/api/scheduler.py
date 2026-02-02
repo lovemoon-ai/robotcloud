@@ -303,7 +303,7 @@ class SchedulerService:
     def _dispatch_task(self, node: WorkerNode, task: TrainTask, gpu_index: int) -> bool:
         url = f"http://{node.ip}:{node.api_port}/api/v1/agent/run"
         original_params: Dict = dict(task.params or {})
-        # Build direct lerobot-train parameters (forwarded by scripts/lerobot.sh)
+        # Build direct lerobot-train parameters (forwarded by scripts/lerobot-train.sh)
         train_params: Dict[str, object] = {}
 
         # Policy selection maps to hydra key policy.type
@@ -376,7 +376,7 @@ class SchedulerService:
 
         payload = {
             "task_id": task.id,
-            # Use alias-resolved script name; agent will map to scripts/lerobot.sh
+            # Use alias-resolved script name; agent will map to scripts/lerobot-train.sh
             "cmd": original_params.get("cmd", "lerobot"),
             "gpus": [gpu_index],
             "model_type": task.model_type,

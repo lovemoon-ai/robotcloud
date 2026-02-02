@@ -1,18 +1,18 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { robotCloudApi } from "@/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
 
-export default function ModelDetailPage() {
+export default function ModelDetailClient() {
   const locale = useLocaleStore((state) => state.locale);
   const token = useAuthStore((state) => state.token);
   const router = useRouter();
-  const params = useParams<{ modelId?: string }>();
-  const modelId = Number(params?.modelId);
+  const searchParams = useSearchParams();
+  const modelId = Number(searchParams.get("modelId"));
   const isValidId = Number.isFinite(modelId) && modelId > 0;
   const isZh = locale === "zh";
 
@@ -32,7 +32,8 @@ export default function ModelDetailPage() {
           dataset: "数据集",
           createdAt: "创建时间",
           modelPath: "模型路径",
-          checkpointPath: "Checkpoint 路径"
+          checkpointPath: "Checkpoint 路径",
+          trainingLog: "训练日志"
         }
       }
     : {
@@ -50,7 +51,8 @@ export default function ModelDetailPage() {
           dataset: "Dataset",
           createdAt: "Created at",
           modelPath: "Model Path",
-          checkpointPath: "Checkpoint Path"
+          checkpointPath: "Checkpoint Path",
+          trainingLog: "Training logs"
         }
       };
 
@@ -107,6 +109,12 @@ export default function ModelDetailPage() {
           {data.checkpointPath ? (
             <div className="text-sm text-muted">{copy.fields.checkpointPath}: {data.checkpointPath}</div>
           ) : null}
+          <Link
+            href={`/train?logTaskId=${data.modelId}`}
+            className="text-sm accent-text hover:text-primary"
+          >
+            {copy.fields.trainingLog}
+          </Link>
         </div>
       ) : null}
       {token && !isLoading && !data && !error ? <p className="text-sm text-muted">{copy.notFound}</p> : null}

@@ -66,7 +66,7 @@ def test_upgrade_and_usage(client: APIClient, create_user_token, auth_header) ->
 
     infer_resp = client.post(
         "/api/v1/inference/create",
-        {"model_id": train_task_id, "dataset_id": dataset_id},
+        {"model_id": train_task_id},
         format="json",
         **auth_header(token),
     )

@@ -997,13 +997,11 @@ class RobotCloudService:
         return self._response({"task_id": task.id, "status": task.status, "progress": task.progress})
 
     # -------------------- Inference Module --------------------
-    def create_inference_task(self, token: str, model_id: int, dataset_id: int) -> Dict[str, Any]:
+    def create_inference_task(self, token: str, model_id: int, dataset_id: Optional[int]) -> Dict[str, Any]:
         user = self._get_user_by_token(token)
         if model_id is None:
             raise ValueError("model_id required")
-        if dataset_id is None:
-            raise ValueError("dataset_id required")
-        dataset = self._get_dataset(dataset_id)
+        dataset = self._get_dataset(dataset_id) if dataset_id is not None else None
         train_task = self._get_train_task(int(model_id), user)
         if train_task.status != "completed":
             raise ValueError("Training task is not completed")
@@ -1144,6 +1142,16 @@ class RobotCloudService:
         except TrainTask.DoesNotExist as exc:
             raise ValueError("Model not found") from exc
         return self._response(self._model_to_dict(task, include_params=True))
+
+    def delete_model(self, token: str, model_id: int) -> Dict[str, Any]:
+        """Delete a completed training task that backs a model."""
+        user = self._get_user_by_token(token)
+        try:
+            task = user.train_tasks.get(id=model_id, status="completed")
+        except TrainTask.DoesNotExist as exc:
+            raise ValueError("Model not found") from exc
+        task.delete()
+        return self._response({"deleted": True})
 
     def _model_to_dict(self, task: TrainTask, include_params: bool = False) -> Dict[str, Any]:
         """Convert a completed TrainTask to a model dict."""

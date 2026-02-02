@@ -54,7 +54,7 @@ def test_inference_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> N
 
     create_resp = client.post(
         "/api/v1/inference/create",
-        {"model_id": train_task.id, "dataset_id": dataset_id},
+        {"model_id": train_task.id},
         format="json",
         HTTP_AUTHORIZATION=f"Bearer {token}",
     )

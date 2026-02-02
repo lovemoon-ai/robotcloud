@@ -481,3 +481,8 @@ class ModelListView(RobotCloudAPIView):
 class ModelDetailView(RobotCloudAPIView):
     def get(self, request: Request, model_id: int) -> Response:
         return self._execute_with_token(request, lambda token: self._service().get_model(token, model_id))
+
+
+class ModelDeleteView(RobotCloudAPIView):
+    def post(self, request: Request, model_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().delete_model(token, model_id))

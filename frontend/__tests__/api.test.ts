@@ -364,12 +364,12 @@ describe("robotCloudApi", () => {
     ]);
   });
 
-  it("runInference posts dataset and model ids", async () => {
+  it("runInference posts model id only", async () => {
     setAuthenticatedUser();
-    await robotCloudApi.runInference({ datasetId: 2, modelId: 1 });
+    await robotCloudApi.runInference({ modelId: 1 });
     const [url, init] = mockedFetch.mock.calls[0];
     expect(url).toBe(`${API_BASE}/inference/create`);
-    expect(JSON.parse(init?.body as string)).toEqual({ model_id: 1, dataset_id: 2 });
+    expect(JSON.parse(init?.body as string)).toEqual({ model_id: 1 });
   });
 
   it("fetchSimulatorSessions maps simulation tasks", async () => {

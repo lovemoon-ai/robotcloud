@@ -79,7 +79,7 @@ export interface TrainingConfig {
 
 export interface InferenceJob {
   id: number;
-  datasetId: number;
+  datasetId: number | null;
   modelId: number;
   status: string;
   progress?: number;
