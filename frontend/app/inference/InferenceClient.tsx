@@ -28,6 +28,9 @@ export default function InferenceClient() {
   });
   const [modelId, setModelId] = useState("");
   const [loginNotice, setLoginNotice] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const isZh = locale === "zh";
   const copy = isZh
     ? {
@@ -49,6 +52,8 @@ export default function InferenceClient() {
         serverLabel: (host: string, port: number) => `服务地址：${host}:${port}`,
         checkpointLabel: (path: string) => `模型路径：${path}`,
         errorLabel: (message: string) => `错误：${message}`,
+        countdownLabel: (value: string) => `剩余：${value}`,
+        delete: "删除",
         pending: "等待云端完成",
         empty: "暂无推理记录。"
       }
@@ -71,6 +76,8 @@ export default function InferenceClient() {
         serverLabel: (host: string, port: number) => `Server: ${host}:${port}`,
         checkpointLabel: (path: string) => `Checkpoint: ${path}`,
         errorLabel: (message: string) => `Error: ${message}`,
+        countdownLabel: (value: string) => `Time left: ${value}`,
+        delete: "Delete",
         pending: "Waiting for cloud completion",
         empty: "No inference jobs found."
       };
@@ -83,12 +90,41 @@ export default function InferenceClient() {
     }
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (taskId: number) => robotCloudApi.deleteInferenceJob(taskId),
+    onSuccess: () => {
+      setDeleteTarget(null);
+      setDeleteError(null);
+      client.invalidateQueries({ queryKey: ["inference-jobs"] });
+    },
+    onError: (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      setDeleteError(message);
+    }
+  });
+
   useEffect(() => {
     const initialModelId = searchParams.get("modelId");
     if (initialModelId) {
       setModelId(initialModelId);
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatCountdown = (createdAt: string, status: string) => {
+    if (!["queued", "running"].includes(status)) return "00:00";
+    const createdMs = new Date(createdAt).getTime();
+    if (Number.isNaN(createdMs)) return "00:00";
+    const remaining = Math.max(0, 600000 - (now - createdMs));
+    const totalSeconds = Math.floor(remaining / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  };
 
   const runJob = async () => {
     if (!token) {
@@ -148,7 +184,10 @@ export default function InferenceClient() {
                   title={copy.modelTitle(job.modelId)}
                   description={job.datasetId != null ? (isZh ? `数据集：${job.datasetId}` : `Dataset: ${job.datasetId}`) : undefined}
                 >
-                  <p className="text-xs text-muted">{copy.statusLabel(job.status)}</p>
+                  <div className="flex items-center justify-between text-xs text-muted">
+                    <span>{copy.statusLabel(job.status)}</span>
+                    <span>{copy.countdownLabel(formatCountdown(job.createdAt, job.status))}</span>
+                  </div>
                   {job.serverHost && job.serverPort ? (
                     <p className="text-[11px] text-muted">{copy.serverLabel(job.serverHost, job.serverPort)}</p>
                   ) : null}
@@ -161,6 +200,15 @@ export default function InferenceClient() {
                   <p className="text-[11px] text-muted">
                     {job.resultPath ? copy.resultLabel(job.resultPath) : copy.pending}
                   </p>
+                  {job.status !== "running" ? (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget(job.id)}
+                      className="mt-2 text-xs font-semibold text-red-500 hover:text-red-400"
+                    >
+                      {copy.delete}
+                    </button>
+                  ) : null}
                 </Card>
               ))}
               {!data?.length ? <p className="text-sm text-muted">{copy.empty}</p> : null}
@@ -168,6 +216,41 @@ export default function InferenceClient() {
           ) : null}
         </div>
       </section>
+      {deleteTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-lg border border-theme p-4 shadow-xl" style={{ backgroundColor: "var(--color-card)" }}>
+            <div className="mb-2">
+              <h3 className="text-lg font-semibold text-red-500">
+                {isZh ? `删除推理任务 #${deleteTarget}` : `Delete inference task #${deleteTarget}`}
+              </h3>
+              <p className="mt-1 text-sm text-muted">
+                {isZh
+                  ? "此操作将删除推理任务记录，且不可恢复。确认要删除吗？"
+                  : "This will remove the inference task record and cannot be undone. Proceed?"}
+              </p>
+              {deleteError ? <p className="mt-2 text-sm text-red-500">{deleteError}</p> : null}
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-md border border-theme px-3 py-1.5 text-body hover:bg-surface-secondary"
+                type="button"
+                disabled={deleteMutation.isPending}
+              >
+                {isZh ? "取消" : "Cancel"}
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(deleteTarget)}
+                className="rounded-md bg-red-500 px-3 py-1.5 font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                type="button"
+                disabled={deleteMutation.isPending}
+              >
+                {isZh ? "确认删除" : "Confirm Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

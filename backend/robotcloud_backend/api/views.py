@@ -408,6 +408,11 @@ class InferenceResultView(RobotCloudAPIView):
         return self._execute_with_token(request, lambda token: self._service().inference_result(token, task_id))
 
 
+class InferenceDeleteView(RobotCloudAPIView):
+    def post(self, request: Request, task_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().delete_inference_task(token, task_id))
+
+
 class SimulationCreateView(RobotCloudAPIView):
     parser_classes = [JSONParser]
 

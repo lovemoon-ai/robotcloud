@@ -1039,6 +1039,15 @@ class RobotCloudService:
             }
         )
 
+    def delete_inference_task(self, token: str, task_id: int) -> Dict[str, Any]:
+        """Delete an inference task that belongs to the current user."""
+        user = self._get_user_by_token(token)
+        task = self._get_inference_task(task_id, user)
+        if task.status == "running":
+            raise ValueError("Cannot delete a running task; please stop it first")
+        task.delete()
+        return self._response({"deleted": True})
+
     # -------------------- Simulation Module --------------------
     def create_simulation_task(
         self,

@@ -488,7 +488,8 @@ export const robotCloudApi = {
       serverPort: task.server_port ?? undefined,
       checkpointPath: task.checkpoint_path ?? undefined,
       resultPath: task.result_path ?? undefined,
-      errorMessage: task.error_message ?? undefined
+      errorMessage: task.error_message ?? undefined,
+      createdAt: task.created_at
     }));
   },
   runInference: async (params: { modelId: number }) =>
@@ -496,6 +497,8 @@ export const robotCloudApi = {
       method: "POST",
       body: JSON.stringify({ model_id: params.modelId })
     }),
+  deleteInferenceJob: async (taskId: number): Promise<{ deleted: boolean }> =>
+    request<{ deleted: boolean }>(`/inference/${taskId}/delete`, { method: "POST" }),
   fetchSimulatorSessions: async (): Promise<SimulatorSession[]> => {
     const data = await request<{ items: BackendSimulationTask[]; total: number }>("/sim/list?page=1&size=20");
     return data.items.map((task) => ({

@@ -959,6 +959,8 @@ class TrainingJob(threading.Thread):
 class InferenceJob(threading.Thread):
     """Start an async inference policy server."""
 
+    MAX_RUNTIME_SECONDS = 600
+
     def __init__(
         self,
         agent: "Agent",
@@ -988,7 +990,7 @@ class InferenceJob(threading.Thread):
         except OSError:
             pass
         host = str(self.params.get("host") or "0.0.0.0")
-        port = self._pick_port()
+        port = str(self.params.get("port") or self._pick_port())
         self.server_port = port
         command = self._build_command(host, port)
         env = self._build_env()
@@ -1009,7 +1011,20 @@ class InferenceJob(threading.Thread):
                     server_port=port,
                     log_path=str(self.log_path),
                 )
-                exit_code = self._process.wait()
+                try:
+                    exit_code = self._process.wait(timeout=self.MAX_RUNTIME_SECONDS)
+                except subprocess.TimeoutExpired:
+                    self.logger.info("Inference task %s reached max runtime, terminating.", self.task_id)
+                    self._terminate_process()
+                    self.agent.notify_inference_status(
+                        self.task_id,
+                        "completed",
+                        1.0,
+                        server_port=port,
+                        log_path=str(self.log_path),
+                    )
+                    self.agent.finish_job(self.task_id)
+                    return
         except Exception as exc:
             self.logger.exception("Inference task %s crashed: %s", self.task_id, exc)
             self.agent.notify_inference_status(

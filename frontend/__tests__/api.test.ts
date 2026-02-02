@@ -359,7 +359,8 @@ describe("robotCloudApi", () => {
         serverPort: undefined,
         checkpointPath: undefined,
         resultPath: undefined,
-        errorMessage: undefined
+        errorMessage: undefined,
+        createdAt: "2024-01-01T00:00:00Z"
       }
     ]);
   });
@@ -370,6 +371,20 @@ describe("robotCloudApi", () => {
     const [url, init] = mockedFetch.mock.calls[0];
     expect(url).toBe(`${API_BASE}/inference/create`);
     expect(JSON.parse(init?.body as string)).toEqual({ model_id: 1 });
+  });
+
+  it("deleteInferenceJob posts delete request", async () => {
+    setAuthenticatedUser();
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({ code: 0, data: { deleted: true } })
+    } as unknown as Response);
+
+    await robotCloudApi.deleteInferenceJob(9);
+    const [url, init] = mockedFetch.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/inference/9/delete`);
+    expect(init?.method).toBe("POST");
   });
 
   it("fetchSimulatorSessions maps simulation tasks", async () => {

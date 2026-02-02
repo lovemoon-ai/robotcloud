@@ -70,3 +70,10 @@ def test_inference_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> N
     assert result["task_id"] == task_id
     assert result["status"] in {"queued", "running", "completed", "failed"}
     assert result["checkpoint_path"] == "/tmp/checkpoints/task_1"
+
+    delete_resp = client.post(
+        f"/api/v1/inference/{task_id}/delete",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert delete_resp.status_code == 200
+    assert delete_resp.json()["data"]["deleted"] is True

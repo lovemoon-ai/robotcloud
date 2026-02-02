@@ -146,6 +146,9 @@ class SchedulerService:
         )
         if not nodes:
             return 0
+        # Global throttle: only allow one inference task running at any time.
+        if InferenceTask.objects.filter(status="running").exists():
+            return 0
 
         node_gpu_usage: Dict[str, Set[int]] = defaultdict(set)
         running_train = TrainTask.objects.filter(
@@ -238,7 +241,7 @@ class SchedulerService:
             "task_id": task.id,
             "gpus": [gpu_index],
             "cmd": "python -m lerobot.async_inference.policy_server",
-            "params": {"host": "0.0.0.0"},
+            "params": {"host": "0.0.0.0", "port": 6152},
             "checkpoint_path": task.checkpoint_path,
         }
         headers = {

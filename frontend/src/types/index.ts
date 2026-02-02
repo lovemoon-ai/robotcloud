@@ -88,6 +88,7 @@ export interface InferenceJob {
   checkpointPath?: string | null;
   resultPath?: string | null;
   errorMessage?: string | null;
+  createdAt: string;
 }
 
 export interface SimulatorSession {
