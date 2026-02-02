@@ -509,6 +509,8 @@ export const robotCloudApi = {
       method: "POST",
       body: JSON.stringify({ model_id: params.modelId })
     }),
+  closeInferenceJob: async (taskId: number): Promise<{ task_id: number; status: string; stopped?: boolean }> =>
+    request<{ task_id: number; status: string; stopped?: boolean }>(`/inference/${taskId}/close`, { method: "POST" }),
   deleteInferenceJob: async (taskId: number): Promise<{ deleted: boolean }> =>
     request<{ deleted: boolean }>(`/inference/${taskId}/delete`, { method: "POST" }),
   fetchSimulatorSessions: async (): Promise<SimulatorSession[]> => {

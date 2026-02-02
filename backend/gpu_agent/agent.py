@@ -46,6 +46,9 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/v1/agent/delete_model":
             self._handle_delete_model()
             return
+        if parsed.path == "/api/v1/agent/inference/stop":
+            self._handle_inference_stop()
+            return
         if parsed.path != "/api/v1/agent/run":
             self.send_error(404, "Not Found")
             return
@@ -106,6 +109,29 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"detail": str(exc)}).encode("utf-8"))
             return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(result).encode("utf-8"))
+
+    def _handle_inference_stop(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length) if content_length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON payload")
+            return
+        task_id = payload.get("task_id")
+        if task_id is None:
+            self.send_error(400, "task_id required")
+            return
+        try:
+            task_id = int(task_id)
+        except (TypeError, ValueError):
+            self.send_error(400, "task_id must be an integer")
+            return
+        result = self.server.agent.stop_inference_task(task_id)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -1011,6 +1037,8 @@ class InferenceJob(threading.Thread):
         self._process: Optional[subprocess.Popen[str]] = None
         self.server_port: Optional[int] = None
         self._script_aliases = self._build_script_aliases()
+        self._stop_event = threading.Event()
+        self._stop_completed = False
 
     def run(self) -> None:
         try:
@@ -1065,6 +1093,16 @@ class InferenceJob(threading.Thread):
             )
             self.agent.finish_job(self.task_id)
             return
+        if self._stop_event.is_set() and self._stop_completed:
+            self.agent.notify_inference_status(
+                self.task_id,
+                "completed",
+                1.0,
+                server_port=port,
+                log_path=str(self.log_path),
+            )
+            self.agent.finish_job(self.task_id)
+            return
         if exit_code == 0:
             self.agent.notify_inference_status(
                 self.task_id,
@@ -1083,6 +1121,11 @@ class InferenceJob(threading.Thread):
                 log_path=str(self.log_path),
             )
         self.agent.finish_job(self.task_id)
+
+    def stop(self, mark_completed: bool = True) -> None:
+        self._stop_completed = mark_completed
+        self._stop_event.set()
+        self._terminate_process()
 
     def _build_env(self) -> Dict[str, str]:
         env = os.environ.copy()
@@ -1450,6 +1493,14 @@ class Agent:
         with self._lock:
             self._jobs.pop(task_id, None)
             self._inference_jobs.pop(task_id, None)
+
+    def stop_inference_task(self, task_id: int) -> Dict[str, str]:
+        with self._lock:
+            job = self._inference_jobs.get(task_id)
+        if not job:
+            return {"status": "not_running"}
+        job.stop(mark_completed=True)
+        return {"status": "stopping"}
 
     def _busy_gpu_indices(self) -> List[int]:
         with self._lock:

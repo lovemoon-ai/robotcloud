@@ -417,6 +417,11 @@ class InferenceLogsView(RobotCloudAPIView):
         )
 
 
+class InferenceCloseView(RobotCloudAPIView):
+    def post(self, request: Request, task_id: int) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().close_inference_task(token, task_id))
+
+
 class InferenceDeleteView(RobotCloudAPIView):
     def post(self, request: Request, task_id: int) -> Response:
         return self._execute_with_token(request, lambda token: self._service().delete_inference_task(token, task_id))

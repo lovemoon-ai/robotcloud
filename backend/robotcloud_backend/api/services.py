@@ -1068,12 +1068,31 @@ class RobotCloudService:
         except Exception:
             return self._response({"content": "", "next_offset": max(offset, 0), "complete": False})
 
+    def close_inference_task(self, token: str, task_id: int) -> Dict[str, Any]:
+        """Stop a running inference task and mark it completed."""
+        user = self._get_user_by_token(token)
+        task = self._get_inference_task(task_id, user)
+        if task.status in {"completed", "failed"}:
+            return self._response({"task_id": task.id, "status": task.status})
+        stopped = False
+        if task.assigned_node:
+            stopped = self._stop_inference_on_agent(task)
+        previous_status = task.status
+        task.status = "completed"
+        task.progress = 1.0
+        task.finished_at = timezone.now()
+        task.error_message = ""
+        task.save(update_fields=["status", "progress", "finished_at", "error_message"])
+        if previous_status == "running":
+            self._release_inference_slot(task)
+        return self._response({"task_id": task.id, "status": task.status, "stopped": stopped})
+
     def delete_inference_task(self, token: str, task_id: int) -> Dict[str, Any]:
         """Delete an inference task that belongs to the current user."""
         user = self._get_user_by_token(token)
         task = self._get_inference_task(task_id, user)
-        if task.status == "running":
-            raise ValueError("Cannot delete a running task; please stop it first")
+        if task.status in {"queued", "running"} and task.assigned_node:
+            self._stop_inference_on_agent(task)
         task.delete()
         return self._response({"deleted": True})
 
@@ -1328,6 +1347,25 @@ class RobotCloudService:
             return user.inference_tasks.get(id=task_id)
         except InferenceTask.DoesNotExist as exc:
             raise ValueError("Inference task not found") from exc
+
+    def _stop_inference_on_agent(self, task: InferenceTask) -> bool:
+        if not task.assigned_node:
+            return False
+        try:
+            node = WorkerNode.objects.get(node_name=task.assigned_node)
+        except WorkerNode.DoesNotExist as exc:
+            raise ValueError("Assigned agent not found") from exc
+        url = f"http://{node.ip}:{node.api_port}/api/v1/agent/inference/stop"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Agent-Token": node.auth_token,
+        }
+        try:
+            response = requests.post(url, json={"task_id": task.id}, headers=headers, timeout=5)
+            response.raise_for_status()
+        except Exception as exc:  # pragma: no cover - network issues
+            raise ValueError("Failed to stop inference task on agent") from exc
+        return True
 
     def _get_simulation_task(self, task_id: int, user: User) -> SimulationTask:
         try:

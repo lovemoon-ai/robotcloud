@@ -8,9 +8,11 @@ import { useAuthStore } from "@/store/useAuthStore";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLocaleStore } from "@/store/useLocaleStore";
+import { useThemeStore } from "@/store/useThemeStore";
 
 export default function InferenceClient() {
   const locale = useLocaleStore((state) => state.locale);
+  const theme = useThemeStore((state) => state.theme);
   const client = useQueryClient();
   const token = useAuthStore((state) => state.token);
   const role = useAuthStore((state) => state.role);
@@ -31,6 +33,7 @@ export default function InferenceClient() {
   const [loginNotice, setLoginNotice] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [logTaskId, setLogTaskId] = useState<number | null>(null);
   const [logBuffer, setLogBuffer] = useState<string>("");
@@ -62,10 +65,17 @@ export default function InferenceClient() {
         errorLabel: (message: string) => `错误：${message}`,
         countdownLabel: (value: string) => `剩余：${value}`,
         waiting: "排队中",
+        running: "推理中",
+        completed: "已完成",
+        failed: "已失败",
         logsLabel: (hasLog: boolean) => (hasLog ? "查看日志" : "日志生成中"),
+        close: "提前完成",
         delete: "删除",
         pending: "等待云端完成",
-        empty: "暂无推理记录。"
+        empty: "暂无推理记录。",
+        runErrorTitle: "推理提交失败",
+        runErrorConfirm: "知道了",
+        invalidModelId: "模型 ID 无效，请输入数字。"
       }
     : {
         title: "Cloud Inference",
@@ -89,10 +99,17 @@ export default function InferenceClient() {
         errorLabel: (message: string) => `Error: ${message}`,
         countdownLabel: (value: string) => `Time left: ${value}`,
         waiting: "Waiting",
+        running: "Running",
+        completed: "Completed",
+        failed: "Failed",
         logsLabel: (hasLog: boolean) => (hasLog ? "View logs" : "Logs pending"),
+        close: "Close",
         delete: "Delete",
         pending: "Waiting for cloud completion",
-        empty: "No inference jobs found."
+        empty: "No inference jobs found.",
+        runErrorTitle: "Inference request failed",
+        runErrorConfirm: "OK",
+        invalidModelId: "Invalid model ID. Please enter a number."
       };
 
   const mutation = useMutation({
@@ -100,6 +117,10 @@ export default function InferenceClient() {
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ["inference-jobs"] });
       setModelId("");
+    },
+    onError: (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      setRunError(message);
     }
   });
 
@@ -115,6 +136,12 @@ export default function InferenceClient() {
       setDeleteError(message);
     }
   });
+  const closeMutation = useMutation({
+    mutationFn: (taskId: number) => robotCloudApi.closeInferenceJob(taskId),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["inference-jobs"] });
+    }
+  });
 
   useEffect(() => {
     const initialModelId = searchParams.get("modelId");
@@ -128,15 +155,29 @@ export default function InferenceClient() {
     return () => clearInterval(timer);
   }, []);
 
-  const formatCountdown = (startedAt: string | null | undefined, status: string) => {
-    if (status !== "running" || !startedAt) return copy.waiting;
+  const getRemainingMs = (startedAt: string | null | undefined, status: string) => {
+    if (status !== "running" || !startedAt) return null;
     const startedMs = new Date(startedAt).getTime();
-    if (Number.isNaN(startedMs)) return copy.waiting;
-    const remaining = Math.max(0, 600000 - (now - startedMs));
+    if (Number.isNaN(startedMs)) return null;
+    return Math.max(0, 600000 - (now - startedMs));
+  };
+
+  const formatCountdown = (startedAt: string | null | undefined, status: string) => {
+    const remaining = getRemainingMs(startedAt, status);
+    if (remaining === null) return copy.waiting;
     const totalSeconds = Math.floor(remaining / 1000);
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  };
+
+  const renderStatusNote = (job: { status: string; startedAt?: string | null }) => {
+    const remaining = getRemainingMs(job.startedAt, job.status);
+    const timeCompleted = remaining !== null && remaining <= 0;
+    if (job.status === "failed") return copy.failed;
+    if (job.status === "completed" || timeCompleted) return copy.completed;
+    if (job.status === "running") return copy.running;
+    return copy.pending;
   };
 
   const runJob = async () => {
@@ -151,7 +192,17 @@ export default function InferenceClient() {
     }
     setLoginNotice(null);
     if (!modelId) return;
-    await mutation.mutateAsync({ modelId: Number.parseInt(modelId, 10) });
+    const parsedId = Number.parseInt(modelId, 10);
+    if (Number.isNaN(parsedId)) {
+      setRunError(copy.invalidModelId);
+      return;
+    }
+    setRunError(null);
+    try {
+      await mutation.mutateAsync({ modelId: parsedId });
+    } catch {
+      // Error handled via mutation onError to show modal.
+    }
   };
 
   const closeLog = () => {
@@ -259,7 +310,7 @@ export default function InferenceClient() {
                     <p className="text-[11px] text-red-400">{copy.errorLabel(job.errorMessage)}</p>
                   ) : null}
                   <p className="text-[11px] text-muted">
-                    {job.resultPath ? copy.resultLabel(job.resultPath) : copy.pending}
+                    {job.resultPath ? copy.resultLabel(job.resultPath) : renderStatusNote(job)}
                   </p>
                   <div className="mt-2 flex items-center gap-3">
                     {job.status === "queued" ? (
@@ -273,15 +324,23 @@ export default function InferenceClient() {
                         {copy.logsLabel(true)}
                       </button>
                     )}
-                    {job.status !== "running" ? (
+                    {job.status === "running" ? (
                       <button
                         type="button"
-                        onClick={() => setDeleteTarget(job.id)}
-                        className="text-xs font-semibold text-red-500 hover:text-red-400"
+                        onClick={() => closeMutation.mutate(job.id)}
+                        className="text-xs font-semibold text-body hover:text-primary"
+                        disabled={closeMutation.isPending}
                       >
-                        {copy.delete}
+                        {copy.close}
                       </button>
                     ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget(job.id)}
+                      className="text-xs font-semibold text-red-500 hover:text-red-400"
+                    >
+                      {copy.delete}
+                    </button>
                   </div>
                 </Card>
               ))}
@@ -325,6 +384,23 @@ export default function InferenceClient() {
           </div>
         </div>
       ) : null}
+      {runError ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-lg border border-theme p-4 shadow-xl" style={{ backgroundColor: "var(--color-card)" }}>
+            <h3 className="text-lg font-semibold text-red-500">{copy.runErrorTitle}</h3>
+            <p className="mt-2 text-sm text-muted">{runError}</p>
+            <div className="mt-4 flex justify-end">
+              <button
+                onClick={() => setRunError(null)}
+                className="rounded-md border border-theme px-3 py-1.5 text-body hover:bg-surface-secondary"
+                type="button"
+              >
+                {copy.runErrorConfirm}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {logTaskId ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div
@@ -347,7 +423,7 @@ export default function InferenceClient() {
               </div>
             </div>
             <div
-              className={`overflow-auto rounded p-3 text-xs font-mono ${isLogMaximized ? "h-[calc(100%-5rem)]" : "h-96"} bg-black text-white`}
+              className={`overflow-auto rounded p-3 text-xs font-mono ${isLogMaximized ? "h-[calc(100%-5rem)]" : "h-96"} ${theme === "light" ? "bg-white text-black border border-gray-200" : "bg-black text-white"}`}
             >
               <pre className="whitespace-pre-wrap leading-relaxed">{logBuffer || (logError ? `Error: ${logError}` : "Waiting for logs...")}</pre>
             </div>

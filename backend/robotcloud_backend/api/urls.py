@@ -50,6 +50,7 @@ urlpatterns = [
     path("inference/list", views.InferenceListView.as_view(), name="inference-list"),
     path("inference/<int:task_id>/result", views.InferenceResultView.as_view(), name="inference-result"),
     path("inference/<int:task_id>/logs", views.InferenceLogsView.as_view(), name="inference-logs"),
+    path("inference/<int:task_id>/close", views.InferenceCloseView.as_view(), name="inference-close"),
     path("inference/<int:task_id>/delete", views.InferenceDeleteView.as_view(), name="inference-delete"),
     # Simulation
     path("sim/create", views.SimulationCreateView.as_view(), name="simulation-create"),
