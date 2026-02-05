@@ -394,7 +394,7 @@ class RobotCloudService:
             if alipay.is_configured():
                 base = base_url or "http://localhost:8000"
                 notify_url = f"{base}/api/v1/payment/alipay/notify"
-                return_url = f"{base}/plans?payment_id={payment_id}"
+                return_url = f"{base}/plans/?payment_id={payment_id}"
                 checkout_url = alipay.create_page_pay(
                     out_trade_no=payment_id,
                     total_amount=f"{amount_yuan:.2f}",
@@ -649,8 +649,13 @@ class RobotCloudService:
             }
         )
 
-    def list_datasets(self, visibility: Optional[str], page: int, size: int) -> Dict[str, Any]:
-        queryset = Dataset.objects.all().order_by("-created_at")
+    def list_datasets(self, token: str, visibility: Optional[str], page: int, size: int) -> Dict[str, Any]:
+        user = self._get_user_by_token(token)
+        from django.db.models import Q
+        # Show public datasets and user's own private datasets
+        queryset = Dataset.objects.filter(
+            Q(visibility=Dataset.VISIBILITY_PUBLIC) | Q(owner=user)
+        ).order_by("-created_at")
         if visibility:
             queryset = queryset.filter(visibility=visibility)
         total = queryset.count()

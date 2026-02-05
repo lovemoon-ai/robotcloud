@@ -219,7 +219,9 @@ class DatasetListView(RobotCloudAPIView):
         visibility = request.query_params.get("visibility")
         page = int(request.query_params.get("page", 1))
         size = int(request.query_params.get("size", 20))
-        return self._execute(lambda: self._service().list_datasets(visibility, page, size))
+        return self._execute_with_token(
+            request, lambda token: self._service().list_datasets(token, visibility, page, size)
+        )
 
 
 class DatasetDetailView(RobotCloudAPIView):
