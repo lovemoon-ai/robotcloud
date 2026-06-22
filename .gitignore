@@ -19,3 +19,10 @@ backend/build
 02_robocloud.sh
 backend/db.sqlite3
 scripts/lerobot/
+
+# conductor
+.conductor-*.log
+.conductor/worktrees/
+.conductor/state/
+conductor.log
+conductor-terminal.log
