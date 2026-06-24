@@ -1,4 +1,5 @@
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 from robotcloud_backend.api.models import TrainTask
@@ -13,6 +14,7 @@ def test_profile(client: APIClient, create_user_token, auth_header) -> None:
     assert profile["role"] == "free"
 
 
+@override_settings(DEBUG=True)
 def test_upgrade_and_usage(client: APIClient, create_user_token, auth_header) -> None:
     token = create_user_token("13800000001", "abcdef")
     payment_resp = client.post(
@@ -27,6 +29,7 @@ def test_upgrade_and_usage(client: APIClient, create_user_token, auth_header) ->
         "/api/v1/payment/callback/mock",
         {"payment_id": payment_id, "status": "succeeded"},
         format="json",
+        **auth_header(token),
     )
     assert callback_resp.status_code == 200
     upgrade_resp = client.post(

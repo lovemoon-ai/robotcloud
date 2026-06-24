@@ -14,7 +14,7 @@ from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
 
-from .models import InferenceTask, TrainTask, User, WorkerNode
+from .models import Dataset, InferenceTask, TrainTask, User, WorkerNode
 
 
 def _normalize_policy_name(model_type: str) -> str:
@@ -88,6 +88,7 @@ class SchedulerService:
         )
         if not nodes:
             return 0
+        nodes_by_name = {node.node_name: node for node in nodes}
 
         node_gpu_usage: Dict[str, Set[int]] = defaultdict(set)
         running_tasks = TrainTask.objects.filter(
@@ -122,9 +123,15 @@ class SchedulerService:
             current_running = running_counts.get(task.user_id, 0)
             if current_running >= max_concurrent:
                 continue
-            node = self._select_node(nodes, node_gpu_usage)
+            candidate_nodes = nodes
+            if task.dataset.storage_backend == Dataset.STORAGE_BACKEND_AGENT:
+                node_for_dataset = nodes_by_name.get(task.dataset.storage_node or "")
+                if not node_for_dataset:
+                    continue
+                candidate_nodes = [node_for_dataset]
+            node = self._select_node(candidate_nodes, node_gpu_usage)
             if not node:
-                break
+                continue
             assignment = self._attempt_assignment(task, node, node_gpu_usage, max_concurrent)
             if not assignment:
                 continue
@@ -146,6 +153,7 @@ class SchedulerService:
         )
         if not nodes:
             return 0
+        nodes_by_name = {node.node_name: node for node in nodes}
         # Global throttle: only allow one inference task running at any time.
         if InferenceTask.objects.filter(status="running").exists():
             return 0
@@ -176,6 +184,12 @@ class SchedulerService:
             .select_related("user")
             .order_by("created_at")
         )
+        model_nodes = {
+            row["id"]: row["assigned_node"]
+            for row in TrainTask.objects.filter(id__in=[task.model_id for task in queued_tasks]).values(
+                "id", "assigned_node"
+            )
+        }
 
         assignments = 0
         for task in queued_tasks:
@@ -183,9 +197,16 @@ class SchedulerService:
             current_running = running_counts.get(task.user_id, 0)
             if current_running >= max_concurrent:
                 continue
-            node = self._select_node(nodes, node_gpu_usage)
+            candidate_nodes = nodes
+            model_node = model_nodes.get(task.model_id)
+            if model_node:
+                node_for_model = nodes_by_name.get(model_node)
+                if not node_for_model:
+                    continue
+                candidate_nodes = [node_for_model]
+            node = self._select_node(candidate_nodes, node_gpu_usage)
             if not node:
-                break
+                continue
             assignment = self._attempt_inference_assignment(task, node, node_gpu_usage, max_concurrent)
             if not assignment:
                 continue
@@ -349,7 +370,12 @@ class SchedulerService:
         # Upload dataset package to agent first (if available)
         # Default to original storage_path; will be emptied if upload succeeds
         dataset_path = task.dataset.storage_path if task.dataset_id else ""
-        if task.dataset_id and task.dataset and task.dataset.storage_path:
+        if (
+            task.dataset_id
+            and task.dataset
+            and task.dataset.storage_path
+            and task.dataset.storage_backend != Dataset.STORAGE_BACKEND_AGENT
+        ):
             file_path = self._dataset_file_on_disk(task)
             if file_path and file_path.exists() and file_path.is_file():
                 upload_url = f"http://{node.ip}:{node.api_port}/api/v1/agent/upload"

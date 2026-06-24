@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
@@ -14,6 +14,7 @@ interface DatasetForm {
   name: string;
   description: string;
   visibility: "public" | "private";
+  targetNode: string;
   file: FileList;
 }
 
@@ -30,8 +31,13 @@ export default function DatasetsPage() {
     queryFn: robotCloudApi.listDatasets,
     enabled: Boolean(token)
   });
+  const agentsQuery = useQuery({
+    queryKey: ["agents", "active"],
+    queryFn: robotCloudApi.listActiveAgents,
+    enabled: Boolean(token)
+  });
   const form = useForm<DatasetForm>({
-    defaultValues: { name: "", description: "", visibility: "private" } as Partial<DatasetForm>
+    defaultValues: { name: "", description: "", visibility: "private", targetNode: "" } as Partial<DatasetForm>
   });
   const isZh = locale === "zh";
   const copy = isZh
@@ -51,6 +57,10 @@ export default function DatasetsPage() {
             private: "私有",
             public: "公开"
           },
+          agentLabel: "上传到 GPU Agent",
+          agentLoading: "正在加载 Agent...",
+          noAgent: "当前没有可接收上传的 GPU Agent，请先启动 Agent 并配置公网/隧道地址。",
+          agentStatus: (free: number, total: number) => `空闲 GPU：${free}/${total}`,
           loginNotice: "请先登录后再上传数据集，正在跳转至登录页...",
           notLoggedPrefix: "当前未登录，上传前请",
           loginLink: "前往登录",
@@ -75,7 +85,8 @@ export default function DatasetsPage() {
             id: (value: number) => `数据集 ID：${value}`,
             files: (count: number) => `文件数：${count}`,
             size: (size: string) => `总大小：${size}`,
-            preview: "预览可用"
+            preview: "预览可用",
+            node: (value: string) => `节点：${value}`
           },
           trainButton: "训练",
           deleteButton: "删除",
@@ -100,6 +111,10 @@ export default function DatasetsPage() {
             private: "Private",
             public: "Public"
           },
+          agentLabel: "Upload to GPU Agent",
+          agentLoading: "Loading agents...",
+          noAgent: "No upload-capable GPU Agent is active. Start an Agent with a public or tunnel URL first.",
+          agentStatus: (free: number, total: number) => `Free GPUs: ${free}/${total}`,
           loginNotice: "Please log in before uploading datasets. Redirecting to the login page...",
           notLoggedPrefix: "You are not logged in. Please",
           loginLink: "go to login",
@@ -124,7 +139,8 @@ export default function DatasetsPage() {
             id: (value: number) => `Dataset ID: ${value}`,
             files: (count: number) => `Files: ${count}`,
             size: (size: string) => `Size: ${size}`,
-            preview: "Preview available"
+            preview: "Preview available",
+            node: (value: string) => `Node: ${value}`
           },
           trainButton: "Train",
           deleteButton: "Delete",
@@ -141,6 +157,27 @@ export default function DatasetsPage() {
     const value = size / Math.pow(1000, exponent);
     return `${value.toFixed(value < 10 && exponent > 0 ? 1 : 0)} ${units[exponent]}`;
   };
+  const uploadAgents = agentsQuery.data?.items.filter((agent) => agent.canUpload) ?? [];
+  const selectedTargetNode = form.watch("targetNode");
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    const availableAgents = agentsQuery.data?.items.filter((agent) => agent.canUpload) ?? [];
+    if (!availableAgents.length) {
+      return;
+    }
+    const current = form.getValues("targetNode");
+    if (current && availableAgents.some((agent) => agent.nodeName === current)) {
+      return;
+    }
+    const preferred =
+      availableAgents.find((agent) => agent.nodeName === agentsQuery.data?.defaultAgentNode) ??
+      availableAgents.find((agent) => agent.isDefault) ??
+      availableAgents[0];
+    form.setValue("targetNode", preferred.nodeName, { shouldDirty: false });
+  }, [agentsQuery.data, form, token]);
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.uploadDataset,
@@ -149,7 +186,12 @@ export default function DatasetsPage() {
       setSuccess(copy.upload.success);
       setFormError(null);
       setUploadProgress(0);
-      form.reset({ name: "", description: "", visibility: "private" } as Partial<DatasetForm>);
+      form.reset({
+        name: "",
+        description: "",
+        visibility: "private",
+        targetNode: selectedTargetNode
+      } as Partial<DatasetForm>);
     },
     onError: (uploadError: unknown) => {
       setSuccess(null);
@@ -187,6 +229,10 @@ export default function DatasetsPage() {
       setFormError(copy.upload.missingFile);
       return;
     }
+    if (!values.targetNode) {
+      setFormError(copy.upload.noAgent);
+      return;
+    }
     setFormError(null);
     setSuccess(null);
     setUploadProgress(0);
@@ -195,6 +241,7 @@ export default function DatasetsPage() {
       name: values.name,
       description: values.description,
       visibility: values.visibility,
+      targetNode: values.targetNode,
       onProgress: (percent) => setUploadProgress(percent)
     });
   });
@@ -246,6 +293,26 @@ export default function DatasetsPage() {
               <option value="public">{copy.upload.visibility.public}</option>
             </select>
           </label>
+          {token ? (
+            <label className="block text-sm">
+              <span className="text-muted">{copy.upload.agentLabel}</span>
+              <select
+                {...form.register("targetNode")}
+                className="mt-1 w-full rounded-md border border-theme bg-surface p-2"
+                disabled={agentsQuery.isLoading || !uploadAgents.length}
+              >
+                {uploadAgents.map((agent) => (
+                  <option key={agent.nodeName} value={agent.nodeName}>
+                    {agent.nodeName} · {copy.upload.agentStatus(agent.gpuFree, agent.gpuTotal)}
+                  </option>
+                ))}
+              </select>
+              {agentsQuery.isLoading ? <span className="text-xs text-muted">{copy.upload.agentLoading}</span> : null}
+              {!agentsQuery.isLoading && !uploadAgents.length ? (
+                <span className="text-xs text-red-400">{copy.upload.noAgent}</span>
+              ) : null}
+            </label>
+          ) : null}
           {!token ? (
             <p className="rounded-md border border-primary/30 accent-bg p-3 text-sm text-primary-light">
               {copy.upload.notLoggedPrefix}
@@ -258,7 +325,7 @@ export default function DatasetsPage() {
           <button
             type="submit"
             className="w-full rounded-md gradient-primary py-2 font-semibold text-white transition hover:bg-primary"
-            disabled={mutation.isPending}
+            disabled={mutation.isPending || (Boolean(token) && !uploadAgents.length)}
           >
             {mutation.isPending ? `${copy.upload.uploading} ${uploadProgress}%` : copy.upload.uploadButton}
           </button>
@@ -296,6 +363,9 @@ export default function DatasetsPage() {
                     }
                     if (dataset.previewAvailable) {
                       segments.push(copy.list.meta.preview);
+                    }
+                    if (dataset.storageNode) {
+                      segments.push(copy.list.meta.node(dataset.storageNode));
                     }
                     return segments.length ? (
                       <p className="mt-2 text-[11px] text-muted">{segments.join(" • ")}</p>

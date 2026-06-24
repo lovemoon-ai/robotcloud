@@ -1,6 +1,8 @@
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.contrib.auth.hashers import make_password
 from rest_framework.test import APIClient
 
+from robotcloud_backend.api.models import User
 from robotcloud_backend.sms import InMemorySmsGateway
 
 
@@ -39,6 +41,10 @@ def _create_user_with_dataset(
 
 
 def _admin_token(client: APIClient) -> str:
+    User.objects.update_or_create(
+        phone="19900000000",
+        defaults={"password_hash": make_password("admin"), "role": User.ROLE_ADMIN},
+    )
     login_resp = client.post(
         "/api/v1/auth/login",
         {"phone": "19900000000", "password": "admin"},

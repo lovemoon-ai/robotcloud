@@ -40,6 +40,8 @@ def _prepare_dataset(client: APIClient, sms_gateway: InMemorySmsGateway) -> tupl
 def test_inference_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
     token, dataset_id = _prepare_dataset(client, sms_gateway)
     user = User.objects.get(phone="13900000002")
+    user.role = User.ROLE_PLUS
+    user.save(update_fields=["role"])
     dataset = Dataset.objects.get(id=dataset_id)
     train_task = TrainTask.objects.create(
         dataset=dataset,
@@ -96,6 +98,8 @@ def test_inference_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> N
 def test_inference_queue_limit(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
     token, dataset_id = _prepare_dataset(client, sms_gateway)
     user = User.objects.get(phone="13900000002")
+    user.role = User.ROLE_PLUS
+    user.save(update_fields=["role"])
     dataset = Dataset.objects.get(id=dataset_id)
     train_task = TrainTask.objects.create(
         dataset=dataset,
@@ -124,3 +128,28 @@ def test_inference_queue_limit(client: APIClient, sms_gateway: InMemorySmsGatewa
     )
     assert overflow_resp.status_code == 400
     assert "limit" in overflow_resp.json().get("message", "").lower()
+
+
+def test_free_user_cannot_create_inference(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    token, dataset_id = _prepare_dataset(client, sms_gateway)
+    user = User.objects.get(phone="13900000002")
+    dataset = Dataset.objects.get(id=dataset_id)
+    train_task = TrainTask.objects.create(
+        dataset=dataset,
+        user=user,
+        model_type="ACT",
+        params={},
+        status="completed",
+        progress=1.0,
+        logs_url="",
+        checkpoint_path="/tmp/checkpoints/task_1",
+    )
+
+    create_resp = client.post(
+        "/api/v1/inference/create",
+        {"model_id": train_task.id},
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert create_resp.status_code == 403
+    assert "free" in create_resp.json()["message"].lower()

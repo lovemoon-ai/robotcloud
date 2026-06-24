@@ -31,8 +31,7 @@ migrate:
 build:
 	bash scripts/build_and_deploy.sh
 
-run:
-	cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) DJANGO_CORS_ALLOWED_ORIGINS=$(DJANGO_CORS_ALLOWED_ORIGINS) USE_IN_MEMORY_CACHE=1 uv run python manage.py runserver $(BACKEND_HOST):$(BACKEND_PORT) 
+run: run-all
 
 build-run: build run
 
@@ -44,11 +43,13 @@ serve:
 
 run-all:
 	@set -e; \
-	( cd backend && USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) DJANGO_CORS_ALLOWED_ORIGINS=$(DJANGO_CORS_ALLOWED_ORIGINS) USE_IN_MEMORY_CACHE=1 uv run python manage.py runserver $(BACKEND_HOST):$(BACKEND_PORT) ) & \
+	( cd backend && DJANGO_DEBUG=1 DJANGO_SERVE_STORAGE_FILES=0 USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) DJANGO_CORS_ALLOWED_ORIGINS=$(DJANGO_CORS_ALLOWED_ORIGINS) USE_IN_MEMORY_CACHE=1 uv run python manage.py runserver $(BACKEND_HOST):$(BACKEND_PORT) ) & \
 	BACK_PID=$$!; \
-	( cd backend && USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 uv run python manage.py run_scheduler ) & \
+	( cd backend && DJANGO_DEBUG=1 USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 uv run python manage.py run_scheduler ) & \
 	SCHED_PID=$$!; \
-	trap 'kill $$BACK_PID $$SCHED_PID $$FRONT_PID' INT TERM; \
+	( cd frontend && NEXT_PUBLIC_API_BASE_URL=$(PUBLIC_API_BASE_URL) npm run dev -- --hostname $(FRONTEND_HOST) --port $(FRONTEND_PORT) ) & \
+	FRONT_PID=$$!; \
+	trap 'kill $$BACK_PID $$SCHED_PID $$FRONT_PID 2>/dev/null || true' INT TERM EXIT; \
 	wait $$BACK_PID $$SCHED_PID $$FRONT_PID
 
 scheduler:

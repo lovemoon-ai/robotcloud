@@ -17,6 +17,7 @@ urlpatterns = [
     path("user/profile", views.ProfileView.as_view(), name="user-profile"),
     path("user/upgrade", views.UpgradeView.as_view(), name="user-upgrade"),
     path("user/usage", views.UsageView.as_view(), name="user-usage"),
+    path("user/settings", views.UserSettingsView.as_view(), name="user-settings"),
     # Payment
     path("payment/create", views.PaymentCreateView.as_view(), name="payment-create"),
     path("payment/callback/mock", views.PaymentMockCallbackView.as_view(), name="payment-callback-mock"),
@@ -25,8 +26,10 @@ urlpatterns = [
     path("payment/<str:payment_id>", views.PaymentStatusView.as_view(), name="payment-status"),
     # Dashboard
     path("dashboard/summary", views.DashboardSummaryView.as_view(), name="dashboard-summary"),
+    path("agents/active", views.AgentsActiveView.as_view(), name="agents-active"),
     # Dataset
     path("dataset/upload", views.DatasetUploadView.as_view(), name="dataset-upload"),
+    path("dataset/upload_session", views.DatasetUploadSessionView.as_view(), name="dataset-upload-session"),
     path("dataset/list", views.DatasetListView.as_view(), name="dataset-list"),
     path("dataset/<int:dataset_id>", views.DatasetDetailView.as_view(), name="dataset-detail"),
     path("dataset/<int:dataset_id>/stats", views.DatasetStatsView.as_view(), name="dataset-stats"),
@@ -43,6 +46,8 @@ urlpatterns = [
     # Internal Scheduler
     path("internal/agent/register", views.AgentRegisterView.as_view(), name="agent-register"),
     path("internal/agent/heartbeat", views.AgentHeartbeatView.as_view(), name="agent-heartbeat"),
+    path("internal/dataset/upload/verify", views.InternalDatasetUploadVerifyView.as_view(), name="dataset-upload-verify"),
+    path("internal/dataset/upload/complete", views.InternalDatasetUploadCompleteView.as_view(), name="dataset-upload-complete"),
     path("internal/training/update", views.AgentTrainingUpdateView.as_view(), name="agent-training-update"),
     path("internal/inference/update", views.AgentInferenceUpdateView.as_view(), name="agent-inference-update"),
     # Inference

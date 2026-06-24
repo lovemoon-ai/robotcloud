@@ -20,6 +20,7 @@ import hashlib
 import shutil
 import errno
 import socket
+import stat
 
 from .config import AgentConfig
 
@@ -31,6 +32,9 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/v1/agent/datasets/upload":
+            self._handle_direct_dataset_upload(parsed)
+            return
         token = self.headers.get("X-Agent-Token", "")
         if not self.server.agent.validate_scheduler_token(token):
             self.send_error(401, "Invalid scheduler token")
@@ -183,11 +187,139 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/v1/agent/datasets/upload":
+            self.send_error(404, "Not Found")
+            return
+        if not self._origin_allowed():
+            self.send_response(403)
+            self._send_cors_headers()
+            self.end_headers()
+            return
+        self.send_response(204)
+        self._send_cors_headers()
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Dataset-Id, X-Filename")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.end_headers()
+
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         """Silence default HTTP server logging."""
         self.server.agent.logger.debug("AgentHTTP: " + format, *args)
 
+    def _origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin", "")
+        allowed = self.server.agent.config.upload_allowed_origins
+        return not origin or not allowed or origin in allowed
+
+    def _send_cors_headers(self) -> None:
+        origin = self.headers.get("Origin", "")
+        allowed = self.server.agent.config.upload_allowed_origins
+        if origin and (not allowed or origin in allowed):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        elif not allowed:
+            self.send_header("Access-Control-Allow-Origin", "*")
+
+    def _send_json(self, status_code: int, body: Dict[str, Any], include_cors: bool = False) -> None:
+        payload = json.dumps(body).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        if include_cors:
+            self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(payload)
+
     # -------------------- Upload handling --------------------
+    def _handle_direct_dataset_upload(self, parsed) -> None:
+        if not self.server.agent.config.upload_enabled:
+            self._send_json(503, {"detail": "Agent upload is disabled"}, include_cors=True)
+            return
+        if not self._origin_allowed():
+            self._send_json(403, {"detail": "Origin is not allowed"}, include_cors=True)
+            return
+
+        header = self.headers.get("Authorization", "")
+        scheme, _, upload_token = header.partition(" ")
+        if scheme.lower() != "bearer" or not upload_token:
+            self._send_json(401, {"detail": "Upload token required"}, include_cors=True)
+            return
+        qs = parse_qs(parsed.query or "")
+        dataset_id_raw = self.headers.get("X-Dataset-Id") or (qs.get("dataset_id") or [None])[0]
+        if dataset_id_raw is None:
+            self._send_json(400, {"detail": "dataset_id required"}, include_cors=True)
+            return
+        try:
+            dataset_id = int(dataset_id_raw)
+        except (TypeError, ValueError):
+            self._send_json(400, {"detail": "dataset_id must be an integer"}, include_cors=True)
+            return
+
+        try:
+            verified = self.server.agent.verify_dataset_upload(dataset_id, upload_token)
+        except ValueError as exc:
+            self._send_json(400, {"detail": str(exc)}, include_cors=True)
+            return
+        filename = (
+            self.headers.get("X-Filename")
+            or (qs.get("filename") or [None])[0]
+            or verified.get("file_name")
+            or f"dataset_{dataset_id}.zip"
+        )
+        filename = self.server.agent.sanitize_filename(str(filename), f"dataset_{dataset_id}.zip")
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length <= 0:
+            self._send_json(411, {"detail": "Content-Length required"}, include_cors=True)
+            return
+
+        target_dir = self.server.agent.dataset_upload_dir(dataset_id)
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            part_path = target_dir / f"{filename}.part"
+            final_path = target_dir / filename
+            md5 = hashlib.md5()
+            remaining = content_length
+            with part_path.open("wb") as destination:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    destination.write(chunk)
+                    md5.update(chunk)
+                    remaining -= len(chunk)
+            if remaining != 0:
+                try:
+                    part_path.unlink()
+                except OSError:
+                    pass
+                self._send_json(400, {"detail": "Upload body ended early"}, include_cors=True)
+                return
+            part_path.replace(final_path)
+        except OSError as exc:
+            self._send_json(500, {"detail": f"Failed to write dataset: {exc}"}, include_cors=True)
+            return
+
+        content_md5 = md5.hexdigest()
+        metadata = self.server.agent.inspect_dataset_file(final_path)
+        try:
+            completed = self.server.agent.complete_dataset_upload(
+                dataset_id=dataset_id,
+                upload_token=upload_token,
+                storage_path=str(final_path),
+                content_md5=content_md5,
+                file_size=final_path.stat().st_size,
+                metadata=metadata,
+            )
+        except ValueError as exc:
+            self._send_json(400, {"detail": str(exc)}, include_cors=True)
+            return
+        self._send_json(200, {"status": "ok", **completed}, include_cors=True)
+
     def _handle_upload(self, parsed) -> None:
         qs = parse_qs(parsed.query or "")
         task_id_raw = (qs.get("task_id") or [None])[0]
@@ -775,22 +907,77 @@ class TrainingJob(threading.Thread):
         try:
             if suffixes[-1] == ".zip":
                 with zipfile.ZipFile(file_path, "r") as zf:
-                    zf.extractall(target)
+                    self._safe_extract_zip(zf, target)
                 # Cleanup spurious files that affect training
                 self._cleanup_extracted(target)
                 return target
             if ".tar" in suffixes or suffixes[-1] in {".gz", ".tgz"}:
                 try:
                     with tarfile.open(file_path, "r:*") as tf:
-                        tf.extractall(target)
+                        self._safe_extract_tar(tf, target)
                     # Cleanup spurious files that affect training
                     self._cleanup_extracted(target)
                     return target
                 except tarfile.TarError:
                     return None
-        except (OSError, zipfile.BadZipFile):
+        except (OSError, ValueError, zipfile.BadZipFile):
             return None
         return None
+
+    def _safe_member_path(self, target: Path, member_name: str) -> Path:
+        normalized_name = (member_name or "").replace("\\", "/")
+        if not normalized_name.strip("/"):
+            raise ValueError("Archive contains an empty path")
+        relative = Path(normalized_name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Archive contains an unsafe path")
+        destination = (target / relative).resolve()
+        target_root = target.resolve()
+        try:
+            common = Path(os.path.commonpath([str(target_root), str(destination)]))
+        except ValueError as exc:
+            raise ValueError("Archive contains an unsafe path") from exc
+        if common != target_root:
+            raise ValueError("Archive contains an unsafe path")
+        return destination
+
+    def _safe_extract_zip(self, archive: zipfile.ZipFile, target: Path) -> None:
+        members = archive.infolist()
+        for member in members:
+            self._safe_member_path(target, member.filename)
+            file_mode = (member.external_attr >> 16) & 0o170000
+            if file_mode == stat.S_IFLNK:
+                raise ValueError("Archive contains a symlink")
+
+        for member in members:
+            destination = self._safe_member_path(target, member.filename)
+            if member.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member, "r") as source, destination.open("wb") as output:
+                shutil.copyfileobj(source, output)
+
+    def _safe_extract_tar(self, archive: tarfile.TarFile, target: Path) -> None:
+        members = archive.getmembers()
+        for member in members:
+            self._safe_member_path(target, member.name)
+            if member.issym() or member.islnk():
+                raise ValueError("Archive contains a link")
+            if not (member.isdir() or member.isfile()):
+                raise ValueError("Archive contains an unsupported member")
+
+        for member in members:
+            destination = self._safe_member_path(target, member.name)
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            if source is None:
+                continue
+            with source, destination.open("wb") as output:
+                shutil.copyfileobj(source, output)
 
     def _md5_of_file(self, file_path: Path) -> Optional[str]:
         try:
@@ -1247,6 +1434,8 @@ class Agent:
             "gpu_total": self.config.gpu_total,
             "version": self.config.version,
             "port": self.config.api_port,
+            "public_base_url": self.config.public_base_url,
+            "upload_enabled": self.config.upload_enabled,
         }
         url = f"{self.config.backend_base_url}/internal/agent/register"
         while not self._stop_event.is_set():
@@ -1269,6 +1458,9 @@ class Agent:
                         report_ip=self.config.report_ip,
                         listen_host=self.config.listen_host,
                         api_port=self.config.api_port,
+                        public_base_url=self.config.public_base_url,
+                        upload_enabled=self.config.upload_enabled,
+                        upload_allowed_origins=self.config.upload_allowed_origins,
                         gpu_total=gpu_total,
                         heartbeat_interval=self.config.heartbeat_interval,
                         version=self.config.version,
@@ -1378,6 +1570,64 @@ class Agent:
 
     def validate_scheduler_token(self, incoming: str) -> bool:
         return bool(self.agent_token) and incoming == self.agent_token
+
+    def _backend_post(self, path: str, payload: Dict[str, Any], timeout: int = 10) -> Dict[str, Any]:
+        if not self.agent_token:
+            raise ValueError("Agent is not registered")
+        url = f"{self.config.backend_base_url}{path}"
+        headers = {"Content-Type": "application/json", "X-Agent-Token": self.agent_token}
+        try:
+            response = self.session.post(url, json=payload, headers=headers, timeout=timeout)
+        except Exception as exc:
+            raise ValueError(f"Backend request failed: {exc}") from exc
+        if not response.ok:
+            detail = response.text.strip()
+            try:
+                parsed = response.json()
+                if isinstance(parsed, dict):
+                    detail = str(parsed.get("detail") or parsed.get("message") or detail)
+            except Exception:
+                pass
+            raise ValueError(detail or f"Backend request failed with status {response.status_code}")
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise ValueError("Invalid backend response") from exc
+        if not isinstance(body, dict):
+            raise ValueError("Invalid backend response")
+        if body.get("code") not in {0, None}:
+            raise ValueError(str(body.get("message") or "Backend request failed"))
+        data = body.get("data")
+        return data if isinstance(data, dict) else {}
+
+    def verify_dataset_upload(self, dataset_id: int, upload_token: str) -> Dict[str, Any]:
+        return self._backend_post(
+            "/internal/dataset/upload/verify",
+            {"dataset_id": dataset_id, "upload_token": upload_token},
+            timeout=5,
+        )
+
+    def complete_dataset_upload(
+        self,
+        dataset_id: int,
+        upload_token: str,
+        storage_path: str,
+        content_md5: str,
+        file_size: int,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self._backend_post(
+            "/internal/dataset/upload/complete",
+            {
+                "dataset_id": dataset_id,
+                "upload_token": upload_token,
+                "storage_path": storage_path,
+                "content_md5": content_md5,
+                "file_size": file_size,
+                "metadata": metadata,
+            },
+            timeout=10,
+        )
 
     def delete_model_files(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         paths = payload.get("paths")
@@ -1574,6 +1824,77 @@ class Agent:
             return "", offset, False
 
     # -------------------- Dataset helpers --------------------
+    def sanitize_filename(self, original: str, fallback: str) -> str:
+        candidate = (original or "").strip().replace("\\", "/").split("/")[-1]
+        candidate = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate)
+        candidate = candidate.strip("._")
+        if candidate:
+            return candidate
+        fallback_name = fallback.strip().replace(" ", "_")
+        return re.sub(r"[^A-Za-z0-9._-]+", "_", fallback_name) or "dataset"
+
+    def dataset_upload_dir(self, dataset_id: int) -> Path:
+        root = self.config.dataset_cache_dir.parent
+        return (root / "agent_datasets" / f"dataset_{dataset_id}").resolve()
+
+    def inspect_dataset_file(self, file_path: Path) -> Dict[str, Any]:
+        file_size = file_path.stat().st_size if file_path.exists() else 0
+        total_files = 0
+        by_type: Dict[str, int] = {}
+        preview_entries: List[Dict[str, str]] = []
+        suffixes = [suffix.lower() for suffix in file_path.suffixes]
+
+        if suffixes and suffixes[-1] == ".zip" and file_path.exists():
+            try:
+                with zipfile.ZipFile(file_path, "r") as archive:
+                    names = [item.filename for item in archive.infolist() if not item.is_dir()]
+            except zipfile.BadZipFile:
+                names = []
+            total_files, by_type, preview_entries = self._metadata_from_names(names)
+        elif file_path.exists() and (".tar" in suffixes or (suffixes and suffixes[-1] in {".gz", ".tgz"})):
+            try:
+                with tarfile.open(file_path, "r:*") as archive:
+                    names = [item.name for item in archive.getmembers() if item.isfile()]
+            except tarfile.TarError:
+                names = []
+            total_files, by_type, preview_entries = self._metadata_from_names(names)
+
+        if total_files == 0:
+            file_type = self._classify_dataset_file(file_path.name)
+            total_files = 1
+            by_type[file_type] = 1
+            preview_entries = [{"name": file_path.name, "type": file_type}]
+
+        return {
+            "file_name": file_path.name,
+            "file_size": file_size,
+            "total_files": total_files,
+            "by_type": by_type,
+            "preview": preview_entries,
+        }
+
+    def _metadata_from_names(self, names: List[str]) -> tuple[int, Dict[str, int], List[Dict[str, str]]]:
+        by_type: Dict[str, int] = {}
+        preview_entries: List[Dict[str, str]] = []
+        for name in names:
+            file_type = self._classify_dataset_file(name)
+            by_type[file_type] = by_type.get(file_type, 0) + 1
+            if len(preview_entries) < 5:
+                preview_entries.append({"name": name, "type": file_type})
+        return len(names), by_type, preview_entries
+
+    def _classify_dataset_file(self, name: str) -> str:
+        suffix = Path(name).suffix.lower()
+        if suffix in {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}:
+            return "image"
+        if suffix in {".mp4", ".avi", ".mov", ".mkv", ".webm"}:
+            return "video"
+        if suffix in {".pcd", ".ply", ".las", ".bag"}:
+            return "pointcloud"
+        if suffix in {".json", ".yaml", ".yml", ".xml", ".csv", ".txt"}:
+            return "metadata"
+        return "file"
+
     def dataset_dir(self, task_id: int) -> Path:
         """Return a persistent per-task dataset directory on the agent host."""
         root = self.config.dataset_cache_dir.parent  # backend_root/storage

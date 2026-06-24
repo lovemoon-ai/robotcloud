@@ -172,6 +172,33 @@ describe("robotCloudApi", () => {
     expect(result).toEqual<DashboardSummary>({ activeJobs: 2, datasets: 3, tier: "free", gpuHours: 4.5 });
   });
 
+  it("createPayment defaults to alipay provider", async () => {
+    setAuthenticatedUser();
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          payment_id: "pay_1",
+          target_role: "plus",
+          amount_cents: 20000,
+          currency: "CNY",
+          provider: "alipay",
+          status: "pending",
+          applied_at: null,
+          created_at: "2024-01-01T00:00:00Z",
+          checkout_url: "https://pay.example.test"
+        }
+      })
+    } as unknown as Response);
+
+    await robotCloudApi.createPayment("plus");
+    const [url, init] = mockedFetch.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/payment/create`);
+    expect(JSON.parse(init?.body as string)).toEqual({ target_role: "plus", provider: "alipay" });
+  });
+
   it("listDatasets converts dataset list", async () => {
     setAuthenticatedUser();
     const backend = {
@@ -185,6 +212,8 @@ describe("robotCloudApi", () => {
             visibility: "private",
             status: "processing",
             created_at: "2024-01-01T00:00:00Z",
+            storage_backend: "agent",
+            storage_node: "gpu-node-1",
             file_name: "demo.zip",
             file_size: 1024,
             total_files: 3,
@@ -212,43 +241,131 @@ describe("robotCloudApi", () => {
         fileName: "demo.zip",
         fileSize: 1024,
         totalFiles: 3,
-        previewAvailable: true
+        previewAvailable: true,
+        storageBackend: "agent",
+        storageNode: "gpu-node-1"
       }
     ]);
   });
 
-  it("uploadDataset sends multipart form data and maps response", async () => {
+  it("listActiveAgents converts active agent list", async () => {
     setAuthenticatedUser();
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          default_agent_node: "gpu-node-1",
+          total: 1,
+          items: [
+            {
+              node_name: "gpu-node-1",
+              ip: "10.0.0.10",
+              api_port: 5000,
+              gpu_total: 2,
+              gpu_free: 1,
+              gpu_busy: 1,
+              status: "online",
+              version: "1.0.0",
+              public_base_url: "https://agent.example.test",
+              upload_enabled: true,
+              can_upload: true,
+              is_default: true,
+              last_heartbeat: "2024-01-01T00:00:00Z"
+            }
+          ]
+        }
+      })
+    } as unknown as Response);
+
+    const result = await robotCloudApi.listActiveAgents();
+    expect(result.items[0]).toMatchObject({
+      nodeName: "gpu-node-1",
+      publicBaseUrl: "https://agent.example.test",
+      canUpload: true,
+      isDefault: true
+    });
+    expect(result.defaultAgentNode).toBe("gpu-node-1");
+  });
+
+  it("updateDefaultAgent posts user setting", async () => {
+    setAuthenticatedUser();
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: { default_agent_node: "gpu-node-2" }
+      })
+    } as unknown as Response);
+
+    const result = await robotCloudApi.updateDefaultAgent("gpu-node-2");
+    const [url, init] = mockedFetch.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/user/settings`);
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({ default_agent_node: "gpu-node-2" });
+    expect(result.defaultAgentNode).toBe("gpu-node-2");
+  });
+
+  it("uploadDataset creates a session and uploads the file to the selected agent", async () => {
+    setAuthenticatedUser();
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          dataset_id: 2,
+          status: "processing",
+          upload_url: "https://agent.example.test/api/v1/agent/datasets/upload",
+          upload_token: "upload-token",
+          expires_at: "2024-01-01T00:15:00Z",
+          expires_in: 900,
+          node_name: "gpu-node-1",
+          file_name: "dataset.zip"
+        }
+      })
+    } as unknown as Response);
     nextXhrResponseText = JSON.stringify({
-      code: 0,
-      data: {
-        dataset_id: 2,
-        status: "ready",
-        file_name: "dataset.zip",
-        file_size: 2048,
-        total_files: 5
-      }
+      status: "ready",
+      dataset_id: 2,
+      file_name: "dataset.zip",
+      file_size: 2048,
+      total_files: 5
     });
     const file = new File(["content"], "dataset.zip", { type: "application/zip" });
     const result = await robotCloudApi.uploadDataset({
       file,
       name: "demo",
       description: "desc",
-      visibility: "public"
+      visibility: "public",
+      targetNode: "gpu-node-1"
+    });
+    const [sessionUrl, sessionInit] = mockedFetch.mock.calls[0];
+    expect(sessionUrl).toBe(`${API_BASE}/dataset/upload_session`);
+    expect(JSON.parse(sessionInit?.body as string)).toEqual({
+      name: "demo",
+      description: "desc",
+      visibility: "public",
+      filename: "dataset.zip",
+      target_node: "gpu-node-1"
     });
     const xhr = lastXhr as unknown as {
       _method: string;
       _url: string;
-      _body: FormData | null;
+      _headers: Record<string, string>;
+      _body: File | null;
     };
     expect(xhr._method).toBe("POST");
-    expect(xhr._url).toBe(`${API_BASE}/dataset/upload`);
-    expect(xhr._body).toBeInstanceOf(FormData);
-    const form = xhr._body as FormData;
-    expect(form.get("name")).toBe("demo");
-    expect(form.get("description")).toBe("desc");
-    expect(form.get("visibility")).toBe("public");
-    expect(form.get("file")).toBeInstanceOf(File);
+    expect(xhr._url).toBe("https://agent.example.test/api/v1/agent/datasets/upload");
+    expect(xhr._headers).toMatchObject({
+      Authorization: "Bearer upload-token",
+      "X-Dataset-Id": "2",
+      "X-Filename": "dataset.zip",
+      "Content-Type": "application/zip"
+    });
+    expect(xhr._body).toBe(file);
     expect(result).toEqual<DatasetUploadResult>({
       datasetId: 2,
       status: "ready",

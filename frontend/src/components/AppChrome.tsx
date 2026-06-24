@@ -85,6 +85,7 @@ export function AppChrome({ children }: AppChromeProps) {
     homeAria: isZh ? "RobotCloud 首页" : "RobotCloud Home",
     login: isZh ? "登录" : "Log in",
     logout: isZh ? "退出登录" : "Log out",
+    settings: isZh ? "设置" : "Settings",
     language: isZh ? "语言" : "Language",
     account: isZh ? "账号" : "Account",
     chinese: "中文",
@@ -191,6 +192,13 @@ export function AppChrome({ children }: AppChromeProps) {
                         </div>
 
                         <div className="px-2 pt-2">
+                          <Link
+                            href="/settings"
+                            onClick={() => setIsOpen(false)}
+                            className="block w-full rounded-md px-3 py-2 text-left text-sm text-body transition hover:bg-primary/10"
+                          >
+                            {copy.settings}
+                          </Link>
                           <button
                             type="button"
                             onClick={handleLogout}

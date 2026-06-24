@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import LoginPage from "../app/login/page";
 import { robotCloudApi } from "@/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -30,7 +30,9 @@ describe("/login page", () => {
   const fillPhoneAndSendCode = async (phone = "13800000001") => {
     render(<LoginPage />);
     fireEvent.change(screen.getByPlaceholderText("e.g. 13800001234"), { target: { value: phone } });
-    fireEvent.click(screen.getByRole("button", { name: "Send Code" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send Code" }));
+    });
   };
 
   it("sends verification code and logs in with code", async () => {
@@ -51,7 +53,9 @@ describe("/login page", () => {
 
     // Enter verification code
     fireEvent.change(screen.getByPlaceholderText("Enter 6-digit code"), { target: { value: "000000" } });
-    fireEvent.click(screen.getByRole("button", { name: "Login / Register" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Login / Register" }));
+    });
 
     await waitFor(() => {
       expect(mockedApi.loginWithCode).toHaveBeenCalledWith({
@@ -69,7 +73,9 @@ describe("/login page", () => {
   it("shows error for invalid phone number", async () => {
     render(<LoginPage />);
     fireEvent.change(screen.getByPlaceholderText("e.g. 13800001234"), { target: { value: "invalid" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send Code" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send Code" }));
+    });
 
     await waitFor(() => {
       expect(screen.getByText("Phone number format is incorrect")).toBeInTheDocument();
@@ -89,14 +95,18 @@ describe("/login page", () => {
     render(<LoginPage />);
 
     fireEvent.change(screen.getByPlaceholderText("e.g. 13800001234"), { target: { value: "13800000001" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send Code" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send Code" }));
+    });
 
     await waitFor(() => {
       expect(mockedApi.requestOtp).toHaveBeenCalledWith("13800000001");
     });
 
     fireEvent.change(screen.getByPlaceholderText("Enter 6-digit code"), { target: { value: "000000" } });
-    fireEvent.click(screen.getByRole("button", { name: "Login / Register" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Login / Register" }));
+    });
 
     await waitFor(() => {
       expect(mockedApi.loginWithCode).toHaveBeenCalledWith({

@@ -8,6 +8,7 @@ import {
   DatasetSummary,
   DatasetUploadInput,
   DatasetUploadResult,
+  GpuAgent,
   InferenceJob,
   Model,
   OtpPayload,
@@ -15,6 +16,7 @@ import {
   SimulatorSession,
   TrainingConfig,
   TrainingJob,
+  UserSettings,
   UserRole
 } from "@/types";
 
@@ -51,10 +53,52 @@ type BackendDataset = {
   status: string;
   created_at: string;
   storage_path?: string;
+  storage_backend?: "local" | "agent";
+  storage_node?: string;
   file_name?: string | null;
   file_size?: number | null;
   total_files?: number | null;
   preview_available?: boolean;
+};
+
+type BackendAgent = {
+  node_name: string;
+  ip: string;
+  api_port: number;
+  gpu_total: number;
+  gpu_free: number;
+  gpu_busy: number;
+  status: string;
+  version: string;
+  public_base_url: string;
+  upload_enabled: boolean;
+  can_upload: boolean;
+  is_default: boolean;
+  last_heartbeat: string | null;
+};
+
+type BackendUserSettings = {
+  default_agent_node: string;
+};
+
+type BackendDatasetUploadSession = {
+  dataset_id: number;
+  status: string;
+  upload_url: string;
+  upload_token: string;
+  expires_at: string;
+  expires_in: number;
+  node_name: string;
+  file_name: string;
+};
+
+type BackendDatasetUploadComplete = {
+  dataset_id: number;
+  status: string;
+  file_name: string;
+  file_size: number;
+  total_files: number;
+  storage_node?: string;
 };
 
 type BackendTrainingTask = {
@@ -204,14 +248,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload.data;
 }
 
-function uploadWithProgress<T>(
+function uploadFileToAgentWithProgress<T>(
   url: string,
-  body: FormData,
+  file: File,
+  headers: Record<string, string>,
   onProgress?: (percent: number) => void
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const token = useAuthStore.getState().token;
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && onProgress) {
@@ -223,12 +267,19 @@ function uploadWithProgress<T>(
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
-          const payload = JSON.parse(xhr.responseText) as ApiResponse<T>;
-          if (payload.code !== 0) {
-            reject(new Error(payload.message || "Request failed"));
-          } else {
-            resolve(payload.data);
+          const parsed = JSON.parse(xhr.responseText);
+          if (typeof parsed?.code === "number") {
+            if (parsed.code !== 0) {
+              reject(new Error(parsed.message || "Request failed"));
+              return;
+            }
+            resolve(parsed.data as T);
+            return;
           }
+          if (onProgress) {
+            onProgress(100);
+          }
+          resolve(parsed as T);
         } catch {
           reject(new Error("Invalid response format"));
         }
@@ -247,13 +298,6 @@ function uploadWithProgress<T>(
         if (!message) {
           message = `Request failed with status ${xhr.status}`;
         }
-        if (isAuthError(xhr.status, message)) {
-          try {
-            useAuthStore.getState().reset();
-          } catch {
-            // ignore
-          }
-        }
         reject(new Error(message));
       }
     };
@@ -263,11 +307,30 @@ function uploadWithProgress<T>(
     };
 
     xhr.open("POST", url);
-    if (token) {
-      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-    }
-    xhr.send(body);
+    Object.entries(headers).forEach(([key, value]) => {
+      xhr.setRequestHeader(key, value);
+    });
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.send(file);
   });
+}
+
+function mapAgent(item: BackendAgent): GpuAgent {
+  return {
+    nodeName: item.node_name,
+    ip: item.ip,
+    apiPort: item.api_port,
+    gpuTotal: item.gpu_total,
+    gpuFree: item.gpu_free,
+    gpuBusy: item.gpu_busy,
+    status: item.status,
+    version: item.version,
+    publicBaseUrl: item.public_base_url,
+    uploadEnabled: item.upload_enabled,
+    canUpload: item.can_upload,
+    isDefault: item.is_default,
+    lastHeartbeat: item.last_heartbeat
+  };
 }
 
 export const robotCloudApi = {
@@ -285,7 +348,7 @@ export const robotCloudApi = {
       expireAt: data.expire_at
     };
   },
-  createPayment: async (targetRole: UserRole, provider: string = "wechat"): Promise<Payment> => {
+  createPayment: async (targetRole: UserRole, provider: string = "alipay"): Promise<Payment> => {
     const data = await request<BackendPayment>("/payment/create", {
       method: "POST",
       body: JSON.stringify({ target_role: targetRole, provider })
@@ -432,24 +495,52 @@ export const robotCloudApi = {
       fileName: item.file_name ?? null,
       fileSize: item.file_size ?? null,
       totalFiles: item.total_files ?? null,
-      previewAvailable: Boolean(item.preview_available)
+      previewAvailable: Boolean(item.preview_available),
+      storageBackend: item.storage_backend,
+      storageNode: item.storage_node ?? ""
     }));
+  },
+  listActiveAgents: async (): Promise<{ items: GpuAgent[]; defaultAgentNode: string }> => {
+    const data = await request<{ items: BackendAgent[]; total: number; default_agent_node: string }>("/agents/active");
+    return {
+      items: data.items.map(mapAgent),
+      defaultAgentNode: data.default_agent_node
+    };
+  },
+  getUserSettings: async (): Promise<UserSettings> => {
+    const data = await request<BackendUserSettings>("/user/settings");
+    return { defaultAgentNode: data.default_agent_node };
+  },
+  updateDefaultAgent: async (nodeName: string): Promise<UserSettings> => {
+    const data = await request<BackendUserSettings>("/user/settings", {
+      method: "POST",
+      body: JSON.stringify({ default_agent_node: nodeName })
+    });
+    return { defaultAgentNode: data.default_agent_node };
   },
   deleteDataset: async (datasetId: number): Promise<{ deleted: boolean }> =>
     request<{ deleted: boolean }>(`/dataset/${datasetId}/delete`, { method: "POST" }),
   uploadDataset: async (form: DatasetUploadInput & { onProgress?: (percent: number) => void }) => {
-    const body = new FormData();
-    body.append("file", form.file);
-    body.append("name", form.name);
-    body.append("description", form.description);
-    body.append("visibility", form.visibility);
-    const response = await uploadWithProgress<{
-      dataset_id: number;
-      status: string;
-      file_name: string;
-      file_size: number;
-      total_files: number;
-    }>(`${API_BASE}/dataset/upload`, body, form.onProgress);
+    const session = await request<BackendDatasetUploadSession>("/dataset/upload_session", {
+      method: "POST",
+      body: JSON.stringify({
+        name: form.name,
+        description: form.description,
+        visibility: form.visibility,
+        filename: form.file.name,
+        target_node: form.targetNode || ""
+      })
+    });
+    const response = await uploadFileToAgentWithProgress<BackendDatasetUploadComplete>(
+      session.upload_url,
+      form.file,
+      {
+        Authorization: `Bearer ${session.upload_token}`,
+        "X-Dataset-Id": String(session.dataset_id),
+        "X-Filename": session.file_name || form.file.name
+      },
+      form.onProgress
+    );
     const result: DatasetUploadResult = {
       datasetId: response.dataset_id,
       status: response.status,

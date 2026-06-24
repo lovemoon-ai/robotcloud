@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 
-from robotcloud_backend.api.models import WorkerNode
+from robotcloud_backend.api.models import Dataset, WorkerNode
 from robotcloud_backend.api.scheduler import SchedulerService
 from robotcloud_backend.sms import InMemorySmsGateway
 
@@ -123,3 +123,64 @@ def test_scheduler_assigns_and_updates_training_task(
     node = WorkerNode.objects.get(node_name="gpu-node-1")
     assert node.gpu_busy == 0
     assert node.status == WorkerNode.STATUS_ONLINE
+
+
+def test_scheduler_routes_agent_stored_dataset_to_storage_node(
+    client: APIClient, sms_gateway: InMemorySmsGateway, monkeypatch
+) -> None:
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13800000003")
+    dataset = Dataset.objects.get(id=dataset_id)
+    dataset.storage_backend = Dataset.STORAGE_BACKEND_AGENT
+    dataset.storage_node = "gpu-node-2"
+    dataset.storage_path = "/srv/robotcloud/agent_datasets/dataset_1/train.zip"
+    dataset.save(update_fields=["storage_backend", "storage_node", "storage_path"])
+
+    register_1 = client.post(
+        "/api/v1/internal/agent/register",
+        {"node_name": "gpu-node-1", "ip": "10.0.0.11", "gpu_total": 4, "version": "1.0.0", "port": 5000},
+        format="json",
+    )
+    register_2 = client.post(
+        "/api/v1/internal/agent/register",
+        {"node_name": "gpu-node-2", "ip": "10.0.0.12", "gpu_total": 1, "version": "1.0.0", "port": 5000},
+        format="json",
+    )
+    assert register_1.status_code == 200
+    assert register_2.status_code == 200
+    agent_token_2 = register_2.json()["data"]["token"]
+
+    create_resp = client.post(
+        "/api/v1/training/create",
+        {"dataset_id": dataset_id, "model_type": "yolov8", "params": {"epochs": 2}},
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert create_resp.status_code == 200
+
+    def _fake_dispatch(url, json=None, headers=None, timeout=None, **kwargs):
+        assert "/api/v1/agent/upload" not in url
+        assert url == "http://10.0.0.12:5000/api/v1/agent/run"
+        assert headers and headers.get("X-Agent-Token") == agent_token_2
+        assert json["dataset_path"] == "/srv/robotcloud/agent_datasets/dataset_1/train.zip"
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"status": "accepted"}
+
+        return _Response()
+
+    monkeypatch.setattr("robotcloud_backend.api.scheduler.requests.post", _fake_dispatch)
+
+    scheduler = SchedulerService(loop_interval=0.01)
+    assigned = scheduler.perform_scheduling_cycle()
+    assert assigned == 1
+
+    status_resp = client.get(
+        f"/api/v1/training/{create_resp.json()['data']['task_id']}/status",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert status_resp.status_code == 200
+    assert status_resp.json()["data"]["assigned_node"] == "gpu-node-2"

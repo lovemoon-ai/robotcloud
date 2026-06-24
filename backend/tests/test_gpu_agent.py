@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import io
+import tarfile
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -78,3 +81,48 @@ def test_training_job_parses_progress_from_logs(tmp_path: Path) -> None:
     assert pytest.approx(notifications[1][2], rel=1e-6) == 0.2
     assert pytest.approx(notifications[1][3]["loss"], rel=1e-6) == 0.32
     assert pytest.approx(notifications[-1][2], rel=1e-6) == 0.95
+
+
+def test_training_job_rejects_zip_path_traversal(tmp_path: Path) -> None:
+    agent = _StubAgent()
+    archive_path = tmp_path / "bad.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("../escape.txt", b"bad")
+
+    job = TrainingJob(
+        agent=agent,
+        task_id=10,
+        gpus=[0],
+        params={},
+        dataset_path="",
+        cmd="python train.py",
+        log_dir=tmp_path / "logs",
+        work_dir=_repo_root(),
+    )
+
+    assert job._extract_archive(archive_path) is None
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_training_job_rejects_tar_path_traversal(tmp_path: Path) -> None:
+    agent = _StubAgent()
+    archive_path = tmp_path / "bad.tar"
+    payload = b"bad"
+    with tarfile.open(archive_path, "w") as archive:
+        member = tarfile.TarInfo("../escape.txt")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+
+    job = TrainingJob(
+        agent=agent,
+        task_id=11,
+        gpus=[0],
+        params={},
+        dataset_path="",
+        cmd="python train.py",
+        log_dir=tmp_path / "logs",
+        work_dir=_repo_root(),
+    )
+
+    assert job._extract_archive(archive_path) is None
+    assert not (tmp_path / "escape.txt").exists()

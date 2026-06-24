@@ -1,6 +1,8 @@
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 
+@override_settings(DEBUG=True)
 def test_payment_flow_and_upgrade_guardrails(client: APIClient, create_user_token, auth_header) -> None:
     """Test Plus plan payment flow and upgrade - only Plus plan is available."""
     token = create_user_token("13800000002", "abcdef")
@@ -32,6 +34,7 @@ def test_payment_flow_and_upgrade_guardrails(client: APIClient, create_user_toke
         "/api/v1/payment/callback/mock",
         {"payment_id": payment_id, "status": "succeeded"},
         format="json",
+        **auth_header(token),
     )
     assert callback_resp.status_code == 200
     assert callback_resp.json()["data"]["status"] == "succeeded"
@@ -52,6 +55,48 @@ def test_payment_flow_and_upgrade_guardrails(client: APIClient, create_user_toke
     upgrade_data = upgrade_resp.json()["data"]
     assert upgrade_data["role"] == "plus"
     assert upgrade_data["expire_at"] is not None
+
+
+def test_mock_payment_callback_requires_owner_token(client: APIClient, create_user_token, auth_header) -> None:
+    token = create_user_token("13800000024", "mock_auth")
+    create_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus", "provider": "alipay"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp.status_code == 200
+    payment_id = create_resp.json()["data"]["payment_id"]
+
+    callback_resp = client.post(
+        "/api/v1/payment/callback/mock",
+        {"payment_id": payment_id, "status": "succeeded"},
+        format="json",
+    )
+    assert callback_resp.status_code == 400
+    assert "authorization" in callback_resp.json()["message"].lower()
+
+
+@override_settings(DEBUG=False)
+def test_mock_payment_callback_disabled_outside_debug(client: APIClient, create_user_token, auth_header) -> None:
+    token = create_user_token("13800000025", "mock_disabled")
+    create_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus", "provider": "alipay"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp.status_code == 200
+    payment_id = create_resp.json()["data"]["payment_id"]
+
+    callback_resp = client.post(
+        "/api/v1/payment/callback/mock",
+        {"payment_id": payment_id, "status": "succeeded"},
+        format="json",
+        **auth_header(token),
+    )
+    assert callback_resp.status_code == 403
+    assert "disabled" in callback_resp.json()["message"].lower()
 
 
 def test_pro_plan_not_available(client: APIClient, create_user_token, auth_header) -> None:
@@ -107,6 +152,7 @@ def test_alipay_payment_flow(client: APIClient, create_user_token, auth_header) 
     assert query_resp.json()["data"]["status"] == "pending"
 
 
+@override_settings(DEBUG=True, ALIPAY_APP_ID="", ALIPAY_PRIVATE_KEY="", ALIPAY_PUBLIC_KEY="")
 def test_alipay_notify_callback(client: APIClient, create_user_token, auth_header) -> None:
     """Test Alipay async notification callback."""
     token = create_user_token("13800000021", "alipay_notify")
@@ -143,6 +189,36 @@ def test_alipay_notify_callback(client: APIClient, create_user_token, auth_heade
     assert status_resp.json()["data"]["status"] == "succeeded"
 
 
+@override_settings(DEBUG=True, ALIPAY_APP_ID="app", ALIPAY_PRIVATE_KEY="private", ALIPAY_PUBLIC_KEY="public")
+def test_alipay_notify_rejects_unsigned_when_configured(client: APIClient, create_user_token, auth_header) -> None:
+    token = create_user_token("13800000026", "alipay_unsigned")
+
+    create_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus", "provider": "alipay"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp.status_code == 200
+    payment = create_resp.json()["data"]
+
+    notify_resp = client.post(
+        "/api/v1/payment/alipay/notify",
+        {
+            "out_trade_no": payment["payment_id"],
+            "trade_status": "TRADE_SUCCESS",
+            "total_amount": f"{payment['amount_cents'] / 100:.2f}",
+        },
+        format="json",
+    )
+    assert notify_resp.status_code == 200
+    assert notify_resp.content == b"failure"
+
+    status_resp = client.get(f"/api/v1/payment/{payment['payment_id']}", **auth_header(token))
+    assert status_resp.status_code == 200
+    assert status_resp.json()["data"]["status"] == "pending"
+
+
 def test_dev_mode_payment_amount(client: APIClient, create_user_token, auth_header) -> None:
     """Test that dev mode uses 0.01 RMB (1 cent) for payment."""
     from django.conf import settings
@@ -164,6 +240,7 @@ def test_dev_mode_payment_amount(client: APIClient, create_user_token, auth_head
         assert payment["amount_cents"] == 20000  # Plus price: 200 RMB
 
 
+@override_settings(DEBUG=True)
 def test_plus_user_cannot_upgrade_again(client: APIClient, create_user_token, auth_header) -> None:
     """Test that Plus users cannot create another payment."""
     # Create user and upgrade to Plus
@@ -184,6 +261,7 @@ def test_plus_user_cannot_upgrade_again(client: APIClient, create_user_token, au
         "/api/v1/payment/callback/mock",
         {"payment_id": payment_id, "status": "succeeded"},
         format="json",
+        **auth_header(token),
     )
     
     # Apply upgrade

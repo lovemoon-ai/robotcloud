@@ -10,12 +10,13 @@ from typing import Any, Dict, Iterable, Optional
 from urllib.parse import quote
 from zipfile import BadZipFile, ZipFile
 
+import requests
 from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
 from django.core.cache import caches
 from django.db import transaction
 from django.utils import timezone
-
-import requests
+from django.utils.dateparse import parse_datetime
 
 from .models import (
     AdminLog,
@@ -34,6 +35,7 @@ from ..payment.alipay import get_alipay
 
 TOKEN_TIMEOUT_SECONDS = 7 * 24 * 60 * 60  # 7 days
 VERIFICATION_CODE_TIMEOUT_SECONDS = 5 * 60  # 5 minutes
+DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS = 15 * 60  # 15 minutes
 
 
 class RobotCloudService:
@@ -92,6 +94,12 @@ class RobotCloudService:
             candidate = secrets.token_hex(16)
             if not WorkerNode.objects.filter(auth_token=candidate).exists():
                 return candidate
+
+    def _generate_dataset_upload_token(self) -> str:
+        return secrets.token_urlsafe(32)
+
+    def _hash_upload_token(self, token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     def _generate_payment_id(self) -> str:
         while True:
@@ -155,6 +163,89 @@ class RobotCloudService:
             return candidate
         fallback_name = fallback.strip().replace(" ", "_")
         return re.sub(r"[^A-Za-z0-9._-]+", "_", fallback_name) or "dataset"
+
+    def _md5_of_file(self, file_path: Path) -> str:
+        md5 = hashlib.md5()
+        with file_path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                md5.update(chunk)
+        return md5.hexdigest()
+
+    def _normalize_public_base_url(self, value: str) -> str:
+        candidate = (value or "").strip().rstrip("/")
+        if not candidate:
+            return ""
+        if not candidate.startswith(("http://", "https://")):
+            raise ValueError("Agent public base URL must start with http:// or https://")
+        return candidate
+
+    def _active_agent_queryset(self):
+        return WorkerNode.objects.filter(status=WorkerNode.STATUS_ONLINE, gpu_total__gt=0).order_by("node_name")
+
+    def _upload_capable_agent_queryset(self):
+        return self._active_agent_queryset().filter(upload_enabled=True).exclude(public_base_url="")
+
+    def _agent_to_dict(self, node: WorkerNode, default_node: str = "") -> Dict[str, Any]:
+        return {
+            "node_name": node.node_name,
+            "ip": node.ip,
+            "api_port": node.api_port,
+            "gpu_total": node.gpu_total,
+            "gpu_free": node.gpu_free,
+            "gpu_busy": node.gpu_busy,
+            "status": node.status,
+            "version": node.version,
+            "public_base_url": node.public_base_url,
+            "upload_enabled": node.upload_enabled,
+            "can_upload": bool(node.upload_enabled and node.public_base_url),
+            "is_default": bool(default_node and node.node_name == default_node),
+            "last_heartbeat": node.last_heartbeat.isoformat() if node.last_heartbeat else None,
+        }
+
+    def _select_upload_agent(self, node_name: str = "") -> WorkerNode:
+        queryset = self._upload_capable_agent_queryset()
+        requested = (node_name or "").strip()
+        if requested:
+            node = queryset.filter(node_name=requested).first()
+            if not node:
+                raise ValueError("Selected GPU agent is not available for upload")
+            return node
+        node = queryset.first()
+        if not node:
+            raise ValueError("No active GPU agent is available for upload")
+        return node
+
+    def _parse_upload_expires_at(self, raw: Any):
+        if not isinstance(raw, str) or not raw:
+            return None
+        parsed = parse_datetime(raw)
+        if parsed is None:
+            return None
+        if timezone.is_naive(parsed):
+            parsed = timezone.make_aware(parsed)
+        return parsed
+
+    def _get_dataset_upload_session(self, dataset: Dataset, upload_token: str) -> Dict[str, Any]:
+        metadata = dataset.metadata if isinstance(dataset.metadata, dict) else {}
+        session = metadata.get("upload_session")
+        if not isinstance(session, dict):
+            raise ValueError("Upload session not found")
+        expected_hash = session.get("token_hash")
+        if not isinstance(expected_hash, str) or not expected_hash:
+            raise ValueError("Upload session is invalid")
+        actual_hash = self._hash_upload_token(upload_token or "")
+        if not secrets.compare_digest(expected_hash, actual_hash):
+            raise ValueError("Invalid upload token")
+        expires_at = self._parse_upload_expires_at(session.get("expires_at"))
+        if expires_at is None or timezone.now() > expires_at:
+            dataset.status = Dataset.STATUS_FAILED
+            metadata.pop("upload_session", None)
+            dataset.metadata = metadata
+            dataset.save(update_fields=["status", "metadata"])
+            raise ValueError("Upload session expired")
+        return session
 
     def _write_dataset_file(self, dataset: Dataset, uploaded_file: Any) -> Path:
         dataset_dir = self.dataset_root / f"user_{dataset.owner_id}" / f"dataset_{dataset.id}"
@@ -242,6 +333,8 @@ class RobotCloudService:
     def _ensure_dataset_metadata(self, dataset: Dataset, force: bool = False) -> Dict[str, Any]:
         metadata = dataset.metadata or {}
         if not metadata or force:
+            if dataset.storage_backend == Dataset.STORAGE_BACKEND_AGENT:
+                raise ValueError("Dataset metadata unavailable on backend")
             file_path = self._dataset_file_path(dataset)
             if not file_path.exists():
                 raise ValueError("Dataset file missing")
@@ -333,7 +426,7 @@ class RobotCloudService:
     def login(self, phone: str, password: str) -> Dict[str, Any]:
         self._ensure_phone(phone)
         user = self._get_user_by_phone(phone)
-        if user.password_hash != self._hash_password(password):
+        if not self._verify_password(user, password):
             raise ValueError("Incorrect password")
         token = secrets.token_urlsafe(16)
         self.token_cache.set(token, user.id, TOKEN_TIMEOUT_SECONDS)
@@ -434,7 +527,10 @@ class RobotCloudService:
             raise ValueError("Payment not found")
         return self._response(self._payment_to_dict(payment))
 
-    def mock_payment_callback(self, payment_id: str, status_value: str) -> Dict[str, Any]:
+    def mock_payment_callback(self, token: str, payment_id: str, status_value: str) -> Dict[str, Any]:
+        actor = self._get_user_by_token(token)
+        if not getattr(settings, "DEBUG", False):
+            raise PermissionError("Mock payment callback is disabled")
         if not payment_id:
             raise ValueError("Payment id required")
         if status_value not in {
@@ -447,6 +543,8 @@ class RobotCloudService:
             payment = Payment.objects.get(payment_id=payment_id)
         except Payment.DoesNotExist:
             raise ValueError("Payment not found")
+        if payment.user_id != actor.id and actor.role != User.ROLE_ADMIN:
+            raise PermissionError("Payment does not belong to user")
         if payment.status == Payment.STATUS_SUCCEEDED:
             return self._response(self._payment_to_dict(payment))
 
@@ -473,7 +571,10 @@ class RobotCloudService:
         trade_status = data.get("trade_status", "")
 
         alipay = get_alipay()
-        if alipay.is_configured() and data.get("sign") and not alipay.verify_notify(data):
+        if alipay.is_configured():
+            if not data.get("sign") or not alipay.verify_notify(data):
+                return False
+        elif not getattr(settings, "DEBUG", False):
             return False
 
         if not out_trade_no:
@@ -604,6 +705,24 @@ class RobotCloudService:
         inference_count = user.inference_tasks.count()
         return self._response({"training": training_count, "inference": inference_count})
 
+    def user_settings(self, token: str) -> Dict[str, Any]:
+        user = self._get_user_by_token(token)
+        return self._response({"default_agent_node": user.default_agent_node})
+
+    def update_user_settings(self, token: str, default_agent_node: str) -> Dict[str, Any]:
+        user = self._get_user_by_token(token)
+        node_name = (default_agent_node or "").strip()
+        if node_name:
+            self._select_upload_agent(node_name)
+        user.default_agent_node = node_name
+        user.save(update_fields=["default_agent_node"])
+        return self._response({"default_agent_node": user.default_agent_node})
+
+    def list_active_agents(self, token: str) -> Dict[str, Any]:
+        user = self._get_user_by_token(token)
+        items = [self._agent_to_dict(node, user.default_agent_node) for node in self._active_agent_queryset()]
+        return self._response({"items": items, "total": len(items), "default_agent_node": user.default_agent_node})
+
     # -------------------- Dataset Module --------------------
     def upload_dataset(
         self,
@@ -625,6 +744,8 @@ class RobotCloudService:
             description=description or "",
             owner=user,
             storage_path="",
+            storage_backend=Dataset.STORAGE_BACKEND_LOCAL,
+            storage_node="",
             visibility=visibility,
             status=Dataset.STATUS_PROCESSING,
             metadata={},
@@ -636,9 +757,21 @@ class RobotCloudService:
             raise
         metadata = self._compute_dataset_metadata(dataset, file_path)
         dataset.storage_path = str(self._relative_storage_path(file_path))
+        dataset.content_md5 = self._md5_of_file(file_path)
+        dataset.file_size = int(metadata.get("file_size") or 0)
+        dataset.original_filename = str(metadata.get("file_name") or "")
         dataset.status = Dataset.STATUS_READY
         dataset.metadata = metadata
-        dataset.save(update_fields=["storage_path", "status", "metadata"])
+        dataset.save(
+            update_fields=[
+                "storage_path",
+                "content_md5",
+                "file_size",
+                "original_filename",
+                "status",
+                "metadata",
+            ]
+        )
         return self._response(
             {
                 "dataset_id": dataset.id,
@@ -646,6 +779,148 @@ class RobotCloudService:
                 "file_name": metadata["file_name"],
                 "file_size": metadata["file_size"],
                 "total_files": metadata["total_files"],
+            }
+        )
+
+    def create_dataset_upload_session(
+        self,
+        token: str,
+        name: str,
+        description: str,
+        visibility: str,
+        filename: str,
+        target_node: str = "",
+    ) -> Dict[str, Any]:
+        if visibility not in {Dataset.VISIBILITY_PRIVATE, Dataset.VISIBILITY_PUBLIC}:
+            raise ValueError("Invalid visibility")
+        if not name:
+            raise ValueError("Dataset name required")
+        if not filename:
+            raise ValueError("Dataset filename required")
+        user = self._get_user_by_token(token)
+        requested_node = (target_node or "").strip()
+        if not requested_node and user.default_agent_node:
+            node = self._upload_capable_agent_queryset().filter(node_name=user.default_agent_node).first()
+            if not node:
+                node = self._select_upload_agent("")
+        else:
+            node = self._select_upload_agent(requested_node)
+        safe_filename = self._sanitize_filename(filename, f"dataset_{secrets.token_hex(4)}.zip")
+        upload_token = self._generate_dataset_upload_token()
+        expires_at = timezone.now() + timedelta(seconds=DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS)
+        metadata = {
+            "upload_session": {
+                "token_hash": self._hash_upload_token(upload_token),
+                "node_name": node.node_name,
+                "filename": safe_filename,
+                "expires_at": expires_at.isoformat(),
+                "owner_id": user.id,
+            },
+            "file_name": safe_filename,
+            "file_size": 0,
+            "total_files": 0,
+            "by_type": {},
+            "preview": [],
+        }
+        dataset = Dataset.objects.create(
+            name=name,
+            description=description or "",
+            owner=user,
+            storage_path="",
+            storage_backend=Dataset.STORAGE_BACKEND_AGENT,
+            storage_node=node.node_name,
+            visibility=visibility,
+            status=Dataset.STATUS_PROCESSING,
+            metadata=metadata,
+            original_filename=safe_filename,
+        )
+        upload_url = f"{node.public_base_url.rstrip('/')}/api/v1/agent/datasets/upload"
+        return self._response(
+            {
+                "dataset_id": dataset.id,
+                "status": dataset.status,
+                "upload_url": upload_url,
+                "upload_token": upload_token,
+                "expires_at": expires_at.isoformat(),
+                "expires_in": DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS,
+                "node_name": node.node_name,
+                "file_name": safe_filename,
+            }
+        )
+
+    def verify_dataset_upload(self, token: str, dataset_id: int, upload_token: str) -> Dict[str, Any]:
+        node = self._get_worker_by_token(token)
+        dataset = self._get_dataset(dataset_id)
+        if dataset.storage_backend != Dataset.STORAGE_BACKEND_AGENT:
+            raise ValueError("Dataset is not configured for agent upload")
+        session = self._get_dataset_upload_session(dataset, upload_token)
+        if session.get("node_name") != node.node_name or dataset.storage_node != node.node_name:
+            raise ValueError("Upload session belongs to a different agent")
+        return self._response(
+            {
+                "dataset_id": dataset.id,
+                "node_name": node.node_name,
+                "file_name": session.get("filename") or dataset.original_filename,
+                "owner_id": dataset.owner_id,
+            }
+        )
+
+    def complete_dataset_upload(
+        self,
+        token: str,
+        dataset_id: int,
+        upload_token: str,
+        storage_path: str,
+        content_md5: str,
+        file_size: int,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        node = self._get_worker_by_token(token)
+        dataset = self._get_dataset(dataset_id)
+        if dataset.storage_backend != Dataset.STORAGE_BACKEND_AGENT:
+            raise ValueError("Dataset is not configured for agent upload")
+        session = self._get_dataset_upload_session(dataset, upload_token)
+        if session.get("node_name") != node.node_name or dataset.storage_node != node.node_name:
+            raise ValueError("Upload session belongs to a different agent")
+        if not storage_path:
+            raise ValueError("storage_path required")
+        clean_metadata = metadata if isinstance(metadata, dict) else {}
+        file_name = str(clean_metadata.get("file_name") or session.get("filename") or dataset.original_filename)
+        try:
+            normalized_size = max(int(file_size), 0)
+        except (TypeError, ValueError):
+            normalized_size = int(clean_metadata.get("file_size") or 0)
+        clean_metadata["file_name"] = file_name
+        clean_metadata["file_size"] = normalized_size
+        clean_metadata["total_files"] = int(clean_metadata.get("total_files") or 1)
+        if not isinstance(clean_metadata.get("by_type"), dict):
+            clean_metadata["by_type"] = {}
+        if not isinstance(clean_metadata.get("preview"), list):
+            clean_metadata["preview"] = []
+        dataset.storage_path = storage_path
+        dataset.content_md5 = (content_md5 or "").strip().lower()[:32]
+        dataset.file_size = normalized_size
+        dataset.original_filename = file_name
+        dataset.metadata = clean_metadata
+        dataset.status = Dataset.STATUS_READY
+        dataset.save(
+            update_fields=[
+                "storage_path",
+                "content_md5",
+                "file_size",
+                "original_filename",
+                "metadata",
+                "status",
+            ]
+        )
+        return self._response(
+            {
+                "dataset_id": dataset.id,
+                "status": dataset.status,
+                "file_name": file_name,
+                "file_size": normalized_size,
+                "total_files": clean_metadata["total_files"],
+                "storage_node": dataset.storage_node,
             }
         )
 
@@ -663,12 +938,14 @@ class RobotCloudService:
         items = [self._dataset_to_dict(d) for d in queryset[start : start + size]]
         return self._response({"items": items, "total": total})
 
-    def get_dataset(self, dataset_id: int) -> Dict[str, Any]:
-        dataset = self._get_dataset(dataset_id)
+    def get_dataset(self, token: str, dataset_id: int) -> Dict[str, Any]:
+        user = self._get_user_by_token(token)
+        dataset = self._get_dataset_for_user(user, dataset_id)
         return self._response(self._dataset_to_dict(dataset))
 
-    def dataset_stats(self, dataset_id: int) -> Dict[str, Any]:
-        dataset = self._get_dataset(dataset_id)
+    def dataset_stats(self, token: str, dataset_id: int) -> Dict[str, Any]:
+        user = self._get_user_by_token(token)
+        dataset = self._get_dataset_for_user(user, dataset_id)
         metadata = self._ensure_dataset_metadata(dataset)
         return self._response(
             {
@@ -680,8 +957,9 @@ class RobotCloudService:
             }
         )
 
-    def dataset_preview(self, dataset_id: int) -> Dict[str, Any]:
-        dataset = self._get_dataset(dataset_id)
+    def dataset_preview(self, token: str, dataset_id: int) -> Dict[str, Any]:
+        user = self._get_user_by_token(token)
+        dataset = self._get_dataset_for_user(user, dataset_id)
         if dataset.status != Dataset.STATUS_READY:
             return self._response({"dataset_id": dataset.id, "preview": []})
         metadata = self._ensure_dataset_metadata(dataset)
@@ -701,11 +979,19 @@ class RobotCloudService:
         # Check if there are any training tasks using this dataset
         if dataset.train_tasks.exists():
             raise ValueError("Cannot delete dataset with associated training tasks")
-        # Delete the storage file if it exists
-        if dataset.storage_path:
-            storage_file = self.dataset_root / dataset.storage_path
-            if storage_file.exists():
+        if dataset.storage_path and dataset.storage_backend == Dataset.STORAGE_BACKEND_LOCAL:
+            storage_file = self._dataset_file_path(dataset)
+            if storage_file.exists() and storage_file.is_file():
                 storage_file.unlink()
+        elif dataset.storage_path and dataset.storage_backend == Dataset.STORAGE_BACKEND_AGENT and dataset.storage_node:
+            node = WorkerNode.objects.filter(node_name=dataset.storage_node).first()
+            if node:
+                url = f"http://{node.ip}:{node.api_port}/api/v1/agent/delete_model"
+                headers = {"Content-Type": "application/json", "X-Agent-Token": node.auth_token}
+                try:
+                    requests.post(url, json={"paths": [dataset.storage_path]}, headers=headers, timeout=5)
+                except Exception:
+                    pass
         dataset.delete()
         return self._response({"deleted": True})
 
@@ -723,7 +1009,9 @@ class RobotCloudService:
         completed_models = user.train_tasks.filter(status="completed").count()
         if completed_models >= 5:
             raise ValueError("Saved model limit reached (5)")
-        dataset = self._get_dataset(dataset_id)
+        dataset = self._get_dataset_for_user(user, dataset_id)
+        if dataset.status != Dataset.STATUS_READY:
+            raise ValueError("Dataset is not ready")
         with transaction.atomic():
             task = TrainTask.objects.create(
                 dataset=dataset,
@@ -826,7 +1114,16 @@ class RobotCloudService:
         return self._response({"deleted": True})
 
     # -------------------- Scheduler Internal Module --------------------
-    def register_agent(self, node_name: str, ip: str, gpu_total: int, version: str, api_port: int) -> Dict[str, Any]:
+    def register_agent(
+        self,
+        node_name: str,
+        ip: str,
+        gpu_total: int,
+        version: str,
+        api_port: int,
+        public_base_url: str = "",
+        upload_enabled: bool = True,
+    ) -> Dict[str, Any]:
         if not node_name:
             raise ValueError("Node name required")
         if not ip:
@@ -835,6 +1132,7 @@ class RobotCloudService:
             raise ValueError("GPU total must be positive")
         if api_port <= 0:
             raise ValueError("Agent port must be positive")
+        public_base_url = self._normalize_public_base_url(public_base_url)
         now = timezone.now()
         with transaction.atomic():
             node, created = WorkerNode.objects.select_for_update().get_or_create(
@@ -849,6 +1147,8 @@ class RobotCloudService:
                     "status": WorkerNode.STATUS_ONLINE,
                     "last_heartbeat": now,
                     "api_port": api_port,
+                    "public_base_url": public_base_url,
+                    "upload_enabled": bool(upload_enabled),
                 },
             )
             if not created:
@@ -860,6 +1160,8 @@ class RobotCloudService:
                 node.status = WorkerNode.STATUS_ONLINE
                 node.last_heartbeat = now
                 node.api_port = api_port
+                node.public_base_url = public_base_url
+                node.upload_enabled = bool(upload_enabled)
                 node.save(
                     update_fields=[
                         "ip",
@@ -870,11 +1172,22 @@ class RobotCloudService:
                         "status",
                         "last_heartbeat",
                         "api_port",
+                        "public_base_url",
+                        "upload_enabled",
                         "updated_at",
                     ]
                 )
             token = node.auth_token
-        return self._response({"agent_id": node.node_name, "token": token, "gpu_total": node.gpu_total, "api_port": node.api_port})
+        return self._response(
+            {
+                "agent_id": node.node_name,
+                "token": token,
+                "gpu_total": node.gpu_total,
+                "api_port": node.api_port,
+                "public_base_url": node.public_base_url,
+                "upload_enabled": node.upload_enabled,
+            }
+        )
 
     def agent_heartbeat(
         self,
@@ -1014,7 +1327,7 @@ class RobotCloudService:
         queued_count = user.inference_tasks.filter(status="queued").count()
         if queued_count >= 3:
             raise ValueError("Queued inference task limit reached (3)")
-        dataset = self._get_dataset(dataset_id) if dataset_id is not None else None
+        dataset = self._get_dataset_for_user(user, dataset_id) if dataset_id is not None else None
         train_task = self._get_train_task(int(model_id), user)
         if train_task.status != "completed":
             raise ValueError("Training task is not completed")
@@ -1308,7 +1621,21 @@ class RobotCloudService:
             raise ValueError("Password required")
 
     def _hash_password(self, password: str) -> str:
+        return make_password(password)
+
+    def _legacy_hash_password(self, password: str) -> str:
         return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+    def _verify_password(self, user: User, password: str) -> bool:
+        stored = user.password_hash or ""
+        if stored == self._legacy_hash_password(password):
+            user.password_hash = self._hash_password(password)
+            user.save(update_fields=["password_hash"])
+            return True
+        try:
+            return check_password(password, stored)
+        except ValueError:
+            return False
 
     def _get_user_by_phone(self, phone: str) -> User:
         try:
@@ -1346,6 +1673,16 @@ class RobotCloudService:
             return Dataset.objects.get(id=dataset_id)
         except Dataset.DoesNotExist as exc:
             raise ValueError("Dataset not found") from exc
+
+    def _get_dataset_for_user(self, user: User, dataset_id: int) -> Dataset:
+        dataset = self._get_dataset(dataset_id)
+        if (
+            dataset.visibility != Dataset.VISIBILITY_PUBLIC
+            and dataset.owner_id != user.id
+            and user.role != User.ROLE_ADMIN
+        ):
+            raise PermissionError("Dataset is not accessible")
+        return dataset
 
     def _get_train_task(self, task_id: int, user: User) -> TrainTask:
         try:
@@ -1386,6 +1723,10 @@ class RobotCloudService:
 
     def _dataset_to_dict(self, dataset: Dataset) -> Dict[str, Any]:
         metadata = dataset.metadata or {}
+        file_name = metadata.get("file_name") or dataset.original_filename or None
+        file_size = metadata.get("file_size")
+        if file_size is None and dataset.file_size:
+            file_size = dataset.file_size
         return {
             "dataset_id": dataset.id,
             "name": dataset.name,
@@ -1394,8 +1735,10 @@ class RobotCloudService:
             "visibility": dataset.visibility,
             "status": dataset.status,
             "storage_path": dataset.storage_path,
-            "file_name": metadata.get("file_name"),
-            "file_size": metadata.get("file_size"),
+            "storage_backend": dataset.storage_backend,
+            "storage_node": dataset.storage_node,
+            "file_name": file_name,
+            "file_size": file_size,
             "total_files": metadata.get("total_files"),
             "preview_available": bool(metadata.get("preview")),
             "created_at": dataset.created_at.isoformat(),

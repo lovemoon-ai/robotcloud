@@ -20,7 +20,7 @@ def test_auth_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
     )
     assert register_resp.status_code == 200
     user_id = register_resp.json()["data"]["user_id"]
-    assert user_id > 1
+    assert user_id >= 1
 
     login_resp = client.post(
         "/api/v1/auth/login",

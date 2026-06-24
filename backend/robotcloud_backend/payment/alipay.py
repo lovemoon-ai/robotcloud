@@ -8,6 +8,7 @@ from django.conf import settings
 logger = logging.getLogger("robotcloud.payment.alipay")
 
 _alipay_instance: Optional[Any] = None
+_alipay_config: Optional[tuple[str, str, str, str]] = None
 
 
 def _to_pem(key: str, key_type: str) -> str:
@@ -128,8 +129,8 @@ class AlipayClient:
         """Verify Alipay async notification signature."""
         sdk = self._get_sdk()
         if not sdk:
-            logger.warning("[MOCK] Skipping signature verification")
-            return True
+            logger.warning("Alipay SDK unavailable; cannot verify notification")
+            return False
 
         try:
             return sdk.verify(data, data.get("sign", ""))
@@ -154,7 +155,14 @@ class AlipayClient:
 
 def get_alipay() -> AlipayClient:
     """Get the singleton Alipay client instance."""
-    global _alipay_instance
-    if _alipay_instance is None:
+    global _alipay_instance, _alipay_config
+    config = (
+        getattr(settings, "ALIPAY_APP_ID", ""),
+        getattr(settings, "ALIPAY_PRIVATE_KEY", ""),
+        getattr(settings, "ALIPAY_PUBLIC_KEY", ""),
+        getattr(settings, "ALIPAY_GATEWAY", "https://openapi.alipay.com/gateway.do"),
+    )
+    if _alipay_instance is None or _alipay_config != config:
         _alipay_instance = AlipayClient()
+        _alipay_config = config
     return _alipay_instance

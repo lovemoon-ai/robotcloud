@@ -37,6 +37,8 @@ export interface DatasetSummary {
   fileSize?: number | null;
   totalFiles?: number | null;
   previewAvailable: boolean;
+  storageBackend?: "local" | "agent";
+  storageNode?: string;
 }
 
 export interface DatasetUploadInput {
@@ -44,6 +46,7 @@ export interface DatasetUploadInput {
   name: string;
   description: string;
   visibility: "public" | "private";
+  targetNode?: string;
 }
 
 export interface DatasetUploadResult {
@@ -52,6 +55,26 @@ export interface DatasetUploadResult {
   fileName: string;
   fileSize: number;
   totalFiles: number;
+}
+
+export interface GpuAgent {
+  nodeName: string;
+  ip: string;
+  apiPort: number;
+  gpuTotal: number;
+  gpuFree: number;
+  gpuBusy: number;
+  status: string;
+  version: string;
+  publicBaseUrl: string;
+  uploadEnabled: boolean;
+  canUpload: boolean;
+  isDefault: boolean;
+  lastHeartbeat: string | null;
+}
+
+export interface UserSettings {
+  defaultAgentNode: string;
 }
 
 export interface TrainingJob {

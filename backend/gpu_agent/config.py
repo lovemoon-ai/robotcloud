@@ -20,6 +20,18 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _list_env(name: str) -> tuple[str, ...]:
+    raw = os.getenv(name, "")
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     """Configuration values for the GPU agent."""
@@ -29,6 +41,9 @@ class AgentConfig:
     report_ip: str
     listen_host: str
     api_port: int
+    public_base_url: str
+    upload_enabled: bool
+    upload_allowed_origins: tuple[str, ...]
     gpu_total: int
     heartbeat_interval: int
     version: str
@@ -44,6 +59,9 @@ class AgentConfig:
         report_ip = os.getenv("AGENT_IP", "127.0.0.1")
         listen_host = os.getenv("AGENT_LISTEN_HOST", "0.0.0.0")
         api_port = _int_env("AGENT_PORT", 5000)
+        public_base_url = os.getenv("AGENT_PUBLIC_BASE_URL", "").strip().rstrip("/")
+        upload_enabled = _bool_env("AGENT_UPLOAD_ENABLED", True)
+        upload_allowed_origins = _list_env("AGENT_UPLOAD_ALLOWED_ORIGINS")
         gpu_total = max(_int_env("AGENT_GPU_TOTAL", 1), 1)
         heartbeat_interval = max(_int_env("AGENT_HEARTBEAT_INTERVAL", 30), 5)
         version = os.getenv("AGENT_VERSION", "1.0.0")
@@ -59,6 +77,9 @@ class AgentConfig:
             report_ip=report_ip,
             listen_host=listen_host,
             api_port=api_port,
+            public_base_url=public_base_url,
+            upload_enabled=upload_enabled,
+            upload_allowed_origins=upload_allowed_origins,
             gpu_total=gpu_total,
             heartbeat_interval=heartbeat_interval,
             version=version,

@@ -11,9 +11,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env_file = os.getenv("ENV_FILE", ".env")
 load_dotenv(BASE_DIR.parent / env_file)
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "robotcloud-development-secret-key")
+SECRET_KEY = os.getenv(
+    "DJANGO_SECRET_KEY",
+    "robotcloud-development-secret-key-change-me-before-production-2026",
+)
 
-DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() in {"1", "true", "yes"}
+DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() in {"1", "true", "yes"}
 
 # TODO: add ALLOWED_HOSTS for production server
 ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
@@ -22,6 +25,13 @@ ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split("
 def _env_flag(name: str) -> bool:
     value = os.getenv(name)
     return value is not None and value.lower() in {"1", "true", "yes"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def _split_env_list(value: str | None) -> list[str]:
@@ -138,6 +148,13 @@ else:
 
 CORS_ALLOW_CREDENTIALS = True
 
+SECURE_SSL_REDIRECT = _env_flag("DJANGO_SECURE_SSL_REDIRECT")
+SECURE_HSTS_SECONDS = _env_int("DJANGO_SECURE_HSTS_SECONDS", 0)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_flag("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS")
+SECURE_HSTS_PRELOAD = _env_flag("DJANGO_SECURE_HSTS_PRELOAD")
+SESSION_COOKIE_SECURE = _env_flag("DJANGO_SESSION_COOKIE_SECURE")
+CSRF_COOKIE_SECURE = _env_flag("DJANGO_CSRF_COOKIE_SECURE")
+
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -187,6 +204,7 @@ REST_FRAMEWORK = {
 }
 
 DATASET_STORAGE_DIR = Path(os.getenv("DATASET_STORAGE_DIR", BASE_DIR / "storage" / "datasets")).resolve()
+SERVE_STORAGE_FILES = _env_flag("DJANGO_SERVE_STORAGE_FILES")
 
 # SMS Configuration (Volcengine)
 VOLC_ACCESS_KEY_ID = os.getenv("VOLC_ACCESS_KEY_ID", "")

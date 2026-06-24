@@ -24,6 +24,7 @@ class User(models.Model):
     password_hash = models.CharField(max_length=128)
     role = models.CharField(max_length=16, choices=ROLE_CHOICES, default=ROLE_FREE)
     expire_at = models.DateTimeField(null=True, blank=True)
+    default_agent_node = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -52,10 +53,23 @@ class Dataset(models.Model):
         (STATUS_FAILED, "Failed"),
     ]
 
+    STORAGE_BACKEND_LOCAL = "local"
+    STORAGE_BACKEND_AGENT = "agent"
+
+    STORAGE_BACKEND_CHOICES = [
+        (STORAGE_BACKEND_LOCAL, "Local"),
+        (STORAGE_BACKEND_AGENT, "Agent"),
+    ]
+
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="datasets")
     storage_path = models.CharField(max_length=512)
+    storage_backend = models.CharField(max_length=16, choices=STORAGE_BACKEND_CHOICES, default=STORAGE_BACKEND_LOCAL)
+    storage_node = models.CharField(max_length=64, blank=True)
+    content_md5 = models.CharField(max_length=32, blank=True)
+    file_size = models.BigIntegerField(default=0)
+    original_filename = models.CharField(max_length=255, blank=True)
     visibility = models.CharField(max_length=16, choices=VISIBILITY_CHOICES, default=VISIBILITY_PRIVATE)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PROCESSING)
     metadata = models.JSONField(default=dict, blank=True)
@@ -205,6 +219,8 @@ class WorkerNode(models.Model):
     version = models.CharField(max_length=20, blank=True)
     auth_token = models.CharField(max_length=64, unique=True)
     api_port = models.IntegerField(default=5000)
+    public_base_url = models.CharField(max_length=512, blank=True)
+    upload_enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

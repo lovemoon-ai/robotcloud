@@ -28,6 +28,11 @@ const sectionsByLocale = {
       href: "/dashboard"
     },
     {
+      title: "设置",
+      description: "查看在线 GPU Agent，并选择默认上传节点。",
+      href: "/settings"
+    },
+    {
       title: "套餐购买",
       description: "选择 Free / Plus 套餐，获取更高算力与并发。",
       href: "/plans"
@@ -58,6 +63,11 @@ const sectionsByLocale = {
       title: "Dashboard",
       description: "Monitor data, jobs, and plan status to keep robotics workflows efficient.",
       href: "/dashboard"
+    },
+    {
+      title: "Settings",
+      description: "View online GPU Agents and choose the default upload node.",
+      href: "/settings"
     },
     {
       title: "Plans",
