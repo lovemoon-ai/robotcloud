@@ -12,6 +12,7 @@ frontend/node_modules
 
 # local test uploaded dataset
 backend/storage/
+backend/staticfiles/
 backend/public
 frontend/out
 
