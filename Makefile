@@ -35,6 +35,10 @@ run: run-all
 
 build-run: build run
 
+info-volc:
+	@echo "ssh -i ~/code/scripts/envrc/volcengine-robotcloud.pem root@115.190.243.112"
+	@echo "/opt/robotcloud"
+
 ####### DEPLOY ########
 serve:
 	cd backend && \
