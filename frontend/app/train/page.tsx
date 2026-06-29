@@ -241,6 +241,10 @@ function TrainPageContent() {
             <span className="text-muted">{copy.modelLabel}</span>
             <select {...form.register("model")} className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2">
               <option value="ACT">ACT</option>
+              <option value="DiffusionPolicy">DiffusionPolicy</option>
+              <option value="Pi0">Pi0</option>
+              <option value="Pi0.5">Pi0.5</option>
+              <option value="SmolVLA">SmolVLA</option>
             </select>
           </label>
           <label className="block text-sm">
