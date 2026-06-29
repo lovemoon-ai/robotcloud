@@ -39,6 +39,10 @@ info-volc:
 	@echo "ssh -i ~/code/scripts/envrc/volcengine-robotcloud.pem root@115.190.243.112"
 	@echo "/opt/robotcloud"
 
+info-gpu:
+	@echo "ssh -p 39670 root@115.190.130.100"
+	@echo "/root/ws/robotcloud"
+
 ####### DEPLOY ########
 serve:
 	cd backend && \
