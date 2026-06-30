@@ -36,3 +36,7 @@
 - make run          # backend + scheduler + frontend (dev)
 - make scheduler    # run scheduler standalone
 - make agent        # launch on GPU machines
+
+## Dev docs
+- claw/arch: architecture document
+- claw/sop: sop for certain task
