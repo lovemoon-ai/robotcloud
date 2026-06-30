@@ -1,0 +1,30 @@
+.venv
+__pycache__
+*.egg-info
+frontend/.next
+frontend/node_modules
+*.swp
+*.swo
+.env
+.env.dev
+.env.prod
+.DS_Store
+
+# local test uploaded dataset
+backend/storage/
+backend/staticfiles/
+backend/public
+frontend/out
+
+backend/build
+task.sh
+backend/db.sqlite3
+scripts/lerobot/
+
+# conductor
+.conductor-*.log
+.conductor/worktrees/
+.conductor/state/
+conductor.log
+conductor-terminal.log
+Makefile
