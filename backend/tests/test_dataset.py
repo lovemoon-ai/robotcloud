@@ -2,7 +2,10 @@ import io
 import zipfile
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from rest_framework.test import APIClient
+
+from robotcloud_backend.api.models import Dataset
 
 
 def _create_zip_upload() -> SimpleUploadedFile:
@@ -154,6 +157,7 @@ def test_dataset_delete_not_owner(client: APIClient, create_user_token) -> None:
     assert "do not own" in delete_resp.json()["detail"]
 
 
+@override_settings(DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS=3600, DATASET_UPLOAD_CHUNK_SIZE=2 * 1024 * 1024)
 def test_agent_direct_dataset_upload_session_and_completion(client: APIClient, create_user_token) -> None:
     token = create_user_token("13900000006", "passwd")
     register_resp = client.post(
@@ -201,6 +205,8 @@ def test_agent_direct_dataset_upload_session_and_completion(client: APIClient, c
     session = session_resp.json()["data"]
     assert session["upload_url"] == "https://agent.example.test/api/v1/agent/datasets/upload"
     assert session["node_name"] == "gpu-node-1"
+    assert session["expires_in"] == 3600
+    assert session["chunk_size"] == 2 * 1024 * 1024
     assert session["upload_token"]
 
     verify_resp = client.post(
@@ -235,6 +241,25 @@ def test_agent_direct_dataset_upload_session_and_completion(client: APIClient, c
     complete = complete_resp.json()["data"]
     assert complete["status"] == "ready"
     assert complete["storage_node"] == "gpu-node-1"
+    assert "upload_session" not in Dataset.objects.get(id=session["dataset_id"]).metadata
+
+    repeat_complete_resp = client.post(
+        "/api/v1/internal/dataset/upload/complete",
+        {
+            "dataset_id": session["dataset_id"],
+            "upload_token": session["upload_token"],
+            "storage_path": "/srv/robotcloud/agent_datasets/dataset_1/episodes.zip",
+            "content_md5": "0" * 32,
+            "file_size": 2048,
+            "metadata": {"file_name": "episodes.zip", "file_size": 2048, "total_files": 3},
+        },
+        format="json",
+        HTTP_X_AGENT_TOKEN=agent_token,
+    )
+    assert repeat_complete_resp.status_code == 200
+    repeat_complete = repeat_complete_resp.json()["data"]
+    assert repeat_complete["status"] == "ready"
+    assert repeat_complete["file_size"] == 2048
 
     detail_resp = client.get(
         f"/api/v1/dataset/{session['dataset_id']}",

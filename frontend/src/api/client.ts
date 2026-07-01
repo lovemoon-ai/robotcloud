@@ -88,6 +88,10 @@ type BackendDatasetUploadSession = {
   upload_token: string;
   expires_at: string;
   expires_in: number;
+  chunk_size?: number;
+  status_url?: string;
+  chunk_url?: string;
+  complete_url?: string;
   node_name: string;
   file_name: string;
 };
@@ -182,6 +186,35 @@ type BackendDashboardResponse = {
   gpu_hours: number;
 };
 
+type AgentUploadStatus = {
+  dataset_id?: number;
+  file_name?: string;
+  uploaded_bytes?: number;
+  complete?: boolean;
+};
+
+type AgentUploadChunkResult = {
+  dataset_id?: number;
+  uploaded_bytes?: number;
+  total_size?: number;
+  complete?: boolean;
+};
+
+type StoredAgentUploadSession = {
+  session: BackendDatasetUploadSession;
+  fileName: string;
+  fileSize: number;
+  lastModified: number;
+  name: string;
+  description: string;
+  visibility: "public" | "private";
+  targetNode: string;
+};
+
+const DEFAULT_AGENT_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
+const AGENT_UPLOAD_RETRY_LIMIT = 3;
+const AGENT_UPLOAD_RETRY_DELAY_MS = 500;
+
 function isAuthError(status: number, message: string): boolean {
   const normalized = message.toLowerCase();
   if (status === 401) return true;
@@ -248,40 +281,135 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload.data;
 }
 
-function uploadFileToAgentWithProgress<T>(
+function parseAgentJson<T>(raw: string, fallbackMessage: string): T {
+  if (!raw.trim()) {
+    return {} as T;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.code === "number") {
+      if (parsed.code !== 0) {
+        throw new Error(parsed.message || fallbackMessage);
+      }
+      return parsed.data as T;
+    }
+    return parsed as T;
+  } catch (error) {
+    if (error instanceof Error && error.message !== "Unexpected end of JSON input") {
+      throw error;
+    }
+    throw new Error("Invalid response format");
+  }
+}
+
+async function agentFetchJson<T>(url: string, init: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
+  const raw = await response.text();
+  if (!response.ok) {
+    let message = raw.trim();
+    try {
+      const parsed = JSON.parse(raw);
+      message = parsed.detail || parsed.message || message;
+    } catch {
+      // use raw response body
+    }
+    const error = new Error(message || `Request failed with status ${response.status}`) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+  return parseAgentJson<T>(raw, `Request failed with status ${response.status}`);
+}
+
+function agentUploadEndpoint(session: BackendDatasetUploadSession, kind: "status" | "chunk" | "complete"): string {
+  if (kind === "status" && session.status_url) return session.status_url;
+  if (kind === "chunk" && session.chunk_url) return session.chunk_url;
+  if (kind === "complete" && session.complete_url) return session.complete_url;
+  return `${session.upload_url.replace(/\/$/, "")}/${kind}`;
+}
+
+function agentUploadHeaders(session: BackendDatasetUploadSession): Record<string, string> {
+  return {
+    Authorization: `Bearer ${session.upload_token}`,
+    "X-Dataset-Id": String(session.dataset_id),
+    "X-Filename": session.file_name
+  };
+}
+
+function readStoredAgentUploadSession(key: string): BackendDatasetUploadSession | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredAgentUploadSession;
+    const expiresAt = Date.parse(parsed.session.expires_at);
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return parsed.session;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredAgentUploadSession(key: string, value: StoredAgentUploadSession): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // localStorage can be unavailable or full; upload can still proceed.
+  }
+}
+
+function removeStoredAgentUploadSession(key: string): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+}
+
+function agentUploadStorageKey(form: DatasetUploadInput): string {
+  const targetNode = form.targetNode || "";
+  const signature = [
+    form.file.name,
+    form.file.size,
+    form.file.lastModified,
+    form.name,
+    form.description,
+    form.visibility,
+    targetNode
+  ].join("|");
+  return `robotcloud:agent-upload:${signature}`;
+}
+
+function xhrAgentJson<T>(
+  method: string,
   url: string,
-  file: File,
+  body: Blob | null,
   headers: Record<string, string>,
-  onProgress?: (percent: number) => void
+  onProgress?: (loaded: number, total: number) => void
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && onProgress) {
-        const percent = Math.round((event.loaded / event.total) * 100);
-        onProgress(percent);
+        onProgress(event.loaded, event.total);
       }
     };
 
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
-          const parsed = JSON.parse(xhr.responseText);
-          if (typeof parsed?.code === "number") {
-            if (parsed.code !== 0) {
-              reject(new Error(parsed.message || "Request failed"));
-              return;
-            }
-            resolve(parsed.data as T);
-            return;
-          }
-          if (onProgress) {
-            onProgress(100);
-          }
-          resolve(parsed as T);
-        } catch {
-          reject(new Error("Invalid response format"));
+          resolve(parseAgentJson<T>(xhr.responseText, "Request failed"));
+        } catch (error) {
+          reject(error);
         }
       } else {
         let message = xhr.responseText.trim();
@@ -298,7 +426,9 @@ function uploadFileToAgentWithProgress<T>(
         if (!message) {
           message = `Request failed with status ${xhr.status}`;
         }
-        reject(new Error(message));
+        const error = new Error(message) as Error & { status?: number };
+        error.status = xhr.status;
+        reject(error);
       }
     };
 
@@ -306,13 +436,119 @@ function uploadFileToAgentWithProgress<T>(
       reject(new Error("Network error"));
     };
 
-    xhr.open("POST", url);
+    xhr.open(method, url);
     Object.entries(headers).forEach(([key, value]) => {
       xhr.setRequestHeader(key, value);
     });
-    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-    xhr.send(file);
+    if (body) {
+      xhr.setRequestHeader("Content-Type", body.type || "application/octet-stream");
+    }
+    xhr.send(body);
   });
+}
+
+async function uploadFileToAgentLegacyWithProgress<T>(
+  session: BackendDatasetUploadSession,
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<T> {
+  return xhrAgentJson<T>(
+    "POST",
+    session.upload_url,
+    file,
+    agentUploadHeaders(session),
+    (loaded, total) => {
+      if (total > 0 && onProgress) {
+        onProgress(Math.round((loaded / total) * 100));
+      }
+    }
+  );
+}
+
+async function uploadAgentChunkWithRetry(
+  session: BackendDatasetUploadSession,
+  file: File,
+  start: number,
+  end: number,
+  onProgress?: (percent: number) => void
+): Promise<number> {
+  const chunk = file.slice(start, end + 1, file.type || "application/octet-stream");
+  let attempt = 0;
+  let lastError: unknown;
+  while (attempt < AGENT_UPLOAD_RETRY_LIMIT) {
+    attempt += 1;
+    try {
+      const result = await xhrAgentJson<AgentUploadChunkResult>(
+        "PUT",
+        agentUploadEndpoint(session, "chunk"),
+        chunk,
+        {
+          ...agentUploadHeaders(session),
+          "Content-Range": `bytes ${start}-${end}/${file.size}`,
+          "X-File-Size": String(file.size)
+        },
+        (loaded) => {
+          if (onProgress) {
+            onProgress(Math.min(99, Math.round(((start + loaded) / file.size) * 100)));
+          }
+        }
+      );
+      return Math.max(Number(result.uploaded_bytes ?? end + 1), end + 1);
+    } catch (error) {
+      lastError = error;
+      try {
+        const status = await agentFetchJson<AgentUploadStatus>(agentUploadEndpoint(session, "status"), {
+          method: "GET",
+          headers: agentUploadHeaders(session)
+        });
+        const uploadedBytes = Math.max(Number(status.uploaded_bytes ?? 0), 0);
+        if (uploadedBytes > start) {
+          return Math.min(uploadedBytes, file.size);
+        }
+      } catch (statusError) {
+        lastError = statusError;
+      }
+      if (attempt < AGENT_UPLOAD_RETRY_LIMIT) {
+        await sleep(AGENT_UPLOAD_RETRY_DELAY_MS * attempt);
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Upload chunk failed");
+}
+
+async function uploadFileToAgentResumableWithProgress(
+  session: BackendDatasetUploadSession,
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<BackendDatasetUploadComplete> {
+  const headers = agentUploadHeaders(session);
+  const chunkSize = Math.max(Number(session.chunk_size ?? DEFAULT_AGENT_UPLOAD_CHUNK_SIZE), 1024 * 1024);
+  const status = await agentFetchJson<AgentUploadStatus>(agentUploadEndpoint(session, "status"), {
+    method: "GET",
+    headers
+  });
+  let uploadedBytes = Math.min(Math.max(Number(status.uploaded_bytes ?? 0), 0), file.size);
+  if (onProgress && uploadedBytes > 0) {
+    onProgress(Math.min(99, Math.round((uploadedBytes / file.size) * 100)));
+  }
+
+  while (uploadedBytes < file.size) {
+    const start = uploadedBytes;
+    const end = Math.min(start + chunkSize, file.size) - 1;
+    uploadedBytes = await uploadAgentChunkWithRetry(session, file, start, end, onProgress);
+  }
+
+  const completed = await agentFetchJson<BackendDatasetUploadComplete>(agentUploadEndpoint(session, "complete"), {
+    method: "POST",
+    headers: {
+      ...headers,
+      "X-File-Size": String(file.size)
+    }
+  });
+  if (onProgress) {
+    onProgress(100);
+  }
+  return completed;
 }
 
 function mapAgent(item: BackendAgent): GpuAgent {
@@ -521,26 +757,44 @@ export const robotCloudApi = {
   deleteDataset: async (datasetId: number): Promise<{ deleted: boolean }> =>
     request<{ deleted: boolean }>(`/dataset/${datasetId}/delete`, { method: "POST" }),
   uploadDataset: async (form: DatasetUploadInput & { onProgress?: (percent: number) => void }) => {
-    const session = await request<BackendDatasetUploadSession>("/dataset/upload_session", {
-      method: "POST",
-      body: JSON.stringify({
+    const storageKey = agentUploadStorageKey(form);
+    let session = readStoredAgentUploadSession(storageKey);
+    if (!session) {
+      session = await request<BackendDatasetUploadSession>("/dataset/upload_session", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name,
+          description: form.description,
+          visibility: form.visibility,
+          filename: form.file.name,
+          target_node: form.targetNode || ""
+        })
+      });
+      writeStoredAgentUploadSession(storageKey, {
+        session,
+        fileName: form.file.name,
+        fileSize: form.file.size,
+        lastModified: form.file.lastModified,
         name: form.name,
         description: form.description,
         visibility: form.visibility,
-        filename: form.file.name,
-        target_node: form.targetNode || ""
-      })
-    });
-    const response = await uploadFileToAgentWithProgress<BackendDatasetUploadComplete>(
-      session.upload_url,
-      form.file,
-      {
-        Authorization: `Bearer ${session.upload_token}`,
-        "X-Dataset-Id": String(session.dataset_id),
-        "X-Filename": session.file_name || form.file.name
-      },
-      form.onProgress
-    );
+        targetNode: form.targetNode || ""
+      });
+    }
+    let response: BackendDatasetUploadComplete;
+    try {
+      response = await uploadFileToAgentResumableWithProgress(session, form.file, form.onProgress);
+    } catch (error) {
+      if ((error as { status?: number }).status !== 404) {
+        throw error;
+      }
+      response = await uploadFileToAgentLegacyWithProgress<BackendDatasetUploadComplete>(
+        session,
+        form.file,
+        form.onProgress
+      );
+    }
+    removeStoredAgentUploadSession(storageKey);
     const result: DatasetUploadResult = {
       datasetId: response.dataset_id,
       status: response.status,

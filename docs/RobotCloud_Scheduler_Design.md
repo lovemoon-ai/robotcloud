@@ -72,6 +72,26 @@ Body: application/octet-stream (zip/tar.gz)
 Agent 在接收上传时计算 MD5 校验并缓存到统一目录 storage/datasets_cache/<md5>/archives/；
 若缓存中已有相同 MD5 的解压结果则直接复用，否则解压到 storage/datasets_cache/<md5>/extracted。
 
+浏览器直传 Dataset 到 Agent 时使用可断点续传的分片协议：
+
+``` bash
+GET  http://gpu-node-1:5000/api/v1/agent/datasets/upload/status
+PUT  http://gpu-node-1:5000/api/v1/agent/datasets/upload/chunk
+POST http://gpu-node-1:5000/api/v1/agent/datasets/upload/complete
+
+Headers:
+  Authorization: Bearer <upload_token>
+  X-Dataset-Id: <dataset_id>
+  X-Filename: dataset.zip
+  Content-Range: bytes <start>-<end>/<total>   # chunk only
+  X-File-Size: <total>                         # chunk/complete
+```
+
+Agent 将未完成内容写入 `agent_datasets/dataset_{dataset_id}/{filename}.part`；
+`status` 返回 `uploaded_bytes`，前端刷新或网络中断后从该 offset 继续；
+`complete` 校验大小、重命名为最终文件、计算 MD5 和 metadata，然后回调 Backend 完成 dataset。
+上传会话有效期由 `DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS` 配置，前端分片大小由 `DATASET_UPLOAD_CHUNK_SIZE` 下发。
+
 2) 下发训练执行命令
 
 POST http://gpu-node-1:5000/api/v1/agent/run

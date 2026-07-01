@@ -35,6 +35,9 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/v1/agent/datasets/upload":
             self._handle_direct_dataset_upload(parsed)
             return
+        if parsed.path == "/api/v1/agent/datasets/upload/complete":
+            self._handle_resumable_dataset_upload_complete(parsed)
+            return
         token = self.headers.get("X-Agent-Token", "")
         if not self.server.agent.validate_scheduler_token(token):
             self.send_error(401, "Invalid scheduler token")
@@ -147,6 +150,9 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         from urllib.parse import urlparse, parse_qs
 
         parsed = urlparse(self.path)
+        if parsed.path == "/api/v1/agent/datasets/upload/status":
+            self._handle_resumable_dataset_upload_status(parsed)
+            return
         if parsed.path not in {"/api/v1/agent/logs", "/api/v1/agent/inference_logs"}:
             self.send_error(404, "Not Found")
             return
@@ -189,7 +195,13 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path != "/api/v1/agent/datasets/upload":
+        upload_paths = {
+            "/api/v1/agent/datasets/upload",
+            "/api/v1/agent/datasets/upload/status",
+            "/api/v1/agent/datasets/upload/chunk",
+            "/api/v1/agent/datasets/upload/complete",
+        }
+        if parsed.path not in upload_paths:
             self.send_error(404, "Not Found")
             return
         if not self._origin_allowed():
@@ -199,10 +211,20 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             return
         self.send_response(204)
         self._send_cors_headers()
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Dataset-Id, X-Filename")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, Content-Range, X-Dataset-Id, X-File-Size, X-Filename",
+        )
         self.send_header("Access-Control-Max-Age", "600")
         self.end_headers()
+
+    def do_PUT(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/v1/agent/datasets/upload/chunk":
+            self._handle_resumable_dataset_upload_chunk(parsed)
+            return
+        self.send_error(404, "Not Found")
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         """Silence default HTTP server logging."""
@@ -231,6 +253,57 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_cors_headers()
         self.end_headers()
         self.wfile.write(payload)
+
+    def _discard_request_body(self, content_length: int) -> None:
+        remaining = max(content_length, 0)
+        while remaining > 0:
+            chunk = self.rfile.read(min(1024 * 1024, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+
+    def _read_direct_upload_context(self, parsed) -> Optional[Dict[str, Any]]:
+        if not self.server.agent.config.upload_enabled:
+            self._send_json(503, {"detail": "Agent upload is disabled"}, include_cors=True)
+            return None
+        if not self._origin_allowed():
+            self._send_json(403, {"detail": "Origin is not allowed"}, include_cors=True)
+            return None
+
+        header = self.headers.get("Authorization", "")
+        scheme, _, upload_token = header.partition(" ")
+        if scheme.lower() != "bearer" or not upload_token:
+            self._send_json(401, {"detail": "Upload token required"}, include_cors=True)
+            return None
+        qs = parse_qs(parsed.query or "")
+        dataset_id_raw = self.headers.get("X-Dataset-Id") or (qs.get("dataset_id") or [None])[0]
+        if dataset_id_raw is None:
+            self._send_json(400, {"detail": "dataset_id required"}, include_cors=True)
+            return None
+        try:
+            dataset_id = int(dataset_id_raw)
+        except (TypeError, ValueError):
+            self._send_json(400, {"detail": "dataset_id must be an integer"}, include_cors=True)
+            return None
+
+        try:
+            verified = self.server.agent.verify_dataset_upload(dataset_id, upload_token)
+        except ValueError as exc:
+            self._send_json(400, {"detail": str(exc)}, include_cors=True)
+            return None
+        filename = (
+            self.headers.get("X-Filename")
+            or (qs.get("filename") or [None])[0]
+            or verified.get("file_name")
+            or f"dataset_{dataset_id}.zip"
+        )
+        filename = self.server.agent.sanitize_filename(str(filename), f"dataset_{dataset_id}.zip")
+        return {
+            "dataset_id": dataset_id,
+            "upload_token": upload_token,
+            "filename": filename,
+            "verified": verified,
+        }
 
     # -------------------- Upload handling --------------------
     def _handle_direct_dataset_upload(self, parsed) -> None:
@@ -313,6 +386,217 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
                 storage_path=str(final_path),
                 content_md5=content_md5,
                 file_size=final_path.stat().st_size,
+                metadata=metadata,
+            )
+        except ValueError as exc:
+            self._send_json(400, {"detail": str(exc)}, include_cors=True)
+            return
+        self._send_json(200, {"status": "ok", **completed}, include_cors=True)
+
+    def _handle_resumable_dataset_upload_status(self, parsed) -> None:
+        context = self._read_direct_upload_context(parsed)
+        if context is None:
+            return
+        dataset_id = int(context["dataset_id"])
+        filename = str(context["filename"])
+        target_dir = self.server.agent.dataset_upload_dir(dataset_id)
+        part_path = target_dir / f"{filename}.part"
+        final_path = target_dir / filename
+        uploaded_bytes = 0
+        complete = False
+        try:
+            if final_path.exists():
+                uploaded_bytes = final_path.stat().st_size
+                complete = True
+            elif part_path.exists():
+                uploaded_bytes = part_path.stat().st_size
+        except OSError:
+            uploaded_bytes = 0
+            complete = False
+        self._send_json(
+            200,
+            {
+                "status": "ok",
+                "dataset_id": dataset_id,
+                "file_name": filename,
+                "uploaded_bytes": uploaded_bytes,
+                "complete": complete,
+            },
+            include_cors=True,
+        )
+
+    def _handle_resumable_dataset_upload_chunk(self, parsed) -> None:
+        context = self._read_direct_upload_context(parsed)
+        if context is None:
+            return
+        dataset_id = int(context["dataset_id"])
+        filename = str(context["filename"])
+        range_header = self.headers.get("Content-Range", "").strip()
+        match = re.match(r"^bytes\s+(\d+)-(\d+)/(\d+)$", range_header)
+        if not match:
+            self._send_json(400, {"detail": "Content-Range required"}, include_cors=True)
+            return
+        start, end, total_size = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        if start < 0 or end < start or total_size <= 0 or end >= total_size:
+            self._send_json(400, {"detail": "Invalid Content-Range"}, include_cors=True)
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            content_length = 0
+        expected_length = end - start + 1
+        if content_length != expected_length:
+            self._send_json(400, {"detail": "Content-Length does not match Content-Range"}, include_cors=True)
+            return
+
+        target_dir = self.server.agent.dataset_upload_dir(dataset_id)
+        part_path = target_dir / f"{filename}.part"
+        final_path = target_dir / filename
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            with self.server.agent.dataset_upload_lock(dataset_id, filename):
+                if final_path.exists():
+                    final_size = final_path.stat().st_size
+                    self._discard_request_body(content_length)
+                    self._send_json(
+                        200,
+                        {
+                            "status": "ok",
+                            "dataset_id": dataset_id,
+                            "uploaded_bytes": final_size,
+                            "total_size": total_size,
+                            "complete": True,
+                        },
+                        include_cors=True,
+                    )
+                    return
+                current_size = part_path.stat().st_size if part_path.exists() else 0
+                if start < current_size:
+                    self._discard_request_body(content_length)
+                    if end + 1 <= current_size:
+                        self._send_json(
+                            200,
+                            {
+                                "status": "ok",
+                                "dataset_id": dataset_id,
+                                "uploaded_bytes": current_size,
+                                "total_size": total_size,
+                                "complete": False,
+                            },
+                            include_cors=True,
+                        )
+                        return
+                    self._send_json(
+                        409,
+                        {
+                            "detail": "Upload offset conflict",
+                            "uploaded_bytes": current_size,
+                            "total_size": total_size,
+                        },
+                        include_cors=True,
+                    )
+                    return
+                if start != current_size:
+                    self._discard_request_body(content_length)
+                    self._send_json(
+                        409,
+                        {
+                            "detail": "Upload offset conflict",
+                            "uploaded_bytes": current_size,
+                            "total_size": total_size,
+                        },
+                        include_cors=True,
+                    )
+                    return
+
+                remaining = content_length
+                with part_path.open("ab") as destination:
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            break
+                        destination.write(chunk)
+                        remaining -= len(chunk)
+                if remaining != 0:
+                    self._send_json(400, {"detail": "Upload body ended early"}, include_cors=True)
+                    return
+                uploaded_bytes = part_path.stat().st_size
+        except OSError as exc:
+            self._send_json(500, {"detail": f"Failed to write dataset chunk: {exc}"}, include_cors=True)
+            return
+
+        self._send_json(
+            200,
+            {
+                "status": "ok",
+                "dataset_id": dataset_id,
+                "uploaded_bytes": uploaded_bytes,
+                "total_size": total_size,
+                "complete": uploaded_bytes >= total_size,
+            },
+            include_cors=True,
+        )
+
+    def _handle_resumable_dataset_upload_complete(self, parsed) -> None:
+        context = self._read_direct_upload_context(parsed)
+        if context is None:
+            return
+        dataset_id = int(context["dataset_id"])
+        upload_token = str(context["upload_token"])
+        filename = str(context["filename"])
+        qs = parse_qs(parsed.query or "")
+        expected_size_raw = self.headers.get("X-File-Size") or (qs.get("file_size") or [None])[0]
+        try:
+            expected_size = int(expected_size_raw) if expected_size_raw is not None else 0
+        except (TypeError, ValueError):
+            expected_size = 0
+
+        target_dir = self.server.agent.dataset_upload_dir(dataset_id)
+        part_path = target_dir / f"{filename}.part"
+        final_path = target_dir / filename
+        try:
+            with self.server.agent.dataset_upload_lock(dataset_id, filename):
+                if final_path.exists():
+                    upload_path = final_path
+                elif part_path.exists():
+                    current_size = part_path.stat().st_size
+                    if expected_size > 0 and current_size != expected_size:
+                        self._send_json(
+                            409,
+                            {
+                                "detail": "Upload is incomplete",
+                                "uploaded_bytes": current_size,
+                                "total_size": expected_size,
+                            },
+                            include_cors=True,
+                        )
+                        return
+                    part_path.replace(final_path)
+                    upload_path = final_path
+                else:
+                    self._send_json(400, {"detail": "Upload file not found"}, include_cors=True)
+                    return
+            actual_size = upload_path.stat().st_size
+        except OSError as exc:
+            self._send_json(500, {"detail": f"Failed to finalize dataset upload: {exc}"}, include_cors=True)
+            return
+        if expected_size > 0 and actual_size != expected_size:
+            self._send_json(
+                409,
+                {"detail": "Upload size mismatch", "uploaded_bytes": actual_size, "total_size": expected_size},
+                include_cors=True,
+            )
+            return
+
+        content_md5 = self.server.agent.md5_of_file(upload_path)
+        metadata = self.server.agent.inspect_dataset_file(upload_path)
+        try:
+            completed = self.server.agent.complete_dataset_upload(
+                dataset_id=dataset_id,
+                upload_token=upload_token,
+                storage_path=str(upload_path),
+                content_md5=content_md5,
+                file_size=actual_size,
                 metadata=metadata,
             )
         except ValueError as exc:
@@ -1394,6 +1678,7 @@ class Agent:
         self.agent_token: Optional[str] = None
         self._jobs: Dict[int, TrainingJob] = {}
         self._inference_jobs: Dict[int, InferenceJob] = {}
+        self._upload_locks: Dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._heartbeat_thread: Optional[threading.Thread] = None
@@ -1570,6 +1855,15 @@ class Agent:
 
     def validate_scheduler_token(self, incoming: str) -> bool:
         return bool(self.agent_token) and incoming == self.agent_token
+
+    def dataset_upload_lock(self, dataset_id: int, filename: str) -> threading.Lock:
+        key = f"{dataset_id}:{filename}"
+        with self._lock:
+            lock = self._upload_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._upload_locks[key] = lock
+            return lock
 
     def _backend_post(self, path: str, payload: Dict[str, Any], timeout: int = 10) -> Dict[str, Any]:
         if not self.agent_token:
@@ -1836,6 +2130,16 @@ class Agent:
     def dataset_upload_dir(self, dataset_id: int) -> Path:
         root = self.config.dataset_cache_dir.parent
         return (root / "agent_datasets" / f"dataset_{dataset_id}").resolve()
+
+    def md5_of_file(self, file_path: Path) -> str:
+        md5 = hashlib.md5()
+        with file_path.open("rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                md5.update(chunk)
+        return md5.hexdigest()
 
     def inspect_dataset_file(self, file_path: Path) -> Dict[str, Any]:
         file_size = file_path.stat().st_size if file_path.exists() else 0

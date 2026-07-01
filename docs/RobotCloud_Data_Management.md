@@ -159,9 +159,9 @@ GPU Agent 拉取或接收（Scheduler 直传）数据包，解压、规范目录
 
 -   上传仅限登录用户；\
 -   存储路径隔离 `/datasets/{user_id}/{dataset_id}`；\
--   签名URL 有效期 1 小时；\
+-   Agent 直传 upload session 默认 2 小时，可通过 `DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS` 调整；\
 -   异步解压（Celery/Ray）；\
--   分片上传（S3 multipart / TUS）；\
+-   Agent 本地分片断点续传，前端按 `DATASET_UPLOAD_CHUNK_SIZE` 切片并通过 `status/chunk/complete` 协议恢复；\
 -   定期清理临时缓存。
 
 ------------------------------------------------------------------------

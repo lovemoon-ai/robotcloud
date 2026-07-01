@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import io
 import tarfile
+import threading
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pytest
+import requests
 
-from gpu_agent.agent import TrainingJob
+from gpu_agent.agent import Agent, AgentHTTPRequestHandler, AgentHTTPServer, TrainingJob
+from gpu_agent.config import AgentConfig
 
 
 class _StubAgent:
@@ -29,8 +33,150 @@ class _StubAgent:
         return list(self._notifications)
 
 
+class _BackendResponse:
+    def __init__(self, data: Dict[str, Any], status_code: int = 200) -> None:
+        self._data = data
+        self.status_code = status_code
+        self.ok = 200 <= status_code < 300
+        self.text = str(data)
+
+    def json(self) -> Dict[str, Any]:
+        return self._data
+
+
+class _BackendSession:
+    def __init__(self) -> None:
+        self.complete_payload: Dict[str, Any] | None = None
+
+    def post(
+        self,
+        url: str,
+        json: Dict[str, Any] | None = None,  # noqa: A002
+        headers: Dict[str, str] | None = None,
+        timeout: int | None = None,
+    ) -> _BackendResponse:
+        if url.endswith("/internal/dataset/upload/verify"):
+            return _BackendResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "dataset_id": json["dataset_id"] if json else 0,
+                        "node_name": "gpu-node-1",
+                        "file_name": "episodes.zip",
+                        "owner_id": 1,
+                    },
+                }
+            )
+        if url.endswith("/internal/dataset/upload/complete"):
+            self.complete_payload = json or {}
+            return _BackendResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "dataset_id": json["dataset_id"] if json else 0,
+                        "status": "ready",
+                        "file_name": "episodes.zip",
+                        "file_size": json["file_size"] if json else 0,
+                        "total_files": 1,
+                        "storage_node": "gpu-node-1",
+                    },
+                }
+            )
+        raise AssertionError(f"Unexpected backend URL: {url}")
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _agent_config(tmp_path: Path) -> AgentConfig:
+    return AgentConfig(
+        backend_base_url="http://backend.example.test/api/v1",
+        node_name="gpu-node-1",
+        report_ip="127.0.0.1",
+        listen_host="127.0.0.1",
+        api_port=0,
+        public_base_url="http://127.0.0.1",
+        upload_enabled=True,
+        upload_allowed_origins=(),
+        gpu_total=1,
+        heartbeat_interval=30,
+        version="test",
+        step_delay=0.1,
+        log_dir=tmp_path / "logs",
+        work_dir=tmp_path,
+        dataset_cache_dir=tmp_path / "storage" / "datasets_cache",
+    )
+
+
+def test_agent_resumable_dataset_upload(tmp_path: Path) -> None:
+    backend_session = _BackendSession()
+    agent = Agent(_agent_config(tmp_path), session=backend_session)  # type: ignore[arg-type]
+    agent.agent_token = "agent-token"
+    server = AgentHTTPServer(("127.0.0.1", 0), AgentHTTPRequestHandler, agent)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    headers = {
+        "Authorization": "Bearer upload-token",
+        "X-Dataset-Id": "42",
+        "X-Filename": "episodes.zip",
+    }
+    payload = b"abcdefg"
+
+    try:
+        status_resp = requests.get(
+            f"{base_url}/api/v1/agent/datasets/upload/status",
+            headers=headers,
+            timeout=5,
+        )
+        assert status_resp.status_code == 200
+        assert status_resp.json()["uploaded_bytes"] == 0
+
+        first = requests.put(
+            f"{base_url}/api/v1/agent/datasets/upload/chunk",
+            data=payload[:3],
+            headers={**headers, "Content-Range": "bytes 0-2/7", "Content-Type": "application/zip"},
+            timeout=5,
+        )
+        assert first.status_code == 200
+        assert first.json()["uploaded_bytes"] == 3
+
+        status_resp = requests.get(
+            f"{base_url}/api/v1/agent/datasets/upload/status",
+            headers=headers,
+            timeout=5,
+        )
+        assert status_resp.status_code == 200
+        assert status_resp.json()["uploaded_bytes"] == 3
+
+        second = requests.put(
+            f"{base_url}/api/v1/agent/datasets/upload/chunk",
+            data=payload[3:],
+            headers={**headers, "Content-Range": "bytes 3-6/7", "Content-Type": "application/zip"},
+            timeout=5,
+        )
+        assert second.status_code == 200
+        assert second.json()["uploaded_bytes"] == 7
+
+        complete = requests.post(
+            f"{base_url}/api/v1/agent/datasets/upload/complete",
+            headers={**headers, "X-File-Size": "7"},
+            timeout=5,
+        )
+        assert complete.status_code == 200
+        assert complete.json()["status"] == "ready"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    final_path = tmp_path / "storage" / "agent_datasets" / "dataset_42" / "episodes.zip"
+    assert final_path.read_bytes() == payload
+    assert backend_session.complete_payload is not None
+    assert backend_session.complete_payload["storage_path"] == str(final_path)
+    assert backend_session.complete_payload["content_md5"] == hashlib.md5(payload).hexdigest()
+    assert backend_session.complete_payload["file_size"] == len(payload)
 
 
 def test_training_job_builds_command_with_dataset_arg(tmp_path: Path) -> None:

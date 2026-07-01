@@ -35,7 +35,8 @@ from ..payment.alipay import get_alipay
 
 TOKEN_TIMEOUT_SECONDS = 7 * 24 * 60 * 60  # 7 days
 VERIFICATION_CODE_TIMEOUT_SECONDS = 5 * 60  # 5 minutes
-DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS = 15 * 60  # 15 minutes
+DEFAULT_DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS = 2 * 60 * 60  # 2 hours
+DEFAULT_DATASET_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 
 
 class RobotCloudService:
@@ -62,6 +63,14 @@ class RobotCloudService:
         self.sms_gateway = sms_gateway
         self.token_cache = caches["tokens"]
         self.verification_cache = caches["default"]
+        self.dataset_upload_session_timeout = max(
+            int(getattr(settings, "DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS", DEFAULT_DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS)),
+            60,
+        )
+        self.dataset_upload_chunk_size = max(
+            int(getattr(settings, "DATASET_UPLOAD_CHUNK_SIZE", DEFAULT_DATASET_UPLOAD_CHUNK_SIZE)),
+            1024 * 1024,
+        )
         dataset_root = getattr(settings, "DATASET_STORAGE_DIR", None)
         if dataset_root is None:
             dataset_root = Path.cwd() / "datasets"
@@ -807,7 +816,7 @@ class RobotCloudService:
             node = self._select_upload_agent(requested_node)
         safe_filename = self._sanitize_filename(filename, f"dataset_{secrets.token_hex(4)}.zip")
         upload_token = self._generate_dataset_upload_token()
-        expires_at = timezone.now() + timedelta(seconds=DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS)
+        expires_at = timezone.now() + timedelta(seconds=self.dataset_upload_session_timeout)
         metadata = {
             "upload_session": {
                 "token_hash": self._hash_upload_token(upload_token),
@@ -842,7 +851,8 @@ class RobotCloudService:
                 "upload_url": upload_url,
                 "upload_token": upload_token,
                 "expires_at": expires_at.isoformat(),
-                "expires_in": DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS,
+                "expires_in": self.dataset_upload_session_timeout,
+                "chunk_size": self.dataset_upload_chunk_size,
                 "node_name": node.node_name,
                 "file_name": safe_filename,
             }
@@ -865,6 +875,28 @@ class RobotCloudService:
             }
         )
 
+    def _completed_dataset_upload_response(self, dataset: Dataset) -> Dict[str, Any]:
+        metadata = dataset.metadata if isinstance(dataset.metadata, dict) else {}
+        file_name = str(metadata.get("file_name") or dataset.original_filename or "")
+        try:
+            metadata_file_size = int(metadata.get("file_size") or 0)
+        except (TypeError, ValueError):
+            metadata_file_size = 0
+        try:
+            total_files = int(metadata.get("total_files") or 1)
+        except (TypeError, ValueError):
+            total_files = 1
+        return self._response(
+            {
+                "dataset_id": dataset.id,
+                "status": dataset.status,
+                "file_name": file_name,
+                "file_size": dataset.file_size or metadata_file_size,
+                "total_files": total_files,
+                "storage_node": dataset.storage_node,
+            }
+        )
+
     def complete_dataset_upload(
         self,
         token: str,
@@ -879,6 +911,21 @@ class RobotCloudService:
         dataset = self._get_dataset(dataset_id)
         if dataset.storage_backend != Dataset.STORAGE_BACKEND_AGENT:
             raise ValueError("Dataset is not configured for agent upload")
+        clean_content_md5 = (content_md5 or "").strip().lower()[:32]
+        try:
+            requested_size = max(int(file_size), 0)
+        except (TypeError, ValueError):
+            requested_size = 0
+        if dataset.status == Dataset.STATUS_READY:
+            if dataset.storage_node != node.node_name:
+                raise ValueError("Upload session belongs to a different agent")
+            if storage_path and dataset.storage_path and storage_path != dataset.storage_path:
+                raise ValueError("Dataset upload already completed with a different storage path")
+            if requested_size and dataset.file_size and requested_size != dataset.file_size:
+                raise ValueError("Dataset upload already completed with a different file size")
+            if clean_content_md5 and dataset.content_md5 and clean_content_md5 != dataset.content_md5:
+                raise ValueError("Dataset upload already completed with a different md5")
+            return self._completed_dataset_upload_response(dataset)
         session = self._get_dataset_upload_session(dataset, upload_token)
         if session.get("node_name") != node.node_name or dataset.storage_node != node.node_name:
             raise ValueError("Upload session belongs to a different agent")
@@ -886,10 +933,13 @@ class RobotCloudService:
             raise ValueError("storage_path required")
         clean_metadata = metadata if isinstance(metadata, dict) else {}
         file_name = str(clean_metadata.get("file_name") or session.get("filename") or dataset.original_filename)
-        try:
-            normalized_size = max(int(file_size), 0)
-        except (TypeError, ValueError):
-            normalized_size = int(clean_metadata.get("file_size") or 0)
+        if requested_size:
+            normalized_size = requested_size
+        else:
+            try:
+                normalized_size = int(clean_metadata.get("file_size") or 0)
+            except (TypeError, ValueError):
+                normalized_size = 0
         clean_metadata["file_name"] = file_name
         clean_metadata["file_size"] = normalized_size
         clean_metadata["total_files"] = int(clean_metadata.get("total_files") or 1)
@@ -913,16 +963,7 @@ class RobotCloudService:
                 "status",
             ]
         )
-        return self._response(
-            {
-                "dataset_id": dataset.id,
-                "status": dataset.status,
-                "file_name": file_name,
-                "file_size": normalized_size,
-                "total_files": clean_metadata["total_files"],
-                "storage_node": dataset.storage_node,
-            }
-        )
+        return self._completed_dataset_upload_response(dataset)
 
     def list_datasets(self, token: str, visibility: Optional[str], page: int, size: int) -> Dict[str, Any]:
         user = self._get_user_by_token(token)

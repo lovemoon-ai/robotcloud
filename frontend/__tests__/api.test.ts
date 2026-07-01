@@ -37,6 +37,7 @@ describe("robotCloudApi", () => {
   const originalFetch = global.fetch;
   let lastXhr: XMLHttpRequest | null = null;
   let nextXhrResponseText: string | null = null;
+  let xhrQueue: Array<{ status?: number; responseText?: string; error?: boolean }> = [];
 
   beforeEach(() => {
     mockedFetch = jest.fn().mockResolvedValue({
@@ -68,7 +69,21 @@ describe("robotCloudApi", () => {
 
       send(body?: Document | BodyInit | null) {
         this._body = body ?? null;
-        if (!this.responseText) {
+        const queued = xhrQueue.shift();
+        if (queued) {
+          if (queued.status !== undefined) {
+            this.status = queued.status;
+          }
+          if (queued.responseText !== undefined) {
+            this.responseText = queued.responseText;
+          }
+          if (queued.error) {
+            if (this.onerror) {
+              this.onerror();
+            }
+            return;
+          }
+        } else if (!this.responseText) {
           this.responseText = JSON.stringify({ code: 0, data: {} });
         }
         if (this.onload) {
@@ -90,8 +105,10 @@ describe("robotCloudApi", () => {
   afterEach(() => {
     global.fetch = originalFetch as typeof fetch;
     useAuthStore.getState().reset();
+    localStorage.clear();
     lastXhr = null;
     nextXhrResponseText = null;
+    xhrQueue = [];
   });
 
   it("loginWithPassword sends credentials and maps response", async () => {
@@ -322,17 +339,44 @@ describe("robotCloudApi", () => {
           upload_token: "upload-token",
           expires_at: "2024-01-01T00:15:00Z",
           expires_in: 900,
+          chunk_size: 1024,
           node_name: "gpu-node-1",
           file_name: "dataset.zip"
         }
       })
     } as unknown as Response);
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          status: "ok",
+          dataset_id: 2,
+          file_name: "dataset.zip",
+          uploaded_bytes: 0,
+          complete: false
+        })
+      )
+    } as unknown as Response);
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          status: "ready",
+          dataset_id: 2,
+          file_name: "dataset.zip",
+          file_size: 7,
+          total_files: 5
+        })
+      )
+    } as unknown as Response);
     nextXhrResponseText = JSON.stringify({
-      status: "ready",
+      status: "ok",
       dataset_id: 2,
-      file_name: "dataset.zip",
-      file_size: 2048,
-      total_files: 5
+      uploaded_bytes: 7,
+      total_size: 7,
+      complete: true
     });
     const file = new File(["content"], "dataset.zip", { type: "application/zip" });
     const result = await robotCloudApi.uploadDataset({
@@ -351,27 +395,102 @@ describe("robotCloudApi", () => {
       filename: "dataset.zip",
       target_node: "gpu-node-1"
     });
+    expect(mockedFetch.mock.calls[1][0]).toBe("https://agent.example.test/api/v1/agent/datasets/upload/status");
+    expect(mockedFetch.mock.calls[2][0]).toBe("https://agent.example.test/api/v1/agent/datasets/upload/complete");
     const xhr = lastXhr as unknown as {
       _method: string;
       _url: string;
       _headers: Record<string, string>;
-      _body: File | null;
+      _body: Blob | null;
     };
-    expect(xhr._method).toBe("POST");
-    expect(xhr._url).toBe("https://agent.example.test/api/v1/agent/datasets/upload");
+    expect(xhr._method).toBe("PUT");
+    expect(xhr._url).toBe("https://agent.example.test/api/v1/agent/datasets/upload/chunk");
     expect(xhr._headers).toMatchObject({
       Authorization: "Bearer upload-token",
       "X-Dataset-Id": "2",
       "X-Filename": "dataset.zip",
+      "Content-Range": "bytes 0-6/7",
+      "X-File-Size": "7",
       "Content-Type": "application/zip"
     });
-    expect(xhr._body).toBe(file);
+    expect(xhr._body?.size).toBe(7);
     expect(result).toEqual<DatasetUploadResult>({
       datasetId: 2,
       status: "ready",
       fileName: "dataset.zip",
-      fileSize: 2048,
+      fileSize: 7,
       totalFiles: 5
+    });
+  });
+
+  it("retries a chunk when the status probe also fails", async () => {
+    setAuthenticatedUser();
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          dataset_id: 3,
+          status: "processing",
+          upload_url: "https://agent.example.test/api/v1/agent/datasets/upload",
+          upload_token: "upload-token",
+          expires_at: "2024-01-01T00:15:00Z",
+          expires_in: 900,
+          chunk_size: 1024,
+          node_name: "gpu-node-1",
+          file_name: "dataset.zip"
+        }
+      })
+    } as unknown as Response);
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: jest.fn().mockResolvedValue(JSON.stringify({ uploaded_bytes: 0, complete: false }))
+    } as unknown as Response);
+    mockedFetch.mockRejectedValueOnce(new Error("offline"));
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          status: "ready",
+          dataset_id: 3,
+          file_name: "dataset.zip",
+          file_size: 7,
+          total_files: 1
+        })
+      )
+    } as unknown as Response);
+    xhrQueue = [
+      { error: true },
+      {
+        responseText: JSON.stringify({
+          status: "ok",
+          dataset_id: 3,
+          uploaded_bytes: 7,
+          total_size: 7,
+          complete: true
+        })
+      }
+    ];
+    const file = new File(["content"], "dataset.zip", { type: "application/zip" });
+
+    const result = await robotCloudApi.uploadDataset({
+      file,
+      name: "retry",
+      description: "desc",
+      visibility: "private",
+      targetNode: "gpu-node-1"
+    });
+
+    expect(global.XMLHttpRequest).toHaveBeenCalledTimes(2);
+    expect(result).toEqual<DatasetUploadResult>({
+      datasetId: 3,
+      status: "ready",
+      fileName: "dataset.zip",
+      fileSize: 7,
+      totalFiles: 1
     });
   });
 
