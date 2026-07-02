@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { useDesktopBridgeAvailable } from "@/hooks/useDesktopBridgeAvailable";
@@ -50,6 +50,8 @@ type CameraInfo = {
   };
   [key: string]: unknown;
 };
+
+type TerminalPhase = "starting" | "ready" | "failed" | "closed";
 
 const initialForm: FormState = {
   followerPort: "",
@@ -150,10 +152,10 @@ export function SO101Client() {
   const [detectedPorts, setDetectedPorts] = useState<PortInfo[]>([]);
   const [detectedCameras, setDetectedCameras] = useState<CameraInfo[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [terminalSessionId, setTerminalSessionId] = useState<string | null>(null);
-  const [terminalReady, setTerminalReady] = useState(false);
-  const terminalContainerRef = useRef<HTMLDivElement | null>(null);
-  const terminalRef = useRef<{ write: (data: string) => void; dispose: () => void; resize: (cols: number, rows: number) => void; onData: (cb: (data: string) => void) => { dispose: () => void } } | null>(null);
+  const [terminalPhase, setTerminalPhase] = useState<TerminalPhase>("starting");
+  const [terminalError, setTerminalError] = useState<string | null>(null);
+  const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
+  const terminalRef = useRef<{ write: (data: string) => void; focus: () => void; dispose: () => void; resize: (cols: number, rows: number) => void; onData: (cb: (data: string) => void) => { dispose: () => void } } | null>(null);
   const terminalSessionRef = useRef<string | null>(null);
   const desktop = typeof window !== "undefined" ? window.robotcloudDesktop : undefined;
   const bridgeReady = isDesktop || Boolean(desktop?.isDesktop);
@@ -175,6 +177,10 @@ export function SO101Client() {
   const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
   };
+
+  const terminalContainerRef = useCallback((node: HTMLDivElement | null) => {
+    setTerminalContainerEl(node);
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     if (!window.robotcloudDesktop) {
@@ -261,17 +267,19 @@ export function SO101Client() {
   }, [applyDetectionMarkers, bridgeReady, refreshStatus]);
 
   useEffect(() => {
-    if (!bridgeReady || !window.robotcloudDesktop || !terminalContainerRef.current || terminalRef.current) return;
+    if (!bridgeReady || !window.robotcloudDesktop || !terminalContainerEl || terminalRef.current) return;
     let disposed = false;
     let terminalInputDisposable: { dispose: () => void } | null = null;
     let resizeObserver: ResizeObserver | null = null;
+    setTerminalPhase("starting");
+    setTerminalError(null);
 
     async function startTerminal() {
       const [{ Terminal }, session] = await Promise.all([
         import("@xterm/xterm"),
         window.robotcloudDesktop!.terminal.start()
       ]);
-      if (disposed || !terminalContainerRef.current) {
+      if (disposed || !terminalContainerEl) {
         await window.robotcloudDesktop?.terminal.stop(session.sessionId).catch(() => undefined);
         return;
       }
@@ -287,13 +295,12 @@ export function SO101Client() {
           selectionBackground: "#28465f"
         }
       });
-      term.open(terminalContainerRef.current);
+      term.open(terminalContainerEl);
       term.write(`RobotCloud terminal: ${session.shell}\r\n`);
       terminalSessionRef.current = session.sessionId;
-      setTerminalSessionId(session.sessionId);
 
       const resizeTerminal = () => {
-        const container = terminalContainerRef.current;
+        const container = terminalContainerEl;
         const currentSessionId = terminalSessionRef.current;
         if (!container || !currentSessionId) return;
         const cols = Math.max(40, Math.floor(container.clientWidth / 8));
@@ -310,12 +317,18 @@ export function SO101Client() {
       });
       terminalRef.current = term;
       resizeObserver = new ResizeObserver(resizeTerminal);
-      resizeObserver.observe(terminalContainerRef.current);
+      resizeObserver.observe(terminalContainerEl);
       resizeTerminal();
-      setTerminalReady(true);
+      term.focus();
+      setTerminalPhase("ready");
     }
 
-    startTerminal().catch((error) => appendLog(setLogs, "stderr", `Terminal failed: ${String(error)}\n`));
+    startTerminal().catch((error) => {
+      const message = String(error);
+      setTerminalPhase("failed");
+      setTerminalError(message);
+      appendLog(setLogs, "stderr", `Terminal failed: ${message}\n`);
+    });
     return () => {
       disposed = true;
       const sessionId = terminalSessionRef.current;
@@ -327,10 +340,9 @@ export function SO101Client() {
       terminalRef.current?.dispose();
       terminalRef.current = null;
       terminalSessionRef.current = null;
-      setTerminalSessionId(null);
-      setTerminalReady(false);
+      setTerminalPhase((current) => (current === "ready" || current === "starting" ? "closed" : current));
     };
-  }, [bridgeReady]);
+  }, [bridgeReady, terminalContainerEl]);
 
   useEffect(() => {
     if (!bridgeReady || !window.robotcloudDesktop) return;
@@ -342,8 +354,8 @@ export function SO101Client() {
     const offExit = window.robotcloudDesktop.terminal.onExit((event) => {
       if (event.sessionId === terminalSessionRef.current) {
         terminalRef.current?.write(`\r\n[terminal exited: code=${event.code ?? "null"}]\r\n`);
-        setTerminalReady(false);
-        setTerminalSessionId(null);
+        setTerminalPhase("closed");
+        terminalSessionRef.current = null;
       }
     });
     return () => {
@@ -371,15 +383,6 @@ export function SO101Client() {
       appendLog(setLogs, "system", `\n[stop requested for ${stoppedRunId}]\n`);
       setActiveRunId(null);
     }
-  };
-
-  const submitCustomCommand = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const command = String(data.get("command") ?? "").trim();
-    if (!command || !terminalSessionId || !window.robotcloudDesktop) return;
-    window.robotcloudDesktop.terminal.write(terminalSessionId, `${command}\r`);
-    event.currentTarget.reset();
   };
 
   const statusCards = useMemo(
@@ -594,15 +597,22 @@ export function SO101Client() {
           <section className="rounded-lg border border-theme bg-card p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-xl font-semibold accent-text">Terminal</h2>
-              <span className="text-xs text-muted">{terminalReady ? "Ready" : "Starting"}</span>
+              <span className="text-xs text-muted">
+                {terminalPhase === "ready"
+                  ? "Ready"
+                  : terminalPhase === "failed"
+                    ? "Failed"
+                    : terminalPhase === "closed"
+                      ? "Closed"
+                      : "Starting"}
+              </span>
             </div>
-            <div ref={terminalContainerRef} className="mt-4 h-72 overflow-hidden rounded-md border border-theme bg-[#07111f] p-2" />
-            <form onSubmit={submitCustomCommand} className="mt-3 flex gap-2">
-              <input name="command" placeholder="Type a command and press Enter" className="min-w-0 flex-1 rounded-md border border-theme bg-surface p-2 text-sm text-body" />
-              <button type="submit" disabled={!terminalReady} className="rounded-md gradient-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
-                Send
-              </button>
-            </form>
+            <div
+              ref={terminalContainerRef}
+              onClick={() => terminalRef.current?.focus()}
+              className="mt-4 h-72 overflow-hidden rounded-md border border-theme bg-[#07111f] p-2"
+            />
+            {terminalError ? <p className="mt-3 text-xs text-red-400">{terminalError}</p> : null}
           </section>
         </div>
       </section>
