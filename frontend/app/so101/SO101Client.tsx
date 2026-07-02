@@ -91,7 +91,7 @@ const initialForm: FormState = {
   resetTimeS: 2,
   teleopTimeS: 5,
   maxRelativeTarget: 5,
-  displayData: false,
+  displayData: true,
   task: ""
 };
 
@@ -138,11 +138,38 @@ function requireNumber(value: number, label: string, options: { integer?: boolea
   return value;
 }
 
-function resolvedDatasetRoot(form: FormState, status: DesktopStatus | null) {
+function desktopPathSeparator(status: DesktopStatus | null) {
+  return status?.platform === "windows" ? "\\" : "/";
+}
+
+function trimTrailingPathSeparators(path: string, separator: string) {
+  if (/^[A-Za-z]:[\\/]*$/.test(path)) {
+    return `${path.slice(0, 2)}${separator}`;
+  }
+  if (/^[\\/]+$/.test(path)) {
+    return separator;
+  }
+  return path.replace(/[\\/]+$/, "");
+}
+
+function pathSegments(value: string) {
+  return value.split(/[\\/]+/).filter(Boolean);
+}
+
+function joinDesktopPath(status: DesktopStatus | null, root: string, ...parts: string[]) {
+  const separator = desktopPathSeparator(status);
+  const normalizedRoot = trimTrailingPathSeparators(root.trim(), separator);
+  const suffix = parts.flatMap(pathSegments).join(separator);
+  if (!normalizedRoot) return suffix;
+  if (!suffix) return normalizedRoot;
+  return `${normalizedRoot}${normalizedRoot.endsWith(separator) ? "" : separator}${suffix}`;
+}
+
+export function resolvedDatasetRoot(form: FormState, status: DesktopStatus | null) {
   const explicitRoot = form.datasetRoot.trim();
   if (explicitRoot) return explicitRoot;
   if (!status?.dataDir) return "";
-  return `${status.dataDir.replace(/\/$/, "")}/datasets/${form.datasetRepoId}`;
+  return joinDesktopPath(status, status.dataDir, "datasets", form.datasetRepoId);
 }
 
 function clampCameraCount(value: unknown) {
@@ -165,6 +192,18 @@ function normalizeCamera(value: unknown, index: number): CameraForm {
     height: toNumber(source.height, fallback.height),
     fps: toNumber(source.fps, fallback.fps)
   };
+}
+
+export function removeCameraAtIndex(
+  cameras: [CameraForm, CameraForm, CameraForm],
+  index: number
+): [CameraForm, CameraForm, CameraForm] {
+  const next = [...cameras] as [CameraForm, CameraForm, CameraForm];
+  for (let cursor = index; cursor < MAX_CAMERAS - 1; cursor += 1) {
+    next[cursor] = next[cursor + 1];
+  }
+  next[MAX_CAMERAS - 1] = defaultCamera(MAX_CAMERAS - 1);
+  return next;
 }
 
 export function parseConnectionSettings(raw: string | null) {
@@ -300,6 +339,8 @@ export const so101TestExports = {
   initialForm,
   parseConnectionSettings,
   serializeConnectionSettings,
+  removeCameraAtIndex,
+  resolvedDatasetRoot,
   buildActionCommand,
   shellArg,
   resetPersistentTerminalForTest
@@ -634,6 +675,24 @@ export function SO101Client() {
     setCameraCount(nextCount);
   };
 
+  const removeCamera = (index: number) => {
+    if (index <= 0 || index >= cameraCount) return;
+    setForm((currentForm) => ({
+      ...currentForm,
+      cameras: removeCameraAtIndex(currentForm.cameras, index)
+    }));
+    setCameraChecks((current) => {
+      const next = [...current] as [CheckState, CheckState, CheckState];
+      for (let cursor = index; cursor < MAX_CAMERAS - 1; cursor += 1) {
+        next[cursor] = next[cursor + 1];
+      }
+      next[MAX_CAMERAS - 1] = idleCheck;
+      return next;
+    });
+    setPreviewingCamera(null);
+    setCameraCount((current) => Math.max(DEFAULT_CAMERA_COUNT, current - 1));
+  };
+
   const terminalContainerRef = useCallback((node: HTMLDivElement | null) => {
     setTerminalContainerEl(node);
   }, []);
@@ -901,9 +960,22 @@ export function SO101Client() {
 
               {form.cameras.slice(0, cameraCount).map((camera, index) => (
                 <div key={cameraLabels[index]} className="rounded-md border border-theme bg-surface p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold accent-text">{cameraLabels[index]}</span>
+                    {index > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => removeCamera(index)}
+                        aria-label={`Remove ${cameraLabels[index]}`}
+                        className="flex h-7 w-7 items-center justify-center rounded-md border border-theme text-base font-semibold accent-text transition hover:accent-bg"
+                      >
+                        -
+                      </button>
+                    ) : null}
+                  </div>
                   <div className="flex flex-wrap items-end gap-2">
                     <label className="min-w-0 flex-1 text-sm">
-                      <span className="text-muted">{cameraLabels[index]} id/path</span>
+                      <span className="text-muted">Camera id/path</span>
                       <input
                         value={camera.id}
                         onChange={(event) => updateCamera(index, "id", event.target.value)}
