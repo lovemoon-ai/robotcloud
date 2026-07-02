@@ -103,6 +103,7 @@ struct DesktopStatus {
 }
 
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct ProcessOutputEvent {
     run_id: String,
     stream: String,
@@ -110,6 +111,7 @@ struct ProcessOutputEvent {
 }
 
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct ProcessExitEvent {
     run_id: String,
     code: Option<i32>,
@@ -470,6 +472,22 @@ fn command_env(app: &AppHandle) -> Result<Vec<(String, String)>, String> {
     ])
 }
 
+fn powershell_program() -> String {
+    if cfg!(target_os = "windows") {
+        if let Ok(system_root) = env::var("SystemRoot") {
+            let candidate = PathBuf::from(system_root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe");
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+    "powershell.exe".to_string()
+}
+
 fn allowed_action(action: &str) -> bool {
     matches!(
         action,
@@ -583,7 +601,7 @@ fn so101_command_args(
         if config.display_data.unwrap_or(false) {
             args.push("-DisplayData".to_string());
         }
-        Ok(("powershell.exe".to_string(), args))
+        Ok((powershell_program(), args))
     } else {
         let mut args = vec![script.to_string_lossy().to_string()];
         push_arg(&mut args, "--action", &config.action);
@@ -990,7 +1008,7 @@ fn terminal_start(app: AppHandle, state: State<AppState>) -> Result<TerminalStar
     let session_id = Uuid::new_v4().to_string();
     let (shell, args): (String, Vec<String>) = if cfg!(target_os = "windows") {
         (
-            "powershell.exe".to_string(),
+            powershell_program(),
             vec![
                 "-NoLogo".to_string(),
                 "-NoProfile".to_string(),
@@ -1212,7 +1230,7 @@ mod tests {
             so101_command_args(Path::new("scripts/so101.ps1"), &test_config("info")).unwrap();
 
         if cfg!(target_os = "windows") {
-            assert_eq!(program, "powershell.exe");
+            assert!(program.to_lowercase().ends_with("powershell.exe"));
             assert!(args.iter().any(|arg| arg == "-ExecutionPolicy"));
             assert!(args.windows(2).any(|pair| pair == ["-Action", "info"]));
         } else {
