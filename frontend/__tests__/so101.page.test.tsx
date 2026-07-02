@@ -39,7 +39,7 @@ describe("SO101 page environment guard", () => {
 });
 
 describe("SO101 command generation", () => {
-  const { buildActionCommand, initialForm, parseConnectionSettings, serializeConnectionSettings, shellArg } = so101TestExports;
+  const { buildActionCommand, initialForm, parseConnectionSettings, removeCameraAtIndex, resolvedDatasetRoot, serializeConnectionSettings, shellArg } = so101TestExports;
 
   const desktopStatus: DesktopStatus = {
     isDesktop: true,
@@ -63,6 +63,35 @@ describe("SO101 command generation", () => {
 
   it("quotes PowerShell arguments without allowing command substitution", () => {
     expect(shellArg("local/$(touch /tmp/pwn)'x", "powershell")).toBe("'local/$(touch /tmp/pwn)''x'");
+  });
+
+  it("resolves default dataset roots with platform-specific path separators", () => {
+    expect(
+      resolvedDatasetRoot(
+        { ...initialForm, datasetRepoId: "local/so101_desktop" },
+        { ...desktopStatus, platform: "macos", dataDir: "/tmp/robotcloud data/" }
+      )
+    ).toBe("/tmp/robotcloud data/datasets/local/so101_desktop");
+
+    expect(
+      resolvedDatasetRoot(
+        { ...initialForm, datasetRepoId: "local/so101_desktop" },
+        {
+          ...desktopStatus,
+          platform: "windows",
+          dataDir: "C:\\Users\\duino\\AppData\\Roaming\\RobotCloud\\so101-data\\"
+        }
+      )
+    ).toBe("C:\\Users\\duino\\AppData\\Roaming\\RobotCloud\\so101-data\\datasets\\local\\so101_desktop");
+  });
+
+  it("keeps explicit dataset roots unchanged", () => {
+    expect(
+      resolvedDatasetRoot(
+        { ...initialForm, datasetRoot: "D:\\robot data\\episodes" },
+        { ...desktopStatus, platform: "windows" }
+      )
+    ).toBe("D:\\robot data\\episodes");
   });
 
   it("builds record commands with escaped user controlled values", () => {
@@ -171,5 +200,19 @@ describe("SO101 command generation", () => {
         { id: "3", width: 320, height: 240, fps: 10 }
       ]
     });
+  });
+
+  it("removes added camera cards by compacting later camera settings", () => {
+    const cameras = [
+      { id: "0", width: 1280, height: 720, fps: 30 },
+      { id: "1", width: 640, height: 480, fps: 20 },
+      { id: "2", width: 320, height: 240, fps: 10 }
+    ] as typeof initialForm.cameras;
+
+    expect(removeCameraAtIndex(cameras, 1)).toEqual([
+      { id: "0", width: 1280, height: 720, fps: 30 },
+      { id: "2", width: 320, height: 240, fps: 10 },
+      { id: "2", width: 640, height: 480, fps: 30 }
+    ]);
   });
 });
