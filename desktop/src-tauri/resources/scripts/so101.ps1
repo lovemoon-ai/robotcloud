@@ -4,6 +4,7 @@ param(
 
     [string] $FollowerPort = "",
     [string] $LeaderPort = "",
+    [string] $CameraId = "",
     [int] $CameraIndex = 0,
     [int] $Width = 640,
     [int] $Height = 480,
@@ -84,37 +85,81 @@ function Require-Port {
 }
 
 function Show-Ports {
-    Write-Host "Windows serial ports:"
-    $serialPorts = Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue |
-        Select-Object DeviceID, Name, Description, Manufacturer
-    if ($serialPorts) {
-        $serialPorts | Format-Table -AutoSize
-    } else {
-        Write-Host "  No COM ports found."
-    }
+    $Code = @'
+import json
+import re
+from serial.tools import list_ports
 
-    Write-Host ""
-    Write-Host "USB serial-like devices:"
-    $usbSerial = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.DeviceID -match "^USB\\" -and (
-                $_.DeviceID -match "VID_1A86|VID_10C4|VID_0403|CH340|CP210|FTDI|USB-SERIAL|USB Serial|SERIAL" -or
-                $_.Name -match "CH340|CP210|FTDI|USB.*Serial|COM\d+"
-            )
-        } |
-        Select-Object Name, Manufacturer, PNPClass, Status, DeviceID
-    if ($usbSerial) {
-        $usbSerial | Format-List
-    } else {
-        Write-Host "  No USB serial adapter found."
-    }
+try:
+    from lerobot.scripts.lerobot_find_port import find_available_ports
+except Exception:
+    find_available_ports = None
 
-    Write-Host ""
-    Write-Host "PySerial port list:"
-    & $Python -m serial.tools.list_ports
+def is_candidate(device="", description="", manufacturer="", hwid=""):
+    text = " ".join(str(value or "") for value in (device, description, manufacturer, hwid)).lower()
+    if "bluetooth" in text or "debug-console" in text:
+        return False
+    if re.fullmatch(r"com\d+", str(device or "").lower()):
+        return True
+    return any(token in text for token in ("usb", "acm", "serial", "ch340", "cp210", "ftdi", "wch"))
+
+lerobot_ports = find_available_ports() if find_available_ports else []
+items = []
+seen = set()
+for port in list_ports.comports():
+    device = port.device
+    if not is_candidate(device, port.description, port.manufacturer, port.hwid):
+        continue
+    seen.add(device)
+    items.append({
+        "device": device,
+        "name": port.name,
+        "description": port.description,
+        "manufacturer": port.manufacturer,
+        "hwid": port.hwid,
+    })
+for device in lerobot_ports:
+    if device not in seen and is_candidate(device):
+        items.append({"device": device})
+print("LeRobot find-port USB serial candidates:")
+for item in items:
+    detail = " - ".join(str(item.get(key) or "") for key in ("description", "manufacturer", "hwid")).strip(" -")
+    print(f"  {item['device']}" + (f" ({detail})" if detail else ""))
+print("ROBOTCLOUD_PORTS_JSON=" + json.dumps(items, ensure_ascii=False))
+'@
+    $Code | & $Python -
 }
 
-$CameraConfig = "{ front: {type: opencv, index_or_path: $CameraIndex, width: $Width, height: $Height, fps: $Fps}}"
+function Show-Cameras {
+    $OutDir = Join-Path $DataDir "captured_images"
+    $Code = @'
+import json
+import sys
+from pathlib import Path
+
+output_dir = Path(sys.argv[1])
+try:
+    from lerobot.scripts.lerobot_find_cameras import find_and_print_cameras
+except Exception as exc:
+    raise SystemExit(f"Could not import lerobot camera finder: {exc}")
+
+cameras = find_and_print_cameras("opencv")
+output_dir.mkdir(parents=True, exist_ok=True)
+print("ROBOTCLOUD_CAMERAS_JSON=" + json.dumps(cameras, ensure_ascii=False, default=str))
+'@
+    $Code | & $Python - $OutDir
+}
+
+if ([string]::IsNullOrWhiteSpace($CameraId)) {
+    $CameraId = [string] $CameraIndex
+}
+if ($CameraId -match '^\d+$') {
+    $CameraRef = $CameraId
+} else {
+    $CameraRef = '"' + ($CameraId.Replace('\', '\\').Replace('"', '\"')) + '"'
+}
+
+$CameraConfig = "{ front: {type: opencv, index_or_path: $CameraRef, width: $Width, height: $Height, fps: $Fps}}"
 $Display = $DisplayData.IsPresent.ToString().ToLowerInvariant()
 
 switch ($Action) {
@@ -125,8 +170,7 @@ switch ($Action) {
         Show-Ports
     }
     "cameras" {
-        $OutDir = Join-Path $DataDir "captured_images"
-        Invoke-LeRobot "lerobot-find-cameras" "opencv" "--output-dir" $OutDir "--record-time-s" "3"
+        Show-Cameras
     }
     "setup-follower" {
         Require-Port $FollowerPort "FollowerPort"

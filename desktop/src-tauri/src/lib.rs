@@ -96,6 +96,7 @@ struct DesktopStatus {
     runtime_ready: bool,
     runtime_archive_path: Option<String>,
     runtime_archive_ready: bool,
+    runtime_error: Option<String>,
     script_path: Option<String>,
     script_ready: bool,
     data_dir: String,
@@ -143,6 +144,7 @@ struct So101RunConfig {
     action: String,
     follower_port: Option<String>,
     leader_port: Option<String>,
+    camera_id: Option<String>,
     camera_index: Option<u32>,
     width: Option<u32>,
     height: Option<u32>,
@@ -515,6 +517,11 @@ fn so101_command_args(
             "-LeaderPort",
             config.leader_port.clone().unwrap_or_default(),
         );
+        if let Some(camera_id) = &config.camera_id {
+            if !camera_id.trim().is_empty() {
+                push_arg(&mut args, "-CameraId", camera_id);
+            }
+        }
         push_arg(&mut args, "-CameraIndex", config.camera_index.unwrap_or(0));
         push_arg(&mut args, "-Width", config.width.unwrap_or(640));
         push_arg(&mut args, "-Height", config.height.unwrap_or(480));
@@ -590,6 +597,11 @@ fn so101_command_args(
             "--leader-port",
             config.leader_port.clone().unwrap_or_default(),
         );
+        if let Some(camera_id) = &config.camera_id {
+            if !camera_id.trim().is_empty() {
+                push_arg(&mut args, "--camera-id", camera_id);
+            }
+        }
         push_arg(
             &mut args,
             "--camera-index",
@@ -875,7 +887,9 @@ fn watch_terminal_process(
 
 #[tauri::command]
 fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
-    let runtime = runtime_path(&app);
+    let runtime_result = ensure_runtime(&app);
+    let runtime_error = runtime_result.as_ref().err().cloned();
+    let runtime = runtime_result.unwrap_or_else(|_| runtime_path(&app));
     let archive = runtime_archive_path(&app);
     let script = script_path(&app);
     let data = data_dir(&app)?;
@@ -889,6 +903,7 @@ fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
         runtime_path: Some(runtime.to_string_lossy().to_string()),
         runtime_archive_ready: archive.as_ref().is_some_and(|path| path.exists()),
         runtime_archive_path: archive.map(|path| path.to_string_lossy().to_string()),
+        runtime_error,
         script_ready: script.exists(),
         script_path: Some(script.to_string_lossy().to_string()),
         data_dir: data.to_string_lossy().to_string(),

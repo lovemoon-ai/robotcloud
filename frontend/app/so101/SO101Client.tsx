@@ -8,7 +8,7 @@ import { useDesktopBridgeAvailable } from "@/hooks/useDesktopBridgeAvailable";
 type FormState = {
   followerPort: string;
   leaderPort: string;
-  cameraIndex: number;
+  cameraId: string;
   width: number;
   height: number;
   fps: number;
@@ -31,10 +31,30 @@ type LogLine = {
   stream: "stdout" | "stderr" | "system";
 };
 
+type PortInfo = {
+  device: string;
+  name?: string | null;
+  description?: string | null;
+  manufacturer?: string | null;
+  hwid?: string | null;
+};
+
+type CameraInfo = {
+  id?: string | number;
+  type?: string;
+  name?: string;
+  default_stream_profile?: {
+    width?: number;
+    height?: number;
+    fps?: number;
+  };
+  [key: string]: unknown;
+};
+
 const initialForm: FormState = {
-  followerPort: "COM3",
-  leaderPort: "COM4",
-  cameraIndex: 0,
+  followerPort: "",
+  leaderPort: "",
+  cameraId: "",
   width: 640,
   height: 480,
   fps: 30,
@@ -52,8 +72,8 @@ const initialForm: FormState = {
 };
 
 const quickActions = [
-  { id: "ports", label: "Ports", description: "List Windows COM ports and USB serial devices." },
-  { id: "cameras", label: "Cameras", description: "Capture a short OpenCV camera probe." },
+  { id: "ports", label: "Detect ports", description: "Use LeRobot find-port helpers to list USB serial devices." },
+  { id: "cameras", label: "Detect cameras", description: "Use LeRobot camera discovery and load connection metadata." },
   { id: "setup-follower", label: "Setup follower", description: "Assign or check follower motor IDs." },
   { id: "setup-leader", label: "Setup leader", description: "Assign or check leader motor IDs." },
   { id: "calibrate-follower", label: "Calibrate follower", description: "Run LeRobot follower calibration." },
@@ -67,7 +87,7 @@ function toRunConfig(action: string, form: FormState) {
     action,
     followerPort: form.followerPort,
     leaderPort: form.leaderPort,
-    cameraIndex: form.cameraIndex,
+    cameraId: form.cameraId,
     width: form.width,
     height: form.height,
     fps: form.fps,
@@ -96,6 +116,30 @@ function appendLog(setter: Dispatch<SetStateAction<LogLine[]>>, stream: LogLine[
   ]);
 }
 
+function markerPayload(text: string, marker: string) {
+  for (const line of text.split(/\r?\n/)) {
+    const markerIndex = line.indexOf(marker);
+    if (markerIndex >= 0) return line.slice(markerIndex + marker.length).trim();
+  }
+  return null;
+}
+
+function portLabel(port: PortInfo) {
+  return [port.device, port.description, port.manufacturer].filter(Boolean).join(" - ");
+}
+
+function cameraLabel(camera: CameraInfo) {
+  const id = camera.id ?? camera.name ?? "";
+  const profile = camera.default_stream_profile;
+  const profileLabel = profile ? `${profile.width ?? "?"}x${profile.height ?? "?"}@${profile.fps ?? "?"}` : "";
+  return [camera.type, id, profileLabel].filter(Boolean).join(" - ");
+}
+
+function cameraId(camera: CameraInfo) {
+  const id = camera.id ?? camera.name ?? "";
+  return String(id);
+}
+
 export function SO101Client() {
   const router = useRouter();
   const isDesktop = useDesktopBridgeAvailable();
@@ -103,6 +147,8 @@ export function SO101Client() {
   const [form, setForm] = useState<FormState>(initialForm);
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [detectedPorts, setDetectedPorts] = useState<PortInfo[]>([]);
+  const [detectedCameras, setDetectedCameras] = useState<CameraInfo[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [terminalSessionId, setTerminalSessionId] = useState<string | null>(null);
   const [terminalReady, setTerminalReady] = useState(false);
@@ -142,6 +188,7 @@ export function SO101Client() {
         runtimeReady: false,
         runtimeArchivePath: null,
         runtimeArchiveReady: false,
+        runtimeError: null,
         scriptPath: null,
         scriptReady: false,
         dataDir: ""
@@ -152,6 +199,45 @@ export function SO101Client() {
     setStatus(nextStatus);
   }, []);
 
+  const applyDetectionMarkers = useCallback((text: string) => {
+    const portsPayload = markerPayload(text, "ROBOTCLOUD_PORTS_JSON=");
+    if (portsPayload) {
+      try {
+        const ports = JSON.parse(portsPayload) as PortInfo[];
+        const devices = ports.map((port) => port.device).filter(Boolean);
+        setDetectedPorts(ports);
+        setForm((current) => ({
+          ...current,
+          followerPort: current.followerPort || devices[0] || "",
+          leaderPort: current.leaderPort || devices.find((device) => device !== (current.followerPort || devices[0])) || ""
+        }));
+      } catch (error) {
+        appendLog(setLogs, "stderr", `Could not parse detected ports: ${String(error)}\n`);
+      }
+    }
+
+    const camerasPayload = markerPayload(text, "ROBOTCLOUD_CAMERAS_JSON=");
+    if (camerasPayload) {
+      try {
+        const cameras = JSON.parse(camerasPayload) as CameraInfo[];
+        const firstCamera = cameras[0];
+        setDetectedCameras(cameras);
+        if (firstCamera) {
+          const profile = firstCamera.default_stream_profile;
+          setForm((current) => ({
+            ...current,
+            cameraId: current.cameraId || cameraId(firstCamera),
+            width: profile?.width || current.width,
+            height: profile?.height || current.height,
+            fps: profile?.fps || current.fps
+          }));
+        }
+      } catch (error) {
+        appendLog(setLogs, "stderr", `Could not parse detected cameras: ${String(error)}\n`);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!bridgeReady) return;
     refreshStatus().catch((error) => appendLog(setLogs, "stderr", String(error)));
@@ -160,6 +246,7 @@ export function SO101Client() {
   useEffect(() => {
     if (!bridgeReady || !window.robotcloudDesktop) return;
     const offOutput = window.robotcloudDesktop.so101.onOutput((event) => {
+      applyDetectionMarkers(event.data);
       appendLog(setLogs, event.stream, event.data);
     });
     const offExit = window.robotcloudDesktop.so101.onExit((event) => {
@@ -171,7 +258,7 @@ export function SO101Client() {
       offOutput();
       offExit();
     };
-  }, [bridgeReady, refreshStatus]);
+  }, [applyDetectionMarkers, bridgeReady, refreshStatus]);
 
   useEffect(() => {
     if (!bridgeReady || !window.robotcloudDesktop || !terminalContainerRef.current || terminalRef.current) return;
@@ -297,7 +384,7 @@ export function SO101Client() {
 
   const statusCards = useMemo(
     () => [
-      { label: "Runtime", value: status?.runtimeReady ? "ready" : "missing", detail: status?.runtimePath ?? "not found" },
+      { label: "Runtime", value: status?.runtimeReady ? "ready" : "missing", detail: status?.runtimeError ?? status?.runtimePath ?? "not found" },
       { label: "SO101 script", value: status?.scriptReady ? "ready" : "missing", detail: status?.scriptPath ?? "not found" },
       { label: "Data folder", value: "local", detail: status?.dataDir || "pending" },
       { label: "Cloud API", value: "online", detail: status?.apiBaseUrl ?? "https://robotcloud.conductor-ai.top/api/v1" }
@@ -362,15 +449,33 @@ export function SO101Client() {
             <div className="mt-4 grid gap-3 md:grid-cols-2">
               <label className="text-sm">
                 <span className="text-muted">Follower port</span>
-                <input value={form.followerPort} onChange={(e) => updateField("followerPort", e.target.value)} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+                <input
+                  value={form.followerPort}
+                  onChange={(e) => updateField("followerPort", e.target.value)}
+                  list="so101-detected-ports"
+                  placeholder="Run Detect ports"
+                  className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body"
+                />
               </label>
               <label className="text-sm">
                 <span className="text-muted">Leader port</span>
-                <input value={form.leaderPort} onChange={(e) => updateField("leaderPort", e.target.value)} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+                <input
+                  value={form.leaderPort}
+                  onChange={(e) => updateField("leaderPort", e.target.value)}
+                  list="so101-detected-ports"
+                  placeholder="Run Detect ports"
+                  className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body"
+                />
               </label>
               <label className="text-sm">
-                <span className="text-muted">Camera index</span>
-                <input type="number" value={form.cameraIndex} onChange={(e) => updateField("cameraIndex", Number(e.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+                <span className="text-muted">Camera id/path</span>
+                <input
+                  value={form.cameraId}
+                  onChange={(e) => updateField("cameraId", e.target.value)}
+                  list="so101-detected-cameras"
+                  placeholder="Run Detect cameras"
+                  className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body"
+                />
               </label>
               <label className="text-sm">
                 <span className="text-muted">FPS</span>
@@ -385,6 +490,27 @@ export function SO101Client() {
                 <input type="number" value={form.height} onChange={(e) => updateField("height", Number(e.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
               </label>
             </div>
+            <datalist id="so101-detected-ports">
+              {detectedPorts.map((port) => (
+                <option key={port.device} value={port.device} label={portLabel(port)} />
+              ))}
+            </datalist>
+            <datalist id="so101-detected-cameras">
+              {detectedCameras.map((camera) => {
+                const id = cameraId(camera);
+                return <option key={id} value={id} label={cameraLabel(camera)} />;
+              })}
+            </datalist>
+            {detectedPorts.length || detectedCameras.length ? (
+              <div className="mt-4 space-y-2 text-xs text-muted">
+                {detectedPorts.length ? (
+                  <p>Ports: {detectedPorts.map((port) => portLabel(port)).join("; ")}</p>
+                ) : null}
+                {detectedCameras.length ? (
+                  <p>Cameras: {detectedCameras.map((camera) => cameraLabel(camera)).join("; ")}</p>
+                ) : null}
+              </div>
+            ) : null}
           </section>
 
           <section className="rounded-lg border border-theme bg-card p-5">

@@ -9,6 +9,7 @@ type DesktopStatus = {
   runtimeReady: boolean;
   runtimeArchivePath: string | null;
   runtimeArchiveReady: boolean;
+  runtimeError?: string | null;
   scriptPath: string | null;
   scriptReady: boolean;
   dataDir: string;
@@ -18,6 +19,7 @@ type So101RunConfig = {
   action: string;
   followerPort?: string;
   leaderPort?: string;
+  cameraId?: string;
   cameraIndex?: number;
   width?: number;
   height?: number;

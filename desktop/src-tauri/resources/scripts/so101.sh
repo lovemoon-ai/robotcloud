@@ -4,6 +4,7 @@ set -euo pipefail
 ACTION="info"
 FOLLOWER_PORT=""
 LEADER_PORT=""
+CAMERA_ID=""
 CAMERA_INDEX="0"
 WIDTH="640"
 HEIGHT="480"
@@ -25,6 +26,7 @@ while [[ $# -gt 0 ]]; do
     --action) ACTION="$2"; shift 2 ;;
     --follower-port) FOLLOWER_PORT="$2"; shift 2 ;;
     --leader-port) LEADER_PORT="$2"; shift 2 ;;
+    --camera-id) CAMERA_ID="$2"; shift 2 ;;
     --camera-index) CAMERA_INDEX="$2"; shift 2 ;;
     --width) WIDTH="$2"; shift 2 ;;
     --height) HEIGHT="$2"; shift 2 ;;
@@ -86,17 +88,91 @@ run_lerobot() {
   "${BIN}/${tool}" "$@"
 }
 
-CAMERA_CONFIG="{ front: {type: opencv, index_or_path: ${CAMERA_INDEX}, width: ${WIDTH}, height: ${HEIGHT}, fps: ${FPS}}}"
+json_detect_ports() {
+  "${PYTHON}" - <<'PY'
+import json
+import re
+from serial.tools import list_ports
+
+try:
+    from lerobot.scripts.lerobot_find_port import find_available_ports
+except Exception:
+    find_available_ports = None
+
+def is_candidate(device="", description="", manufacturer="", hwid=""):
+    text = " ".join(str(value or "") for value in (device, description, manufacturer, hwid)).lower()
+    if "bluetooth" in text or "debug-console" in text:
+        return False
+    if re.fullmatch(r"com\d+", str(device or "").lower()):
+        return True
+    return any(token in text for token in ("usb", "acm", "serial", "ch340", "cp210", "ftdi", "wch"))
+
+lerobot_ports = find_available_ports() if find_available_ports else []
+items = []
+seen = set()
+for port in list_ports.comports():
+    device = port.device
+    if not is_candidate(device, port.description, port.manufacturer, port.hwid):
+        continue
+    seen.add(device)
+    items.append({
+        "device": device,
+        "name": port.name,
+        "description": port.description,
+        "manufacturer": port.manufacturer,
+        "hwid": port.hwid,
+    })
+for device in lerobot_ports:
+    if device not in seen and is_candidate(device):
+        items.append({"device": device})
+print("LeRobot find-port USB serial candidates:")
+for item in items:
+    detail = " - ".join(str(item.get(key) or "") for key in ("description", "manufacturer", "hwid")).strip(" -")
+    print(f"  {item['device']}" + (f" ({detail})" if detail else ""))
+print("ROBOTCLOUD_PORTS_JSON=" + json.dumps(items, ensure_ascii=False))
+PY
+}
+
+json_detect_cameras() {
+  "${PYTHON}" - "${DATA_DIR}/captured_images" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+output_dir = Path(sys.argv[1])
+try:
+    from lerobot.scripts.lerobot_find_cameras import find_and_print_cameras
+except Exception as exc:
+    raise SystemExit(f"Could not import lerobot camera finder: {exc}")
+
+cameras = find_and_print_cameras("opencv")
+output_dir.mkdir(parents=True, exist_ok=True)
+print("ROBOTCLOUD_CAMERAS_JSON=" + json.dumps(cameras, ensure_ascii=False, default=str))
+PY
+}
+
+camera_ref_for_config() {
+  local value="${CAMERA_ID:-${CAMERA_INDEX}}"
+  if [[ "${value}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${value}"
+    return
+  fi
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  printf '"%s"' "${value}"
+}
+
+CAMERA_CONFIG="{ front: {type: opencv, index_or_path: $(camera_ref_for_config), width: ${WIDTH}, height: ${HEIGHT}, fps: ${FPS}}}"
 
 case "${ACTION}" in
   info)
     run_lerobot lerobot-info
     ;;
   ports)
-    "${PYTHON}" -m serial.tools.list_ports
+    json_detect_ports
     ;;
   cameras)
-    run_lerobot lerobot-find-cameras opencv --output-dir "${DATA_DIR}/captured_images" --record-time-s 3
+    json_detect_cameras
     ;;
   setup-follower)
     require_port "${FOLLOWER_PORT}" "follower port"

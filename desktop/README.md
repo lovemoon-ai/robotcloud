@@ -78,6 +78,20 @@ WebView2 offline installer. The app extracts the runtime into its app data
 directory on first SO101 or terminal use, so installation itself does not need
 network access.
 
+Runtime lookup order:
+
+```text
+1. ROBOTCLOUD_LEROBOT_ENV, when set
+2. Previously extracted app data runtime
+3. Bundled runtime resources in the installed app
+4. Bundled runtime zip, extracted into app data on first status/command use
+```
+
+The SO101 workbench does not assume fixed serial ports or camera indexes.
+Use **Detect ports** to call LeRobot's find-port helpers and fill the follower /
+leader candidates, then use **Detect cameras** to call LeRobot camera discovery
+and fill the OpenCV camera id plus default profile.
+
 Runtime zips are build artifacts and are intentionally ignored by Git because
 they exceed normal repository size limits. The Windows packaging script can
 build `lerobot-env-win.zip` with micromamba, or copy an existing archive from
