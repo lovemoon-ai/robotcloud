@@ -199,7 +199,7 @@ describe("robotCloudApi", () => {
         data: {
           payment_id: "pay_1",
           target_role: "plus",
-          amount_cents: 20000,
+          amount_cents: 60000,
           currency: "CNY",
           provider: "alipay",
           status: "pending",

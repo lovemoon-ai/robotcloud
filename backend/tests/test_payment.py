@@ -237,7 +237,7 @@ def test_dev_mode_payment_amount(client: APIClient, create_user_token, auth_head
     if settings.DEBUG:
         assert payment["amount_cents"] == 1
     else:
-        assert payment["amount_cents"] == 20000  # Plus price: 200 RMB
+        assert payment["amount_cents"] == 60000  # Plus price: 600 RMB
 
 
 @override_settings(DEBUG=True)

@@ -42,9 +42,9 @@ DEFAULT_DATASET_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 class RobotCloudService:
     """Domain service that encapsulates RobotCloud business logic."""
 
-    # Only Plus plan is available: 200 RMB/month (20000 cents)
+    # Only Plus plan is available: 600 RMB/month (60000 cents)
     PLAN_PRICING = {
-        User.ROLE_PLUS: {"amount_cents": 20000, "currency": "CNY", "description": "RobotCloud Plus Subscription - 1 month"},
+        User.ROLE_PLUS: {"amount_cents": 60000, "currency": "CNY", "description": "RobotCloud Plus Subscription - 1 month"},
     }
     TRAINING_PRIORITY_BY_ROLE = {
         User.ROLE_PRO: 100,
