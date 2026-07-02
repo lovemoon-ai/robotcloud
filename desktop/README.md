@@ -1,20 +1,32 @@
 # RobotCloud Tauri
 
 This is the Rust/Tauri implementation of RobotCloud Desktop. It loads the
-RobotCloud web frontend from the network and exposes local SO101/LeRobot
-capabilities through a narrow JavaScript bridge.
+RobotCloud web frontend and exposes local SO101/LeRobot capabilities through a
+narrow JavaScript bridge.
 
-Default web URL:
+Default web URLs:
 
 ```text
-https://robotcloud.conductor-ai.top/so101/
+debug:   http://127.0.0.1:3000/so101/
+release: https://robotcloud.conductor-ai.top/so101/
 ```
 
-For local desktop frontend testing, start the frontend and point the shell at
-the local SO101 route:
+For local desktop frontend testing, start the frontend dev server, then run the
+desktop shell:
+
+```bash
+cd ../frontend
+npm run dev
+```
+
+```bash
+pnpm dev
+```
+
+To point the debug shell at a different local frontend port, override the URL:
 
 ```powershell
-$env:ROBOTCLOUD_DESKTOP_URL="http://127.0.0.1:3000/so101/"
+$env:ROBOTCLOUD_DESKTOP_URL="http://127.0.0.1:6151/so101/"
 pnpm dev
 ```
 

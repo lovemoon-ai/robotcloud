@@ -14,7 +14,8 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
-const DEFAULT_WEB_URL: &str = "https://robotcloud.conductor-ai.top/so101/";
+const RELEASE_WEB_URL: &str = "https://robotcloud.conductor-ai.top/so101/";
+const DEBUG_WEB_URL: &str = "http://127.0.0.1:3000/so101/";
 
 const BRIDGE_SCRIPT: &str = r#"
 (function () {
@@ -164,8 +165,16 @@ struct So101RunConfig {
     display_data: Option<bool>,
 }
 
+fn default_web_url() -> &'static str {
+    if cfg!(debug_assertions) {
+        DEBUG_WEB_URL
+    } else {
+        RELEASE_WEB_URL
+    }
+}
+
 fn web_url() -> String {
-    env::var("ROBOTCLOUD_DESKTOP_URL").unwrap_or_else(|_| DEFAULT_WEB_URL.to_string())
+    env::var("ROBOTCLOUD_DESKTOP_URL").unwrap_or_else(|_| default_web_url().to_string())
 }
 
 fn api_base_url() -> String {
@@ -1195,6 +1204,18 @@ mod tests {
         So101RunConfig {
             action: action.to_string(),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_web_url_follows_build_profile() {
+        if cfg!(debug_assertions) {
+            assert_eq!(default_web_url(), "http://127.0.0.1:3000/so101/");
+        } else {
+            assert_eq!(
+                default_web_url(),
+                "https://robotcloud.conductor-ai.top/so101/"
+            );
         }
     }
 
