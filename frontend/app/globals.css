@@ -3,51 +3,55 @@
 @tailwind utilities;
 
 :root {
-  /* Light mode colors - 紫色主题 */
-  --color-bg: #fbfbfb;
-  --color-bg-secondary: #d7d9fa;
-  --color-primary: #645ba1;
-  --color-text: #363c87;
-  --color-text-secondary: #645ba1;
-  --color-border: #d7d9fa;
+  --color-bg: #f7f7f7;
+  --color-bg-secondary: #ededed;
+  --color-primary: #111111;
+  --color-primary-rgb: 17 17 17;
+  --color-on-primary: #f7f7f7;
+  --color-text: #111111;
+  --color-text-secondary: #5f5f5f;
+  --color-border: #d8d8d8;
   --color-card: #ffffff;
-  --color-card-hover: #d7d9fa;
-  --color-header: rgba(251, 251, 251, 0.95);
-  --color-accent: #645ba1;
-  --color-accent-light: rgba(100, 91, 161, 0.1);
-  --color-accent-dark: #363c87;
+  --color-card-hover: #ededed;
+  --color-header: rgba(247, 247, 247, 0.94);
+  --color-accent: #111111;
+  --color-accent-light: #ededed;
+  --color-accent-dark: #3f3f3f;
 }
 
 [data-theme="dark"] {
-  /* Dark mode colors - 紫色主题 */
-  --color-bg: #1a1d3a;
-  --color-bg-secondary: #2a2d52;
-  --color-primary: #9f9fdd;
-  --color-text: #fbfbfb;
-  --color-text-secondary: #d7d9fa;
-  --color-border: #645ba1;
-  --color-card: #2a2d52;
-  --color-card-hover: #363c87;
-  --color-header: rgba(26, 29, 58, 0.95);
-  --color-accent: #9f9fdd;
-  --color-accent-light: rgba(159, 159, 221, 0.2);
-  --color-accent-dark: #d7d9fa;
+  --color-bg: #0b0b0b;
+  --color-bg-secondary: #1f1f1f;
+  --color-primary: #f5f5f5;
+  --color-primary-rgb: 245 245 245;
+  --color-on-primary: #0b0b0b;
+  --color-text: #f5f5f5;
+  --color-text-secondary: #b3b3b3;
+  --color-border: #343434;
+  --color-card: #141414;
+  --color-card-hover: #242424;
+  --color-header: rgba(11, 11, 11, 0.94);
+  --color-accent: #f5f5f5;
+  --color-accent-light: #242424;
+  --color-accent-dark: #b3b3b3;
 }
 
 /* Legacy dark mode support */
 .dark {
-  --color-bg: #1a1d3a;
-  --color-bg-secondary: #2a2d52;
-  --color-primary: #9f9fdd;
-  --color-text: #fbfbfb;
-  --color-text-secondary: #d7d9fa;
-  --color-border: #645ba1;
-  --color-card: #2a2d52;
-  --color-card-hover: #363c87;
-  --color-header: rgba(26, 29, 58, 0.95);
-  --color-accent: #9f9fdd;
-  --color-accent-light: rgba(159, 159, 221, 0.2);
-  --color-accent-dark: #d7d9fa;
+  --color-bg: #0b0b0b;
+  --color-bg-secondary: #1f1f1f;
+  --color-primary: #f5f5f5;
+  --color-primary-rgb: 245 245 245;
+  --color-on-primary: #0b0b0b;
+  --color-text: #f5f5f5;
+  --color-text-secondary: #b3b3b3;
+  --color-border: #343434;
+  --color-card: #141414;
+  --color-card-hover: #242424;
+  --color-header: rgba(11, 11, 11, 0.94);
+  --color-accent: #f5f5f5;
+  --color-accent-light: #242424;
+  --color-accent-dark: #b3b3b3;
 }
 
 * {
@@ -58,11 +62,7 @@ body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background-color: var(--color-bg);
   color: var(--color-text);
-}
-
-main {
-  min-height: calc(100vh - 80px);
-  padding: 1.5rem;
+  min-height: 100vh;
 }
 
 /* Custom utility classes */
@@ -78,6 +78,10 @@ main {
   .bg-card {
     background-color: var(--color-card);
   }
+
+  .bg-theme-primary {
+    background-color: var(--color-primary);
+  }
   
   .bg-header {
     background-color: var(--color-header);
@@ -85,6 +89,10 @@ main {
   
   .text-primary {
     color: var(--color-primary);
+  }
+
+  .text-on-primary {
+    color: var(--color-on-primary);
   }
   
   .text-body {
@@ -97,6 +105,11 @@ main {
   
   .border-theme {
     border-color: var(--color-border);
+  }
+
+  .text-primary-light,
+  .text-primary-lighter {
+    color: var(--color-primary);
   }
   
   .accent-bg {
@@ -116,14 +129,11 @@ main {
   }
   
   .gradient-primary {
-    background: linear-gradient(135deg, var(--color-primary), var(--color-accent-dark));
+    background: linear-gradient(135deg, #111111, #4b4b4b);
   }
   
   .gradient-text {
-    background: linear-gradient(135deg, var(--color-primary), var(--color-accent-dark));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    color: var(--color-text);
   }
 }
 

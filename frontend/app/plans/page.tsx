@@ -161,7 +161,7 @@ function PlansContent() {
           style={{ backgroundColor: 'var(--color-card)' }}
         >
           {isFree && (
-            <span className="absolute right-4 top-4 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-white">
+            <span className="absolute right-4 top-4 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-on-primary">
               {copy.currentBadge}
             </span>
           )}
@@ -182,7 +182,7 @@ function PlansContent() {
             disabled={!isFree}
             className={`mt-6 w-full rounded-lg px-4 py-2.5 text-sm font-semibold transition ${
               isFree
-                ? "bg-primary text-white shadow-lg shadow-primary/30 cursor-default"
+                ? "bg-primary text-on-primary shadow-lg shadow-primary/30 cursor-default"
                 : "border border-theme bg-surface-secondary text-muted cursor-not-allowed"
             }`}
           >
@@ -204,7 +204,7 @@ function PlansContent() {
         >
           <span className={`absolute right-4 top-4 rounded-full px-3 py-1 text-xs font-semibold ${
             isPlus
-              ? "bg-primary text-white"
+              ? "bg-primary text-on-primary"
               : "accent-bg accent-text"
           }`}>
             {isPlus ? copy.currentBadge : copy.popularBadge}
@@ -227,7 +227,7 @@ function PlansContent() {
             disabled={isPlus || loading || !token}
             className={`mt-6 w-full rounded-lg px-4 py-2.5 text-sm font-semibold transition ${
               isPlus
-                ? "bg-primary text-white shadow-lg shadow-primary/30 cursor-default"
+                ? "bg-primary text-on-primary shadow-lg shadow-primary/30 cursor-default"
                 : "gradient-primary hover:opacity-90 disabled:opacity-60 text-white"
             }`}
           >

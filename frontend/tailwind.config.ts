@@ -6,31 +6,30 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // 紫色主题色
         primary: {
-          DEFAULT: "#645ba1",
-          50: "#fbfbfb",
-          100: "#d7d9fa",
-          200: "#b8baed",
-          300: "#9f9fdd",
-          400: "#7d79c1",
-          500: "#645ba1",
-          600: "#504994",
-          700: "#363c87",
-          800: "#2a2d52",
-          900: "#1a1d3a"
+          DEFAULT: "rgb(var(--color-primary-rgb) / <alpha-value>)",
+          50: "#fafafa",
+          100: "#f4f4f5",
+          200: "#e4e4e7",
+          300: "#d4d4d8",
+          400: "#a1a1aa",
+          500: "#71717a",
+          600: "#52525b",
+          700: "#3f3f46",
+          800: "#27272a",
+          900: "#111111"
         },
         surface: {
-          DEFAULT: "#fbfbfb",
-          dark: "#1a1d3a"
+          DEFAULT: "#f7f7f7",
+          dark: "#0b0b0b"
         },
         background: {
-          light: "#fbfbfb",
-          dark: "#1a1d3a"
+          light: "#f7f7f7",
+          dark: "#0b0b0b"
         },
         card: {
           light: "#ffffff",
-          dark: "#2a2d52"
+          dark: "#141414"
         }
       }
     }
