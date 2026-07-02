@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { useRouter } from "next/navigation";
-import { useDesktopBridgeAvailable } from "@/hooks/useDesktopBridgeAvailable";
+import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
 
 type FormState = {
   followerPort: string;
@@ -144,8 +144,7 @@ function cameraId(camera: CameraInfo) {
 
 export function SO101Client() {
   const router = useRouter();
-  const isDesktop = useDesktopBridgeAvailable();
-  const [bridgeChecked, setBridgeChecked] = useState(false);
+  const desktopBridgeAvailability = useDesktopBridgeAvailability();
   const [form, setForm] = useState<FormState>(initialForm);
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
@@ -157,22 +156,13 @@ export function SO101Client() {
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
   const terminalRef = useRef<{ write: (data: string) => void; focus: () => void; dispose: () => void; resize: (cols: number, rows: number) => void; onData: (cb: (data: string) => void) => { dispose: () => void } } | null>(null);
   const terminalSessionRef = useRef<string | null>(null);
-  const desktop = typeof window !== "undefined" ? window.robotcloudDesktop : undefined;
-  const bridgeReady = isDesktop || Boolean(desktop?.isDesktop);
+  const bridgeReady = desktopBridgeAvailability === "available";
 
   useEffect(() => {
-    if (bridgeReady) {
-      setBridgeChecked(true);
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      setBridgeChecked(true);
+    if (desktopBridgeAvailability === "unavailable") {
       router.replace("/");
-    }, 5000);
-
-    return () => window.clearTimeout(timer);
-  }, [bridgeReady, router]);
+    }
+  }, [desktopBridgeAvailability, router]);
 
   const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -396,16 +386,7 @@ export function SO101Client() {
   );
 
   if (!bridgeReady) {
-    return (
-      <main className="space-y-4">
-        <h1 className="text-3xl font-bold text-body">SO101 Desktop Workbench</h1>
-        <p className="text-sm text-muted">
-          {bridgeChecked
-            ? "This page is available from RobotCloud Desktop."
-            : "Checking RobotCloud Desktop bridge..."}
-        </p>
-      </main>
-    );
+    return null;
   }
 
   return (
@@ -426,11 +407,6 @@ export function SO101Client() {
             Refresh status
           </button>
         </div>
-        {!bridgeReady ? (
-          <p className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">
-            Desktop bridge is not available. Open this page from the RobotCloud Desktop app to control local hardware.
-          </p>
-        ) : null}
       </header>
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
