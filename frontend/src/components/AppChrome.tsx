@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ComponentType, ReactNode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useDesktopBridgeAvailable } from "@/hooks/useDesktopBridgeAvailable";
 import { useAuthStore } from "@/store/useAuthStore";
 import { Logo } from "@/components/Logo";
 import { getSections } from "@/components/shell/sections";
@@ -178,7 +177,6 @@ function isActiveRoute(pathname: string, href: string) {
 export function AppChrome({ children }: AppChromeProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const isDesktopBridge = useDesktopBridgeAvailable();
   const storedSidebarCollapsed = useSyncExternalStore(subscribeToHydration, getSidebarCollapsedSnapshot, () => false);
   const [sidebarCollapsedOverride, setSidebarCollapsedOverride] = useState<boolean | null>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -204,7 +202,7 @@ export function AppChrome({ children }: AppChromeProps) {
   const isZh = locale === "zh";
   const isDark = theme === "dark";
   const initials = phone ? phone.slice(-2) : "";
-  const navItems = getSections(locale, { includeDesktopOnly: isDesktopBridge });
+  const navItems = getSections(locale);
   const activeSection = navItems.find((item) => isActiveRoute(pathname, item.href));
 
   const copy = {
