@@ -4,6 +4,11 @@ type ShellSection = {
   title: string;
   description: string;
   href: string;
+  desktopOnly?: boolean;
+};
+
+type GetSectionsOptions = {
+  includeDesktopOnly?: boolean;
 };
 
 const sectionsByLocale = {
@@ -11,7 +16,8 @@ const sectionsByLocale = {
     {
       title: "SO101 Desktop",
       description: "Local setup, calibration, teleoperation, recording, and terminal tools.",
-      href: "/so101"
+      href: "/so101",
+      desktopOnly: true
     },
     {
       title: "数据管理",
@@ -53,7 +59,8 @@ const sectionsByLocale = {
     {
       title: "SO101 Desktop",
       description: "Set up, calibrate, teleoperate, record data, and run local LeRobot commands.",
-      href: "/so101"
+      href: "/so101",
+      desktopOnly: true
     },
     {
       title: "Datasets",
@@ -95,6 +102,10 @@ const sectionsByLocale = {
 
 export const sections = sectionsByLocale;
 
-export function getSections(locale: Locale) {
-  return sectionsByLocale[locale] as readonly ShellSection[];
+export function getSections(locale: Locale, options: GetSectionsOptions = {}) {
+  const items = sectionsByLocale[locale] as readonly ShellSection[];
+  if (options.includeDesktopOnly) {
+    return items;
+  }
+  return items.filter((item) => !item.desktopOnly);
 }

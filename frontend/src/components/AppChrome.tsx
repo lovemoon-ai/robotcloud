@@ -6,6 +6,7 @@ import { ComponentType, ReactNode, useCallback, useEffect, useRef, useState, use
 import { useAuthStore } from "@/store/useAuthStore";
 import { Logo } from "@/components/Logo";
 import { getSections } from "@/components/shell/sections";
+import { useDesktopBridgeAvailable } from "@/hooks/useDesktopBridgeAvailable";
 import { useLocaleStore } from "@/store/useLocaleStore";
 import { useThemeStore } from "@/store/useThemeStore";
 
@@ -202,7 +203,8 @@ export function AppChrome({ children }: AppChromeProps) {
   const isZh = locale === "zh";
   const isDark = theme === "dark";
   const initials = phone ? phone.slice(-2) : "";
-  const navItems = getSections(locale);
+  const isDesktopBridgeAvailable = useDesktopBridgeAvailable();
+  const navItems = getSections(locale, { includeDesktopOnly: isDesktopBridgeAvailable });
   const activeSection = navItems.find((item) => isActiveRoute(pathname, item.href));
 
   const copy = {
