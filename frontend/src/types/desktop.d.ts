@@ -38,13 +38,15 @@ type So101RunConfig = {
 };
 
 type ProcessOutputEvent = {
-  runId: string;
+  runId?: string;
+  run_id?: string;
   stream: "stdout" | "stderr" | "system";
   data: string;
 };
 
 type ProcessExitEvent = {
-  runId: string;
+  runId?: string;
+  run_id?: string;
   code: number | null;
   signal: string | null;
 };

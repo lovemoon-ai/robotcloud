@@ -142,6 +142,10 @@ function cameraId(camera: CameraInfo) {
   return String(id);
 }
 
+function processRunId(event: ProcessOutputEvent | ProcessExitEvent) {
+  return event.runId ?? event.run_id ?? "";
+}
+
 export function SO101Client() {
   const router = useRouter();
   const isDesktop = useDesktopBridgeAvailable();
@@ -256,8 +260,9 @@ export function SO101Client() {
       appendLog(setLogs, event.stream, event.data);
     });
     const offExit = window.robotcloudDesktop.so101.onExit((event) => {
-      appendLog(setLogs, "system", `\n[process ${event.runId} exited: code=${event.code ?? "null"} signal=${event.signal ?? "null"}]\n`);
-      setActiveRunId((current) => (current === event.runId ? null : current));
+      const runId = processRunId(event);
+      appendLog(setLogs, "system", `\n[process ${runId || "unknown"} exited: code=${event.code ?? "null"} signal=${event.signal ?? "null"}]\n`);
+      setActiveRunId((current) => (current === runId ? null : current));
       refreshStatus().catch(() => undefined);
     });
     return () => {
@@ -379,10 +384,14 @@ export function SO101Client() {
     if (!activeRunId || !window.robotcloudDesktop) return;
     const stoppedRunId = activeRunId;
     const result = await window.robotcloudDesktop.so101.stop(stoppedRunId);
-    if (result.stopped) {
-      appendLog(setLogs, "system", `\n[stop requested for ${stoppedRunId}]\n`);
-      setActiveRunId(null);
-    }
+    appendLog(
+      setLogs,
+      "system",
+      result.stopped
+        ? `\n[stop requested for ${stoppedRunId}]\n`
+        : `\n[process ${stoppedRunId} was already stopped]\n`
+    );
+    setActiveRunId(null);
   };
 
   const statusCards = useMemo(
