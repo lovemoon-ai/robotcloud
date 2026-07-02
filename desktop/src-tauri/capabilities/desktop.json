@@ -4,6 +4,7 @@
   "windows": ["main"],
   "remote": {
     "urls": [
+      "https://robotcloud.conductor-ai.top/so101/*",
       "https://robotcloud.conductor-ai.top/desktop/*"
     ]
   },

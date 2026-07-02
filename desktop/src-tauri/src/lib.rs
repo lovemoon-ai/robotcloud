@@ -14,7 +14,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
-const DEFAULT_WEB_URL: &str = "https://robotcloud.conductor-ai.top/desktop/so101/";
+const DEFAULT_WEB_URL: &str = "https://robotcloud.conductor-ai.top/so101/";
 
 const BRIDGE_SCRIPT: &str = r#"
 (function () {
