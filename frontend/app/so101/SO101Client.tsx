@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
 
@@ -32,6 +32,17 @@ type TerminalPhase = "starting" | "ready" | "failed" | "closed";
 type CheckPhase = "idle" | "checking" | "valid" | "invalid";
 type CheckState = { phase: CheckPhase; message: string };
 type PortKey = "followerPort" | "leaderPort";
+type TerminalDisposable = { dispose: () => void };
+type TerminalHandle = {
+  write: (data: string) => void;
+  focus: () => void;
+  dispose: () => void;
+  resize: (cols: number, rows: number) => void;
+  onData: (cb: (data: string) => void) => TerminalDisposable;
+  open: (element: HTMLElement) => void;
+  element?: HTMLElement;
+};
+type TerminalStoreSnapshot = { phase: TerminalPhase; error: string | null };
 type ActionId =
   | "info"
   | "setup-follower"
@@ -81,7 +92,7 @@ const initialForm: FormState = {
   teleopTimeS: 5,
   maxRelativeTarget: 5,
   displayData: false,
-  task: "SO-101 desktop teleoperation"
+  task: ""
 };
 
 const idleCheck: CheckState = { phase: "idle", message: "" };
@@ -290,7 +301,8 @@ export const so101TestExports = {
   parseConnectionSettings,
   serializeConnectionSettings,
   buildActionCommand,
-  shellArg
+  shellArg,
+  resetPersistentTerminalForTest
 };
 
 function statusLabel(phase: TerminalPhase) {
@@ -298,6 +310,209 @@ function statusLabel(phase: TerminalPhase) {
   if (phase === "failed") return "Failed";
   if (phase === "closed") return "Closed";
   return "Starting";
+}
+
+const persistentTerminalStore: {
+  term: TerminalHandle | null;
+  sessionId: string | null;
+  shell: string | null;
+  phase: TerminalPhase;
+  error: string | null;
+  starting: Promise<void> | null;
+  inputDisposable: TerminalDisposable | null;
+  offOutput: (() => void) | null;
+  offExit: (() => void) | null;
+  resizeObserver: ResizeObserver | null;
+  host: HTMLDivElement | null;
+  listeners: Set<() => void>;
+} = {
+  term: null,
+  sessionId: null,
+  shell: null,
+  phase: "starting",
+  error: null,
+  starting: null,
+  inputDisposable: null,
+  offOutput: null,
+  offExit: null,
+  resizeObserver: null,
+  host: null,
+  listeners: new Set()
+};
+
+function persistentTerminalSnapshot(): TerminalStoreSnapshot {
+  return {
+    phase: persistentTerminalStore.phase,
+    error: persistentTerminalStore.error
+  };
+}
+
+function notifyPersistentTerminalListeners() {
+  persistentTerminalStore.listeners.forEach((listener) => listener());
+}
+
+function subscribePersistentTerminal(listener: () => void) {
+  persistentTerminalStore.listeners.add(listener);
+  return () => {
+    persistentTerminalStore.listeners.delete(listener);
+  };
+}
+
+function setPersistentTerminalState(phase: TerminalPhase, error: string | null) {
+  persistentTerminalStore.phase = phase;
+  persistentTerminalStore.error = error;
+  notifyPersistentTerminalListeners();
+}
+
+function setPersistentTerminalError(error: string | null) {
+  persistentTerminalStore.error = error;
+  notifyPersistentTerminalListeners();
+}
+
+function disconnectPersistentTerminalResize() {
+  persistentTerminalStore.resizeObserver?.disconnect();
+  persistentTerminalStore.resizeObserver = null;
+}
+
+function resizePersistentTerminal(container: HTMLDivElement) {
+  const term = persistentTerminalStore.term;
+  const sessionId = persistentTerminalStore.sessionId;
+  if (!term || !sessionId) return;
+  const cols = Math.max(40, Math.floor(container.clientWidth / 8));
+  const rows = Math.max(14, Math.floor(container.clientHeight / 17));
+  term.resize(cols, rows);
+  window.robotcloudDesktop?.terminal.resize(sessionId, cols, rows).catch(() => undefined);
+}
+
+function attachPersistentTerminal(container: HTMLDivElement) {
+  const term = persistentTerminalStore.term;
+  if (!term) return;
+  persistentTerminalStore.host = container;
+  if (term.element) {
+    container.replaceChildren(term.element);
+  }
+  disconnectPersistentTerminalResize();
+  if (typeof ResizeObserver === "undefined") {
+    resizePersistentTerminal(container);
+  } else {
+    persistentTerminalStore.resizeObserver = new ResizeObserver(() => resizePersistentTerminal(container));
+    persistentTerminalStore.resizeObserver.observe(container);
+    resizePersistentTerminal(container);
+  }
+  term.focus();
+}
+
+function ensurePersistentTerminalListeners(bridge: DesktopBridge) {
+  if (!persistentTerminalStore.offOutput) {
+    persistentTerminalStore.offOutput = bridge.terminal.onOutput((event) => {
+      if (event.sessionId === persistentTerminalStore.sessionId) {
+        persistentTerminalStore.term?.write(event.data);
+      }
+    });
+  }
+
+  if (!persistentTerminalStore.offExit) {
+    persistentTerminalStore.offExit = bridge.terminal.onExit((event) => {
+      if (event.sessionId === persistentTerminalStore.sessionId) {
+        persistentTerminalStore.term?.write(`\r\n[terminal exited: code=${event.code ?? "null"}]\r\n`);
+        persistentTerminalStore.sessionId = null;
+        setPersistentTerminalState("closed", persistentTerminalStore.error);
+      }
+    });
+  }
+}
+
+function ensurePersistentTerminal(bridge: DesktopBridge, container: HTMLDivElement) {
+  persistentTerminalStore.host = container;
+  ensurePersistentTerminalListeners(bridge);
+
+  if (persistentTerminalStore.term) {
+    attachPersistentTerminal(container);
+    notifyPersistentTerminalListeners();
+    return;
+  }
+
+  if (persistentTerminalStore.starting) {
+    persistentTerminalStore.starting.then(() => {
+      if (persistentTerminalStore.host) {
+        attachPersistentTerminal(persistentTerminalStore.host);
+      }
+    });
+    return;
+  }
+
+  setPersistentTerminalState("starting", null);
+  persistentTerminalStore.starting = (async () => {
+    const [{ Terminal }, session] = await Promise.all([
+      import("@xterm/xterm"),
+      bridge.terminal.start()
+    ]);
+    const term = new Terminal({
+      cursorBlink: true,
+      convertEol: true,
+      fontFamily: "Cascadia Mono, Consolas, monospace",
+      fontSize: 13,
+      theme: {
+        background: "#07111f",
+        foreground: "#d9e8f2",
+        cursor: "#78dcca",
+        selectionBackground: "#28465f"
+      }
+    }) as TerminalHandle;
+    const host = persistentTerminalStore.host ?? container;
+    persistentTerminalStore.term = term;
+    persistentTerminalStore.sessionId = session.sessionId;
+    persistentTerminalStore.shell = session.shell;
+    term.open(host);
+    term.write(`RobotCloud terminal: ${session.shell}\r\n`);
+    persistentTerminalStore.inputDisposable = term.onData((data) => {
+      const sessionId = persistentTerminalStore.sessionId;
+      if (sessionId) {
+        window.robotcloudDesktop?.terminal.write(sessionId, data).catch(() => undefined);
+      }
+    });
+    if (persistentTerminalStore.host) {
+      attachPersistentTerminal(persistentTerminalStore.host);
+    }
+    setPersistentTerminalState("ready", null);
+  })()
+    .catch((error) => {
+      setPersistentTerminalState("failed", String(error));
+    })
+    .finally(() => {
+      persistentTerminalStore.starting = null;
+    });
+}
+
+function disposePersistentTerminalInstance() {
+  disconnectPersistentTerminalResize();
+  persistentTerminalStore.inputDisposable?.dispose();
+  const terminalElement = persistentTerminalStore.term?.element;
+  persistentTerminalStore.term?.dispose();
+  terminalElement?.remove();
+  persistentTerminalStore.term = null;
+  persistentTerminalStore.sessionId = null;
+  persistentTerminalStore.shell = null;
+  persistentTerminalStore.inputDisposable = null;
+}
+
+function restartPersistentTerminal(bridge: DesktopBridge, container: HTMLDivElement) {
+  disposePersistentTerminalInstance();
+  setPersistentTerminalState("starting", null);
+  ensurePersistentTerminal(bridge, container);
+}
+
+function resetPersistentTerminalForTest() {
+  disposePersistentTerminalInstance();
+  persistentTerminalStore.offOutput?.();
+  persistentTerminalStore.offExit?.();
+  persistentTerminalStore.phase = "starting";
+  persistentTerminalStore.error = null;
+  persistentTerminalStore.starting = null;
+  persistentTerminalStore.offOutput = null;
+  persistentTerminalStore.offExit = null;
+  persistentTerminalStore.host = null;
+  persistentTerminalStore.listeners.clear();
 }
 
 function CheckButton({
@@ -333,8 +548,7 @@ export function SO101Client() {
   const [connectionLoaded, setConnectionLoaded] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [status, setStatus] = useState<DesktopStatus | null>(null);
-  const [terminalPhase, setTerminalPhase] = useState<TerminalPhase>("starting");
-  const [terminalError, setTerminalError] = useState<string | null>(null);
+  const [terminalState, setTerminalState] = useState<TerminalStoreSnapshot>(() => persistentTerminalSnapshot());
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
   const [portChecks, setPortChecks] = useState<Record<PortKey, CheckState>>({
     followerPort: idleCheck,
@@ -346,9 +560,15 @@ export function SO101Client() {
     idleCheck
   ]);
   const [previewingCamera, setPreviewingCamera] = useState<number | null>(null);
-  const terminalRef = useRef<{ write: (data: string) => void; focus: () => void; dispose: () => void; resize: (cols: number, rows: number) => void; onData: (cb: (data: string) => void) => { dispose: () => void } } | null>(null);
-  const terminalSessionRef = useRef<string | null>(null);
+  const terminalPhase = terminalState.phase;
+  const terminalError = terminalState.error;
   const bridgeReady = desktopBridgeAvailability === "available";
+
+  useEffect(() => {
+    const syncTerminalState = () => setTerminalState(persistentTerminalSnapshot());
+    syncTerminalState();
+    return subscribePersistentTerminal(syncTerminalState);
+  }, []);
 
   useEffect(() => {
     const saved = parseConnectionSettings(window.localStorage.getItem(CONNECTION_STORAGE_KEY));
@@ -418,6 +638,11 @@ export function SO101Client() {
     setTerminalContainerEl(node);
   }, []);
 
+  const restartTerminal = () => {
+    if (!window.robotcloudDesktop || !terminalContainerEl) return;
+    restartPersistentTerminal(window.robotcloudDesktop, terminalContainerEl);
+  };
+
   const refreshStatus = useCallback(async () => {
     if (!window.robotcloudDesktop) {
       setStatus({
@@ -442,120 +667,35 @@ export function SO101Client() {
 
   useEffect(() => {
     if (!bridgeReady) return;
-    refreshStatus().catch((error) => setTerminalError(String(error)));
+    refreshStatus().catch((error) => setPersistentTerminalError(String(error)));
   }, [bridgeReady, refreshStatus]);
 
   useEffect(() => {
-    if (!bridgeReady || !window.robotcloudDesktop || !terminalContainerEl || terminalRef.current) return;
-    let disposed = false;
-    let terminalInputDisposable: { dispose: () => void } | null = null;
-    let resizeObserver: ResizeObserver | null = null;
-    setTerminalPhase("starting");
-    setTerminalError(null);
-
-    async function startTerminal() {
-      const [{ Terminal }, session] = await Promise.all([
-        import("@xterm/xterm"),
-        window.robotcloudDesktop!.terminal.start()
-      ]);
-      if (disposed || !terminalContainerEl) {
-        await window.robotcloudDesktop?.terminal.stop(session.sessionId).catch(() => undefined);
-        return;
-      }
-      const term = new Terminal({
-        cursorBlink: true,
-        convertEol: true,
-        fontFamily: "Cascadia Mono, Consolas, monospace",
-        fontSize: 13,
-        theme: {
-          background: "#07111f",
-          foreground: "#d9e8f2",
-          cursor: "#78dcca",
-          selectionBackground: "#28465f"
-        }
-      });
-      term.open(terminalContainerEl);
-      term.write(`RobotCloud terminal: ${session.shell}\r\n`);
-      terminalSessionRef.current = session.sessionId;
-
-      const resizeTerminal = () => {
-        const container = terminalContainerEl;
-        const currentSessionId = terminalSessionRef.current;
-        if (!container || !currentSessionId) return;
-        const cols = Math.max(40, Math.floor(container.clientWidth / 8));
-        const rows = Math.max(14, Math.floor(container.clientHeight / 17));
-        term.resize(cols, rows);
-        window.robotcloudDesktop?.terminal.resize(currentSessionId, cols, rows).catch(() => undefined);
-      };
-
-      terminalInputDisposable = term.onData((data) => {
-        const currentSessionId = terminalSessionRef.current;
-        if (currentSessionId) {
-          window.robotcloudDesktop?.terminal.write(currentSessionId, data);
-        }
-      });
-      terminalRef.current = term;
-      resizeObserver = new ResizeObserver(resizeTerminal);
-      resizeObserver.observe(terminalContainerEl);
-      resizeTerminal();
-      term.focus();
-      setTerminalPhase("ready");
-    }
-
-    startTerminal().catch((error) => {
-      setTerminalPhase("failed");
-      setTerminalError(String(error));
-    });
+    if (!bridgeReady || !window.robotcloudDesktop || !terminalContainerEl) return;
+    ensurePersistentTerminal(window.robotcloudDesktop, terminalContainerEl);
     return () => {
-      disposed = true;
-      const sessionId = terminalSessionRef.current;
-      if (sessionId) {
-        window.robotcloudDesktop?.terminal.stop(sessionId).catch(() => undefined);
+      if (persistentTerminalStore.host === terminalContainerEl) {
+        persistentTerminalStore.host = null;
       }
-      terminalInputDisposable?.dispose();
-      resizeObserver?.disconnect();
-      terminalRef.current?.dispose();
-      terminalRef.current = null;
-      terminalSessionRef.current = null;
-      setTerminalPhase((current) => (current === "ready" || current === "starting" ? "closed" : current));
+      disconnectPersistentTerminalResize();
     };
   }, [bridgeReady, terminalContainerEl]);
 
-  useEffect(() => {
-    if (!bridgeReady || !window.robotcloudDesktop) return;
-    const offOutput = window.robotcloudDesktop.terminal.onOutput((event) => {
-      if (event.sessionId === terminalSessionRef.current) {
-        terminalRef.current?.write(event.data);
-      }
-    });
-    const offExit = window.robotcloudDesktop.terminal.onExit((event) => {
-      if (event.sessionId === terminalSessionRef.current) {
-        terminalRef.current?.write(`\r\n[terminal exited: code=${event.code ?? "null"}]\r\n`);
-        setTerminalPhase("closed");
-        terminalSessionRef.current = null;
-      }
-    });
-    return () => {
-      offOutput();
-      offExit();
-    };
-  }, [bridgeReady]);
-
   const writeTerminalCommand = async (command: string) => {
-    const sessionId = terminalSessionRef.current;
+    const sessionId = persistentTerminalStore.sessionId;
     if (!sessionId || !window.robotcloudDesktop) {
       throw new Error("Terminal is not ready.");
     }
     await window.robotcloudDesktop.terminal.write(sessionId, `${command}\r`);
-    terminalRef.current?.focus();
+    persistentTerminalStore.term?.focus();
   };
 
   const runAction = async (action: ActionId) => {
     try {
-      setTerminalError(null);
+      setPersistentTerminalError(null);
       await writeTerminalCommand(buildActionCommand(action, form, status, cameraCount));
     } catch (error) {
-      setTerminalError(String(error));
+      setPersistentTerminalError(String(error));
     }
   };
 
@@ -661,6 +801,15 @@ export function SO101Client() {
           <h2 className="text-xl font-semibold accent-text">Terminal</h2>
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted">{statusLabel(terminalPhase)}</span>
+            {terminalPhase === "closed" || terminalPhase === "failed" ? (
+              <button
+                type="button"
+                onClick={restartTerminal}
+                className="rounded-md border border-theme px-3 py-1.5 text-xs font-semibold accent-text transition hover:accent-bg"
+              >
+                New terminal
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => setActionsOpen((current) => !current)}
@@ -689,7 +838,7 @@ export function SO101Client() {
         ) : null}
         <div
           ref={terminalContainerRef}
-          onClick={() => terminalRef.current?.focus()}
+          onClick={() => persistentTerminalStore.term?.focus()}
           className="mt-4 h-[30rem] overflow-hidden rounded-md border border-theme bg-[#07111f] p-2"
         />
         {terminalError ? <p className="mt-3 text-xs text-red-400">{terminalError}</p> : null}
@@ -840,7 +989,12 @@ export function SO101Client() {
               </label>
               <label className="text-sm md:col-span-2">
                 <span className="text-muted">Task label</span>
-                <input value={form.task} onChange={(event) => updateField("task", event.target.value)} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+                <input
+                  value={form.task}
+                  onChange={(event) => updateField("task", event.target.value)}
+                  placeholder="Descripe your task ..."
+                  className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body"
+                />
               </label>
               <label className="flex items-center gap-2 text-sm text-muted">
                 <input type="checkbox" checked={form.displayData} onChange={(event) => updateField("displayData", event.target.checked)} />

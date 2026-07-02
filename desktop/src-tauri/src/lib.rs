@@ -11,7 +11,7 @@ use std::{
     thread,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use uuid::Uuid;
 
 const RELEASE_WEB_URL: &str = "https://robotcloud.conductor-ai.top/so101/";
@@ -1001,6 +1001,22 @@ fn watch_terminal_process(
     });
 }
 
+fn kill_terminal_session(session: &TerminalSession) -> Result<(), String> {
+    let mut child = session.child.lock().map_err(|error| error.to_string())?;
+    let _ = child.kill();
+    Ok(())
+}
+
+fn kill_all_terminals(terminals: &Arc<Mutex<HashMap<String, TerminalSession>>>) {
+    let sessions = match terminals.lock() {
+        Ok(mut map) => map.drain().map(|(_, session)| session).collect::<Vec<_>>(),
+        Err(_) => return,
+    };
+    for session in sessions {
+        let _ = kill_terminal_session(&session);
+    }
+}
+
 const CAMERA_VALIDATE_SCRIPT: &str = r#"
 import sys
 
@@ -1464,8 +1480,7 @@ fn terminal_stop(state: State<AppState>, session_id: String) -> Result<serde_jso
         .get(&session_id)
         .cloned();
     if let Some(session) = session {
-        let mut child = session.child.lock().map_err(|error| error.to_string())?;
-        let _ = child.kill();
+        kill_terminal_session(&session)?;
         Ok(serde_json::json!({ "stopped": true }))
     } else {
         Ok(serde_json::json!({ "stopped": false }))
@@ -1487,6 +1502,13 @@ pub fn run() {
             terminal_resize,
             terminal_stop
         ])
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+                let state = window.state::<AppState>();
+                kill_all_terminals(&state.terminals);
+            }
+            _ => {}
+        })
         .setup(|app| {
             let url = web_url();
             let parsed_url = url::Url::parse(&url).map_err(|error| {

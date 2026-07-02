@@ -1,7 +1,32 @@
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { SO101Client, so101TestExports } from "../app/so101/SO101Client";
 
 const mockReplace = jest.fn();
+
+jest.mock("@xterm/xterm", () => ({
+  Terminal: class MockTerminal {
+    element?: HTMLElement;
+    focus = jest.fn();
+    resize = jest.fn();
+    dispose = jest.fn();
+
+    open(parent: HTMLElement) {
+      this.element = document.createElement("div");
+      this.element.dataset.testid = "mock-xterm";
+      parent.appendChild(this.element);
+    }
+
+    write(data: string) {
+      if (this.element) {
+        this.element.textContent = `${this.element.textContent ?? ""}${data}`;
+      }
+    }
+
+    onData() {
+      return { dispose: jest.fn() };
+    }
+  }
+}));
 
 jest.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -10,6 +35,10 @@ jest.mock("next/navigation", () => ({
     prefetch: jest.fn()
   })
 }));
+
+afterEach(() => {
+  so101TestExports.resetPersistentTerminalForTest();
+});
 
 describe("SO101 page environment guard", () => {
   beforeEach(() => {
@@ -35,6 +64,125 @@ describe("SO101 page environment guard", () => {
 
     expect(container).toHaveTextContent("Starting RobotCloud Desktop");
     expect(mockReplace).toHaveBeenCalledWith("/");
+  });
+});
+
+describe("SO101 terminal session", () => {
+  const desktopStatus: DesktopStatus = {
+    isDesktop: true,
+    platform: "macos",
+    appVersion: "test",
+    apiBaseUrl: "http://127.0.0.1:8000/api/v1",
+    webUrl: "http://127.0.0.1:3000/so101/",
+    runtimePath: "/runtime",
+    runtimeReady: true,
+    runtimeArchivePath: null,
+    runtimeArchiveReady: false,
+    runtimeError: null,
+    scriptPath: "/script",
+    scriptReady: true,
+    dataDir: "/tmp/robotcloud data"
+  };
+
+  function installDesktopBridge() {
+    let outputCallback: ((event: TerminalOutputEvent) => void) | null = null;
+    let exitCallback: ((event: TerminalExitEvent) => void) | null = null;
+    const terminalStart = jest.fn().mockResolvedValue({ sessionId: "session-1", shell: "/bin/zsh" });
+    const terminalStop = jest.fn().mockResolvedValue({ stopped: true });
+    const bridge: DesktopBridge = {
+      isDesktop: true,
+      status: jest.fn().mockResolvedValue(desktopStatus),
+      so101: {
+        run: jest.fn(),
+        stop: jest.fn(),
+        validatePort: jest.fn(),
+        validateCamera: jest.fn(),
+        previewCamera: jest.fn(),
+        onOutput: jest.fn(() => jest.fn()),
+        onExit: jest.fn(() => jest.fn())
+      },
+      terminal: {
+        start: terminalStart,
+        write: jest.fn().mockResolvedValue({ ok: true }),
+        resize: jest.fn().mockResolvedValue({ ok: true }),
+        stop: terminalStop,
+        onOutput: jest.fn((callback) => {
+          outputCallback = callback;
+          return jest.fn();
+        }),
+        onExit: jest.fn((callback) => {
+          exitCallback = callback;
+          return jest.fn();
+        })
+      }
+    };
+    window.robotcloudDesktop = bridge;
+    return {
+      terminalStart,
+      terminalStop,
+      emitOutput: (data: string) => outputCallback?.({ sessionId: "session-1", data }),
+      emitExit: () => exitCallback?.({ sessionId: "session-1", code: 0, signal: null })
+    };
+  }
+
+  beforeEach(() => {
+    mockReplace.mockClear();
+    delete window.robotcloudDesktop;
+  });
+
+  it("keeps the terminal session and buffer when the SO101 tab remounts", async () => {
+    const { terminalStart, terminalStop, emitOutput } = installDesktopBridge();
+
+    const firstRender = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(firstRender.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+    expect(firstRender.getByPlaceholderText("Descripe your task ...")).toHaveValue("");
+
+    act(() => {
+      emitOutput("first output\n");
+    });
+
+    expect(firstRender.getByTestId("mock-xterm")).toHaveTextContent("first output");
+    firstRender.unmount();
+
+    expect(terminalStop).not.toHaveBeenCalled();
+
+    act(() => {
+      emitOutput("output while hidden\n");
+    });
+
+    const secondRender = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(secondRender.getByTestId("mock-xterm")).toHaveTextContent("output while hidden");
+    });
+    expect(secondRender.getByTestId("mock-xterm")).toHaveTextContent("first output");
+    expect(terminalStart).toHaveBeenCalledTimes(1);
+    expect(terminalStop).not.toHaveBeenCalled();
+  });
+
+  it("can start a new terminal after the previous session exits", async () => {
+    const { terminalStart, terminalStop, emitExit } = installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    act(() => {
+      emitExit();
+    });
+
+    expect(view.getByText("Closed")).toBeInTheDocument();
+    fireEvent.click(view.getByRole("button", { name: "New terminal" }));
+
+    await waitFor(() => {
+      expect(terminalStart).toHaveBeenCalledTimes(2);
+    });
+    expect(terminalStop).not.toHaveBeenCalled();
   });
 });
 
