@@ -28,3 +28,5 @@ scripts/lerobot/
 .conductor/state/
 conductor.log
 conductor-terminal.log
+
+Makefile
