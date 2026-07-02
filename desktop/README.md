@@ -21,6 +21,19 @@ pnpm dev
 Windows build:
 
 ```powershell
+# Build the Windows LeRobot runtime automatically if the zip is missing.
+.\scripts\build-windows.ps1
+```
+
+To force a fresh runtime rebuild:
+
+```powershell
+.\scripts\build-windows.ps1 -BuildRuntime -ForceRuntimeBuild
+```
+
+To use a prebuilt runtime artifact instead:
+
+```powershell
 $env:ROBOTCLOUD_WINDOWS_RUNTIME_ZIP="D:\artifacts\lerobot-env-win.zip"
 .\scripts\build-windows.ps1
 ```
@@ -53,10 +66,28 @@ directory on first SO101 or terminal use, so installation itself does not need
 network access.
 
 Runtime zips are build artifacts and are intentionally ignored by Git because
-they exceed normal repository size limits. Put the platform archive at the path
-above, or set the matching `ROBOTCLOUD_*_RUNTIME_ZIP` environment variable and
-the packaging script will copy it into `src-tauri/resources/runtime/...` before
-building.
+they exceed normal repository size limits. The Windows packaging script can
+build `lerobot-env-win.zip` with micromamba, or copy an existing archive from
+`ROBOTCLOUD_WINDOWS_RUNTIME_ZIP`. For macOS/Linux, put the platform archive at
+the path above, or set the matching `ROBOTCLOUD_*_RUNTIME_ZIP` environment
+variable and the packaging script will copy it into
+`src-tauri/resources/runtime/...` before building.
+
+Windows runtime builder:
+
+```powershell
+.\scripts\build-lerobot-runtime-windows.ps1
+```
+
+Defaults:
+
+```text
+Python 3.12
+lerobot==0.5.1
+torch==2.10.0
+torchvision==0.25.0
+CPU PyTorch wheels from https://download.pytorch.org/whl/cpu
+```
 
 Frontend bridge:
 

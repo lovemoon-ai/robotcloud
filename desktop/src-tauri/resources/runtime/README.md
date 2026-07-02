@@ -11,4 +11,10 @@ scripts can copy them from explicit artifact paths:
 - `ROBOTCLOUD_MACOS_RUNTIME_ZIP`
 - `ROBOTCLOUD_LINUX_RUNTIME_ZIP`
 
+Windows can also be built directly:
+
+```powershell
+desktop/scripts/build-lerobot-runtime-windows.ps1
+```
+
 The desktop app extracts the archive into its app data directory on first use.
