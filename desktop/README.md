@@ -41,6 +41,19 @@ $env:ROBOTCLOUD_WINDOWS_RUNTIME_ZIP="D:\artifacts\lerobot-env-win.zip"
 macOS build:
 
 ```bash
+# Build the macOS LeRobot runtime automatically if the zip is missing.
+./scripts/package-macos.sh
+```
+
+To force a fresh macOS runtime rebuild:
+
+```bash
+./scripts/package-macos.sh --build-runtime --force-runtime-build
+```
+
+To use a prebuilt macOS runtime artifact instead:
+
+```bash
 export ROBOTCLOUD_MACOS_RUNTIME_ZIP=/path/to/lerobot-env-macos.zip
 ./scripts/package-macos.sh
 ```
@@ -68,15 +81,22 @@ network access.
 Runtime zips are build artifacts and are intentionally ignored by Git because
 they exceed normal repository size limits. The Windows packaging script can
 build `lerobot-env-win.zip` with micromamba, or copy an existing archive from
-`ROBOTCLOUD_WINDOWS_RUNTIME_ZIP`. For macOS/Linux, put the platform archive at
-the path above, or set the matching `ROBOTCLOUD_*_RUNTIME_ZIP` environment
-variable and the packaging script will copy it into
-`src-tauri/resources/runtime/...` before building.
+`ROBOTCLOUD_WINDOWS_RUNTIME_ZIP`. The macOS packaging script can build
+`lerobot-env-macos.zip` with micromamba, or copy an existing archive from
+`ROBOTCLOUD_MACOS_RUNTIME_ZIP`. For Linux, put the platform archive at the path
+above, or set `ROBOTCLOUD_LINUX_RUNTIME_ZIP` and the packaging script will copy
+it into `src-tauri/resources/runtime/...` before building.
 
 Windows runtime builder:
 
 ```powershell
 .\scripts\build-lerobot-runtime-windows.ps1
+```
+
+macOS runtime builder:
+
+```bash
+./scripts/build-lerobot-runtime-mac.sh
 ```
 
 Defaults:
@@ -88,6 +108,9 @@ torch==2.10.0
 torchvision==0.25.0
 CPU PyTorch wheels from https://download.pytorch.org/whl/cpu
 ```
+
+The macOS runtime builder uses the same package versions by default, but installs
+PyTorch from PyPI unless `--torch-index-url` is provided.
 
 Frontend bridge:
 

@@ -17,4 +17,10 @@ Windows can also be built directly:
 desktop/scripts/build-lerobot-runtime-windows.ps1
 ```
 
+macOS can also be built directly:
+
+```bash
+desktop/scripts/build-lerobot-runtime-mac.sh
+```
+
 The desktop app extracts the archive into its app data directory on first use.

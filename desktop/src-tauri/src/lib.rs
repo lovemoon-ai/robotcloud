@@ -256,6 +256,34 @@ fn runtime_archive_path(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+#[cfg(unix)]
+fn normalize_path_without_fs(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+#[cfg(unix)]
+fn symlink_target_is_safe(link_path: &Path, link_target: &Path, root: &Path) -> bool {
+    if link_target.is_absolute() {
+        return false;
+    }
+    let Some(link_parent) = link_path.parent() else {
+        return false;
+    };
+    let resolved = normalize_path_without_fs(&link_parent.join(link_target));
+    let root = normalize_path_without_fs(root);
+    resolved.starts_with(root)
+}
+
 fn extract_runtime_archive(archive_path: &Path, target: &Path) -> Result<(), String> {
     let parent = target
         .parent()
@@ -283,6 +311,28 @@ fn extract_runtime_archive(archive_path: &Path, target: &Path) -> Result<(), Str
         if let Some(parent) = outpath.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
+
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            if mode & 0o170000 == 0o120000 {
+                let mut link_target = String::new();
+                entry
+                    .read_to_string(&mut link_target)
+                    .map_err(|error| error.to_string())?;
+                let link_target = PathBuf::from(link_target);
+                if !symlink_target_is_safe(&outpath, &link_target, &temp) {
+                    return Err(format!(
+                        "Refusing to extract unsafe symlink {} -> {}",
+                        outpath.display(),
+                        link_target.display()
+                    ));
+                }
+                std::os::unix::fs::symlink(&link_target, &outpath)
+                    .map_err(|error| error.to_string())?;
+                continue;
+            }
+        }
+
         let mut outfile = File::create(&outpath).map_err(|error| error.to_string())?;
         std::io::copy(&mut entry, &mut outfile).map_err(|error| error.to_string())?;
 
@@ -1155,5 +1205,48 @@ mod tests {
             assert_eq!(args.first().map(String::as_str), Some("bash"));
             assert!(args.windows(2).any(|pair| pair == ["--action", "info"]));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extracts_unix_symlinks_from_runtime_archive() {
+        let base = env::temp_dir().join(format!("robotcloud-runtime-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&base).unwrap();
+        let source = base.join("source");
+        fs::create_dir_all(source.join("bin")).unwrap();
+        let archive_path = base.join("runtime.zip");
+        let target = base.join("lerobot-env");
+
+        fs::write(source.join("bin/python3.12"), b"#!/bin/sh\n").unwrap();
+        std::os::unix::fs::symlink("python3.12", source.join("bin/python")).unwrap();
+
+        let zip_status = Command::new("zip")
+            .args(["-qry", "-y"])
+            .arg(&archive_path)
+            .arg(".")
+            .current_dir(&source)
+            .status();
+        let Ok(zip_status) = zip_status else {
+            eprintln!("skipping symlink archive extraction test because zip is unavailable");
+            fs::remove_dir_all(&base).unwrap();
+            return;
+        };
+        if !zip_status.success() {
+            fs::remove_dir_all(&base).unwrap();
+            panic!("zip failed with status {zip_status}");
+        }
+
+        extract_runtime_archive(&archive_path, &target).unwrap();
+
+        let python_link = target.join("bin/python");
+        let metadata = fs::symlink_metadata(&python_link).unwrap();
+        assert!(metadata.file_type().is_symlink());
+        assert_eq!(
+            fs::read_link(&python_link).unwrap(),
+            PathBuf::from("python3.12")
+        );
+        assert!(target.join("bin/python3.12").exists());
+
+        fs::remove_dir_all(&base).unwrap();
     }
 }
