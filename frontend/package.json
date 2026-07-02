@@ -4,13 +4,16 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/build-web-export.mjs",
+    "build:desktop": "node scripts/build-desktop-export.mjs",
     "start": "next start",
     "lint": "next lint",
     "test": "jest --runInBand"
   },
   "dependencies": {
+    "@next/env": "^14.1.0",
     "@tanstack/react-query": "^5.37.1",
+    "@xterm/xterm": "^5.5.0",
     "next": "^14.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

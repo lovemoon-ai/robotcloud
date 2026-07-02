@@ -15,6 +15,7 @@ backend/storage/
 backend/staticfiles/
 backend/public
 frontend/out
+frontend/out-desktop
 
 backend/build
 02_robocloud.sh

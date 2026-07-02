@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { getSections } from "@/components/shell/sections";
+import { useDesktopBridgeAvailable } from "@/hooks/useDesktopBridgeAvailable";
 import { useLocaleStore } from "@/store/useLocaleStore";
 
 export default function HomePage() {
   const locale = useLocaleStore((state) => state.locale);
+  const isDesktop = useDesktopBridgeAvailable();
   const isZh = locale === "zh";
   const copy = isZh
     ? {
@@ -18,7 +20,7 @@ export default function HomePage() {
         description: "Manage datasets, train models, and remote inference from one workspace.",
         enter: "Open →"
       };
-  const sections = getSections(locale);
+  const sections = getSections(locale, { includeDesktopOnly: isDesktop });
 
   return (
     <main className="space-y-8">

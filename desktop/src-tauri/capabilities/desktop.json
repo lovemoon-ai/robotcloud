@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "windows": ["main"],
+  "remote": {
+    "urls": [
+      "https://robotcloud.conductor-ai.top/desktop/*"
+    ]
+  },
+  "permissions": ["core:default", "desktop-bridge"]
+}

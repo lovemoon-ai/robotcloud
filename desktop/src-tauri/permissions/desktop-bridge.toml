@@ -1,0 +1,12 @@
+[[permission]]
+identifier = "desktop-bridge"
+description = "Allows the RobotCloud web frontend to use the controlled SO101 and terminal desktop bridge."
+commands.allow = [
+  "desktop_status",
+  "so101_run",
+  "so101_stop",
+  "terminal_start",
+  "terminal_write",
+  "terminal_resize",
+  "terminal_stop",
+]

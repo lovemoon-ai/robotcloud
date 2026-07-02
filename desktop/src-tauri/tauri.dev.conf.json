@@ -1,0 +1,7 @@
+{
+  "app": {
+    "security": {
+      "capabilities": ["desktop", "desktop-dev"]
+    }
+  }
+}

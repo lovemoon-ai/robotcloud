@@ -1,0 +1,18 @@
+{
+  "name": "robotcloud-tauri",
+  "version": "0.2.0",
+  "private": true,
+  "description": "RobotCloud Tauri desktop shell for SO101 and LeRobot",
+  "scripts": {
+    "dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
+    "build": "tauri build",
+    "build:win": "tauri build --bundles msi",
+    "build:mac": "tauri build --bundles dmg",
+    "build:linux": "tauri build --bundles deb,rpm,appimage",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0"
+  }
+}

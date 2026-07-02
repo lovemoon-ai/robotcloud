@@ -14,15 +14,21 @@ const RAW_API_BASE_URL =
   process.env.PUBLIC_API_BASE_URL ??
   process.env.ROBOTCLOUD_API_BASE_URL ??
   process.env.NEXT_PUBLIC_API_BASE_URL ??
-  "http://localhost:6150/api/v1";
+  "https://robotcloud.conductor-ai.top/api/v1";
 const API_BASE_URL = RAW_API_BASE_URL.replace(/\/$/, "");
+const DESKTOP_BUILD = process.env.ROBOTCLOUD_DESKTOP_BUILD === "1";
+const RAW_BASE_PATH = process.env.ROBOTCLOUD_FRONTEND_BASE_PATH ?? (DESKTOP_BUILD ? "/desktop" : "");
+const BASE_PATH = RAW_BASE_PATH && RAW_BASE_PATH !== "/" ? RAW_BASE_PATH.replace(/\/$/, "") : "";
 
 const nextConfig = {
   output: "export",
+  basePath: BASE_PATH || undefined,
   trailingSlash: true,
   reactStrictMode: true,
   env: {
-    NEXT_PUBLIC_API_BASE_URL: API_BASE_URL
+    NEXT_PUBLIC_API_BASE_URL: API_BASE_URL,
+    NEXT_PUBLIC_ROBOTCLOUD_DESKTOP_BUILD: DESKTOP_BUILD ? "1" : "0",
+    NEXT_PUBLIC_ROBOTCLOUD_BASE_PATH: BASE_PATH
   },
   experimental: {
     esmExternals: false

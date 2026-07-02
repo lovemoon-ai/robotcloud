@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RobotCloud",
+  "version": "0.2.0",
+  "identifier": "top.conductor-ai.robotcloud.desktop",
+  "build": {
+    "frontendDist": "placeholder"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": ["desktop"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi"],
+    "category": "DeveloperTool",
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "resources": [
+      "resources/scripts/so101.ps1",
+      "resources/scripts/so101.sh",
+      "resources/runtime/*/lerobot-env-*.zip"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
+      "wix": {
+        "language": "en-US"
+      }
+    }
+  }
+}

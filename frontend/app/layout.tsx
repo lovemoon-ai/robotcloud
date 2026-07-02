@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import "@xterm/xterm/css/xterm.css";
 import "./globals.css";
 import { ReactQueryProvider } from "@/components/providers/ReactQueryProvider";
 import { AppChrome } from "@/components/AppChrome";

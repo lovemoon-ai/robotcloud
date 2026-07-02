@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="info"
+FOLLOWER_PORT=""
+LEADER_PORT=""
+CAMERA_INDEX="0"
+WIDTH="640"
+HEIGHT="480"
+FPS="30"
+ROBOT_ID="so101_follower"
+TELEOP_ID="so101_leader"
+DATASET_REPO_ID="local/so101_desktop"
+DATASET_ROOT=""
+EPISODES="1"
+EPISODE_TIME_S="10"
+RESET_TIME_S="2"
+TASK="SO-101 desktop teleoperation"
+TELEOP_TIME_S="5"
+MAX_RELATIVE_TARGET="5"
+DISPLAY_DATA="false"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --action) ACTION="$2"; shift 2 ;;
+    --follower-port) FOLLOWER_PORT="$2"; shift 2 ;;
+    --leader-port) LEADER_PORT="$2"; shift 2 ;;
+    --camera-index) CAMERA_INDEX="$2"; shift 2 ;;
+    --width) WIDTH="$2"; shift 2 ;;
+    --height) HEIGHT="$2"; shift 2 ;;
+    --fps) FPS="$2"; shift 2 ;;
+    --robot-id) ROBOT_ID="$2"; shift 2 ;;
+    --teleop-id) TELEOP_ID="$2"; shift 2 ;;
+    --dataset-repo-id) DATASET_REPO_ID="$2"; shift 2 ;;
+    --dataset-root) DATASET_ROOT="$2"; shift 2 ;;
+    --episodes) EPISODES="$2"; shift 2 ;;
+    --episode-time-s) EPISODE_TIME_S="$2"; shift 2 ;;
+    --reset-time-s) RESET_TIME_S="$2"; shift 2 ;;
+    --task) TASK="$2"; shift 2 ;;
+    --teleop-time-s) TELEOP_TIME_S="$2"; shift 2 ;;
+    --max-relative-target) MAX_RELATIVE_TARGET="$2"; shift 2 ;;
+    --display-data) DISPLAY_DATA="true"; shift ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+RESOURCE_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
+PLATFORM_DIR="linux"
+if [[ "$(uname)" == "Darwin" ]]; then
+  PLATFORM_DIR="macos"
+fi
+
+ENV_PATH=${ROBOTCLOUD_LEROBOT_ENV:-"${RESOURCE_ROOT}/runtime/${PLATFORM_DIR}/lerobot-env"}
+PYTHON="${ENV_PATH}/bin/python"
+BIN="${ENV_PATH}/bin"
+
+if [[ ! -x "${PYTHON}" ]]; then
+  echo "LeRobot environment was not found at ${ENV_PATH}" >&2
+  exit 1
+fi
+
+export PATH="${BIN}:${PATH}"
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
+DATA_DIR=${ROBOTCLOUD_DATA_DIR:-"${HOME}/.robotcloud/so101-data"}
+mkdir -p "${DATA_DIR}"
+if [[ -z "${DATASET_ROOT}" ]]; then
+  DATASET_ROOT="${DATA_DIR}/datasets/${DATASET_REPO_ID}"
+fi
+
+require_port() {
+  local value="$1"
+  local name="$2"
+  if [[ -z "${value}" ]]; then
+    echo "${name} is required." >&2
+    exit 1
+  fi
+}
+
+run_lerobot() {
+  local tool="$1"
+  shift
+  echo "> ${tool} $*"
+  "${BIN}/${tool}" "$@"
+}
+
+CAMERA_CONFIG="{ front: {type: opencv, index_or_path: ${CAMERA_INDEX}, width: ${WIDTH}, height: ${HEIGHT}, fps: ${FPS}}}"
+
+case "${ACTION}" in
+  info)
+    run_lerobot lerobot-info
+    ;;
+  ports)
+    "${PYTHON}" -m serial.tools.list_ports
+    ;;
+  cameras)
+    run_lerobot lerobot-find-cameras opencv --output-dir "${DATA_DIR}/captured_images" --record-time-s 3
+    ;;
+  setup-follower)
+    require_port "${FOLLOWER_PORT}" "follower port"
+    run_lerobot lerobot-setup-motors --robot.type=so101_follower --robot.port="${FOLLOWER_PORT}" --robot.id="${ROBOT_ID}"
+    ;;
+  setup-leader)
+    require_port "${LEADER_PORT}" "leader port"
+    run_lerobot lerobot-setup-motors --teleop.type=so101_leader --teleop.port="${LEADER_PORT}" --teleop.id="${TELEOP_ID}"
+    ;;
+  calibrate-follower)
+    require_port "${FOLLOWER_PORT}" "follower port"
+    run_lerobot lerobot-calibrate --robot.type=so101_follower --robot.port="${FOLLOWER_PORT}" --robot.id="${ROBOT_ID}"
+    ;;
+  calibrate-leader)
+    require_port "${LEADER_PORT}" "leader port"
+    run_lerobot lerobot-calibrate --teleop.type=so101_leader --teleop.port="${LEADER_PORT}" --teleop.id="${TELEOP_ID}"
+    ;;
+  teleop)
+    require_port "${FOLLOWER_PORT}" "follower port"
+    require_port "${LEADER_PORT}" "leader port"
+    run_lerobot lerobot-teleoperate \
+      --robot.type=so101_follower \
+      --robot.port="${FOLLOWER_PORT}" \
+      --robot.cameras="${CAMERA_CONFIG}" \
+      --robot.id="${ROBOT_ID}" \
+      --robot.max_relative_target="${MAX_RELATIVE_TARGET}" \
+      --teleop.type=so101_leader \
+      --teleop.port="${LEADER_PORT}" \
+      --teleop.id="${TELEOP_ID}" \
+      --fps="${FPS}" \
+      --teleop_time_s="${TELEOP_TIME_S}" \
+      --display_data="${DISPLAY_DATA}"
+    ;;
+  record)
+    require_port "${FOLLOWER_PORT}" "follower port"
+    require_port "${LEADER_PORT}" "leader port"
+    mkdir -p "$(dirname "${DATASET_ROOT}")"
+    run_lerobot lerobot-record \
+      --robot.type=so101_follower \
+      --robot.port="${FOLLOWER_PORT}" \
+      --robot.cameras="${CAMERA_CONFIG}" \
+      --robot.id="${ROBOT_ID}" \
+      --robot.max_relative_target="${MAX_RELATIVE_TARGET}" \
+      --teleop.type=so101_leader \
+      --teleop.port="${LEADER_PORT}" \
+      --teleop.id="${TELEOP_ID}" \
+      --dataset.repo_id="${DATASET_REPO_ID}" \
+      --dataset.root="${DATASET_ROOT}" \
+      --dataset.num_episodes="${EPISODES}" \
+      --dataset.episode_time_s="${EPISODE_TIME_S}" \
+      --dataset.reset_time_s="${RESET_TIME_S}" \
+      --dataset.single_task="${TASK}" \
+      --dataset.push_to_hub=false \
+      --dataset.streaming_encoding=true \
+      --dataset.encoder_threads=2 \
+      --dataset.vcodec=h264 \
+      --display_data="${DISPLAY_DATA}"
+    ;;
+  *)
+    echo "Unsupported action: ${ACTION}" >&2
+    exit 2
+    ;;
+esac

@@ -1,7 +1,20 @@
 import { Locale } from "@/store/useLocaleStore";
 
+type ShellSection = {
+  title: string;
+  description: string;
+  href: string;
+  desktopOnly?: boolean;
+};
+
 const sectionsByLocale = {
   zh: [
+    {
+      title: "SO101 Desktop",
+      description: "Local setup, calibration, teleoperation, recording, and terminal tools.",
+      href: "/so101",
+      desktopOnly: true
+    },
     {
       title: "数据管理",
       description: "上传、预览与分析多模态数据集，保障数据资产安全。",
@@ -40,6 +53,12 @@ const sectionsByLocale = {
   ],
   en: [
     {
+      title: "SO101 Desktop",
+      description: "Set up, calibrate, teleoperate, record data, and run local LeRobot commands.",
+      href: "/so101",
+      desktopOnly: true
+    },
+    {
       title: "Datasets",
       description: "Upload, preview, and analyze multimodal datasets while protecting data assets.",
       href: "/datasets"
@@ -75,10 +94,10 @@ const sectionsByLocale = {
       href: "/plans"
     }
   ]
-} as const satisfies Record<Locale, readonly { title: string; description: string; href: string }[]>;
+} as const satisfies Record<Locale, readonly ShellSection[]>;
 
 export const sections = sectionsByLocale;
 
-export function getSections(locale: Locale) {
-  return sectionsByLocale[locale];
+export function getSections(locale: Locale, options: { includeDesktopOnly?: boolean } = {}) {
+  return (sectionsByLocale[locale] as readonly ShellSection[]).filter((section) => options.includeDesktopOnly || !section.desktopOnly);
 }
