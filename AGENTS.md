@@ -10,6 +10,7 @@
 - `make test` executes `pytest -q` then `npm test` to keep both stacks green.
 - `make run` launches the FastAPI server on `:8000`, the scheduler loop, and the Next dev server on `:3000`, exporting `NEXT_PUBLIC_API_BASE_URL` automatically.
 - For frontend-only loops, run `npm run dev`, `npm run lint`, or `npm run build` inside `frontend/`.
+- For desktop-only develop, it required fronend and desktop. Run `npm run dev` inside frontend and `pnpm dev` inside desktop.
 
 ## Coding Style & Naming Conventions
 - Follow PEP 8 for Python: 4-space indent, snake_case functions, PascalCase classes. Extend `RobotCloudAPI` methods and reuse shared validators before adding new endpoints.

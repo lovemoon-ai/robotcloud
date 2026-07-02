@@ -57,6 +57,20 @@ macOS build:
 ./scripts/package-macos.sh
 ```
 
+macOS local-frontend debug build:
+
+```bash
+# Build RobotCloud-debug.app in a DMG whose default frontend URL is http://127.0.0.1:3000/so101/.
+npm run build:mac:debug
+```
+
+Run the local frontend before opening the debug app:
+
+```bash
+cd ../frontend
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000/api/v1 npm run dev
+```
+
 To force a fresh macOS runtime rebuild:
 
 ```bash
@@ -130,6 +144,7 @@ Defaults:
 ```text
 Python 3.12
 lerobot==0.5.1
+feetech-servo-sdk>=1.0.0,<2.0.0
 torch==2.10.0
 torchvision==0.25.0
 CPU PyTorch wheels from https://download.pytorch.org/whl/cpu

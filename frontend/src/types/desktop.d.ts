@@ -51,6 +51,11 @@ type ProcessExitEvent = {
   signal: string | null;
 };
 
+type ValidationResult = {
+  ok: boolean;
+  message: string;
+};
+
 type TerminalStarted = {
   sessionId: string;
   shell: string;
@@ -73,6 +78,9 @@ type DesktopBridge = {
   so101: {
     run: (config: So101RunConfig) => Promise<{ runId: string }>;
     stop: (runId: string) => Promise<{ stopped: boolean }>;
+    validatePort: (value: string) => Promise<ValidationResult>;
+    validateCamera: (cameraId: string, width: number, height: number) => Promise<ValidationResult>;
+    previewCamera: (cameraId: string, width: number, height: number, fps: number) => Promise<{ runId: string }>;
     onOutput: (callback: (event: ProcessOutputEvent) => void) => () => void;
     onExit: (callback: (event: ProcessExitEvent) => void) => () => void;
   };

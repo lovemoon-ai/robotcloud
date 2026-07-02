@@ -1,4 +1,6 @@
 {
+  "productName": "RobotCloud-debug",
+  "identifier": "top.conductor-ai.robotcloud.desktop.debug",
   "app": {
     "security": {
       "capabilities": ["desktop", "desktop-dev"]

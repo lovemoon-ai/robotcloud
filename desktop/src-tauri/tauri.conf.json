@@ -22,6 +22,9 @@
       "resources/scripts/so101.sh",
       "resources/runtime/*/lerobot-env-*.zip"
     ],
+    "macOS": {
+      "infoPlist": "Info.plist"
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "offlineInstaller",

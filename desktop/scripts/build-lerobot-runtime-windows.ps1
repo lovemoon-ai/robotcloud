@@ -9,7 +9,7 @@ param(
     [string] $TorchSpec = "torch==2.10.0",
     [string] $TorchVisionSpec = "torchvision==0.25.0",
     [string] $TorchIndexUrl = "https://download.pytorch.org/whl/cpu",
-    [string[]] $ExtraPipPackages = @(),
+    [string[]] $ExtraPipPackages = @("feetech-servo-sdk>=1.0.0,<2.0.0"),
     [switch] $Force,
     [switch] $SkipSmokeTest
 )
@@ -172,7 +172,7 @@ function Test-RuntimeEnv {
     }
 
     if (-not $SkipSmokeTest) {
-        Invoke-Checked $python @("-c", "import lerobot, torch, torchvision, serial; print('runtime imports ok')")
+        Invoke-Checked $python @("-c", "import lerobot, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')")
         Invoke-Checked $lerobotInfo @()
     }
 }

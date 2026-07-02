@@ -1,17 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Dispatch, SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
+
+type CameraForm = {
+  id: string;
+  width: number;
+  height: number;
+  fps: number;
+};
 
 type FormState = {
   followerPort: string;
   leaderPort: string;
-  cameraId: string;
-  width: number;
-  height: number;
-  fps: number;
+  cameras: [CameraForm, CameraForm, CameraForm];
   robotId: string;
   teleopId: string;
   datasetRepoId: string;
@@ -25,41 +28,49 @@ type FormState = {
   task: string;
 };
 
-type LogLine = {
-  id: string;
-  text: string;
-  stream: "stdout" | "stderr" | "system";
-};
-
-type PortInfo = {
-  device: string;
-  name?: string | null;
-  description?: string | null;
-  manufacturer?: string | null;
-  hwid?: string | null;
-};
-
-type CameraInfo = {
-  id?: string | number;
-  type?: string;
-  name?: string;
-  default_stream_profile?: {
-    width?: number;
-    height?: number;
-    fps?: number;
-  };
-  [key: string]: unknown;
-};
-
 type TerminalPhase = "starting" | "ready" | "failed" | "closed";
+type CheckPhase = "idle" | "checking" | "valid" | "invalid";
+type CheckState = { phase: CheckPhase; message: string };
+type PortKey = "followerPort" | "leaderPort";
+type ActionId =
+  | "info"
+  | "setup-follower"
+  | "setup-leader"
+  | "calibrate-follower"
+  | "calibrate-leader"
+  | "teleop"
+  | "record";
+
+type ShellDialect = "posix" | "powershell";
+
+const CONNECTION_STORAGE_KEY = "robotcloud-so101-connection";
+const DEFAULT_CAMERA_COUNT = 1;
+const MAX_CAMERAS = 3;
+const cameraKeys = ["front", "side", "wrist"] as const;
+const cameraLabels = ["Camera 0", "Camera 1", "Camera 2"] as const;
+
+const initialCamera: CameraForm = {
+  id: "",
+  width: 640,
+  height: 480,
+  fps: 30
+};
+
+function defaultCamera(index: number): CameraForm {
+  return {
+    ...initialCamera,
+    id: String(index)
+  };
+}
 
 const initialForm: FormState = {
   followerPort: "",
   leaderPort: "",
-  cameraId: "",
-  width: 640,
-  height: 480,
-  fps: 30,
+  cameras: [
+    defaultCamera(0),
+    defaultCamera(1),
+    defaultCamera(2)
+  ],
   robotId: "so101_follower",
   teleopId: "so101_leader",
   datasetRepoId: "local/so101_desktop",
@@ -73,94 +84,295 @@ const initialForm: FormState = {
   task: "SO-101 desktop teleoperation"
 };
 
-const quickActions = [
-  { id: "ports", label: "Detect ports", description: "Use LeRobot find-port helpers to list USB serial devices." },
-  { id: "cameras", label: "Detect cameras", description: "Use LeRobot camera discovery and load connection metadata." },
-  { id: "setup-follower", label: "Setup follower", description: "Assign or check follower motor IDs." },
-  { id: "setup-leader", label: "Setup leader", description: "Assign or check leader motor IDs." },
-  { id: "calibrate-follower", label: "Calibrate follower", description: "Run LeRobot follower calibration." },
-  { id: "calibrate-leader", label: "Calibrate leader", description: "Run LeRobot leader calibration." },
-  { id: "teleop", label: "Teleoperate", description: "Run bounded SO101 teleoperation." },
-  { id: "record", label: "Record dataset", description: "Record LeRobot episodes locally." }
+const idleCheck: CheckState = { phase: "idle", message: "" };
+
+const actions: Array<{ id: ActionId; label: string }> = [
+  { id: "info", label: "Info" },
+  { id: "setup-follower", label: "Setup follower" },
+  { id: "setup-leader", label: "Setup leader" },
+  { id: "calibrate-follower", label: "Calibrate follower" },
+  { id: "calibrate-leader", label: "Calibrate leader" },
+  { id: "teleop", label: "Teleoperate" },
+  { id: "record", label: "Record" }
 ];
 
-function toRunConfig(action: string, form: FormState) {
+function shellDialect(status: DesktopStatus | null): ShellDialect {
+  return status?.platform === "windows" ? "powershell" : "posix";
+}
+
+export function shellArg(value: string, dialect: ShellDialect = "posix") {
+  if (dialect === "powershell") {
+    return `'${value.replace(/'/g, "''")}'`;
+  }
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function cameraRef(value: string) {
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return trimmed;
+  return `"${trimmed.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function requireValue(value: string, label: string) {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error(`先配置 ${label}`);
+  return trimmed;
+}
+
+function requireNumber(value: number, label: string, options: { integer?: boolean; min?: number } = {}) {
+  const min = options.min ?? Number.MIN_VALUE;
+  if (!Number.isFinite(value) || value < min || (options.integer && !Number.isInteger(value))) {
+    throw new Error(`先配置 ${label}`);
+  }
+  return value;
+}
+
+function resolvedDatasetRoot(form: FormState, status: DesktopStatus | null) {
+  const explicitRoot = form.datasetRoot.trim();
+  if (explicitRoot) return explicitRoot;
+  if (!status?.dataDir) return "";
+  return `${status.dataDir.replace(/\/$/, "")}/datasets/${form.datasetRepoId}`;
+}
+
+function clampCameraCount(value: unknown) {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_CAMERA_COUNT;
+  return Math.min(MAX_CAMERAS, Math.max(DEFAULT_CAMERA_COUNT, Math.trunc(numeric)));
+}
+
+function toNumber(value: unknown, fallback: number) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+}
+
+function normalizeCamera(value: unknown, index: number): CameraForm {
+  const source = value && typeof value === "object" ? (value as Partial<CameraForm>) : {};
+  const fallback = defaultCamera(index);
   return {
-    action,
-    followerPort: form.followerPort,
-    leaderPort: form.leaderPort,
-    cameraId: form.cameraId,
-    width: form.width,
-    height: form.height,
-    fps: form.fps,
-    robotId: form.robotId,
-    teleopId: form.teleopId,
-    datasetRepoId: form.datasetRepoId,
-    datasetRoot: form.datasetRoot,
-    episodes: form.episodes,
-    episodeTimeS: form.episodeTimeS,
-    resetTimeS: form.resetTimeS,
-    teleopTimeS: form.teleopTimeS,
-    maxRelativeTarget: form.maxRelativeTarget,
-    displayData: form.displayData,
-    task: form.task
+    id: typeof source.id === "string" ? source.id : fallback.id,
+    width: toNumber(source.width, fallback.width),
+    height: toNumber(source.height, fallback.height),
+    fps: toNumber(source.fps, fallback.fps)
   };
 }
 
-function appendLog(setter: Dispatch<SetStateAction<LogLine[]>>, stream: LogLine["stream"], text: string) {
-  setter((current) => [
-    ...current.slice(-399),
-    {
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      stream,
-      text
-    }
-  ]);
-}
-
-function markerPayload(text: string, marker: string) {
-  for (const line of text.split(/\r?\n/)) {
-    const markerIndex = line.indexOf(marker);
-    if (markerIndex >= 0) return line.slice(markerIndex + marker.length).trim();
+export function parseConnectionSettings(raw: string | null) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<FormState> & { cameraCount?: number };
+    const camerasSource = Array.isArray(parsed.cameras) ? parsed.cameras : [];
+    return {
+      followerPort: typeof parsed.followerPort === "string" ? parsed.followerPort : initialForm.followerPort,
+      leaderPort: typeof parsed.leaderPort === "string" ? parsed.leaderPort : initialForm.leaderPort,
+      robotId: typeof parsed.robotId === "string" ? parsed.robotId : initialForm.robotId,
+      teleopId: typeof parsed.teleopId === "string" ? parsed.teleopId : initialForm.teleopId,
+      cameras: [
+        normalizeCamera(camerasSource[0], 0),
+        normalizeCamera(camerasSource[1], 1),
+        normalizeCamera(camerasSource[2], 2)
+      ] as [CameraForm, CameraForm, CameraForm],
+      cameraCount: clampCameraCount(parsed.cameraCount)
+    };
+  } catch {
+    return null;
   }
-  return null;
 }
 
-function portLabel(port: PortInfo) {
-  return [port.device, port.description, port.manufacturer].filter(Boolean).join(" - ");
+export function serializeConnectionSettings(form: FormState, cameraCount: number) {
+  return JSON.stringify({
+    followerPort: form.followerPort,
+    leaderPort: form.leaderPort,
+    robotId: form.robotId,
+    teleopId: form.teleopId,
+    cameras: form.cameras,
+    cameraCount: clampCameraCount(cameraCount)
+  });
 }
 
-function cameraLabel(camera: CameraInfo) {
-  const id = camera.id ?? camera.name ?? "";
-  const profile = camera.default_stream_profile;
-  const profileLabel = profile ? `${profile.width ?? "?"}x${profile.height ?? "?"}@${profile.fps ?? "?"}` : "";
-  return [camera.type, id, profileLabel].filter(Boolean).join(" - ");
+function cameraConfigArg(form: FormState, cameraCount: number, quote: (value: string) => string, required = false) {
+  const entries = form.cameras
+    .slice(0, cameraCount)
+    .map((camera, index) => ({ camera, key: cameraKeys[index] ?? cameraKeys[0] }))
+    .filter(({ camera }) => camera.id.trim())
+    .map(({ camera, key }) => {
+      return `${key}: {type: opencv, index_or_path: ${cameraRef(camera.id)}, width: ${camera.width}, height: ${camera.height}, fps: ${camera.fps}}`;
+    });
+
+  if (!entries.length) {
+    if (required) throw new Error("先配置 Camera 0");
+    return null;
+  }
+  return `--robot.cameras=${quote(`{ ${entries.join(", ")} }`)}`;
 }
 
-function cameraId(camera: CameraInfo) {
-  const id = camera.id ?? camera.name ?? "";
-  return String(id);
+export function buildActionCommand(action: ActionId, form: FormState, status: DesktopStatus | null, cameraCount: number) {
+  const quote = (value: string) => shellArg(value, shellDialect(status));
+  const followerPort = () => requireValue(form.followerPort, "Follower port");
+  const leaderPort = () => requireValue(form.leaderPort, "Leader port");
+  const robotId = () => requireValue(form.robotId, "Robot ID");
+  const teleopId = () => requireValue(form.teleopId, "Teleop ID");
+
+  switch (action) {
+    case "info":
+      return "lerobot-info";
+    case "setup-follower":
+      return [
+        "lerobot-setup-motors",
+        "--robot.type=so101_follower",
+        `--robot.port=${quote(followerPort())}`
+      ].join(" ");
+    case "setup-leader":
+      return [
+        "lerobot-setup-motors",
+        "--teleop.type=so101_leader",
+        `--teleop.port=${quote(leaderPort())}`
+      ].join(" ");
+    case "calibrate-follower":
+      return [
+        "lerobot-calibrate",
+        "--robot.type=so101_follower",
+        `--robot.port=${quote(followerPort())}`,
+        `--robot.id=${quote(robotId())}`
+      ].join(" ");
+    case "calibrate-leader":
+      return [
+        "lerobot-calibrate",
+        "--teleop.type=so101_leader",
+        `--teleop.port=${quote(leaderPort())}`,
+        `--teleop.id=${quote(teleopId())}`
+      ].join(" ");
+    case "teleop":
+      return [
+        "lerobot-teleoperate",
+        "--robot.type=so101_follower",
+        `--robot.port=${quote(followerPort())}`,
+        `--robot.id=${quote(robotId())}`,
+        "--teleop.type=so101_leader",
+        `--teleop.port=${quote(leaderPort())}`,
+        `--teleop.id=${quote(teleopId())}`
+      ].join(" ");
+    case "record": {
+      const repoId = requireValue(form.datasetRepoId, "Dataset repo id");
+      const datasetRoot = resolvedDatasetRoot(form, status);
+      const episodes = requireNumber(form.episodes, "Episodes", { integer: true, min: 1 });
+      const episodeTimeS = requireNumber(form.episodeTimeS, "Episode seconds", { min: Number.MIN_VALUE });
+      const resetTimeS = requireNumber(form.resetTimeS, "Reset seconds", { min: 0 });
+      const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
+      if (!cameraArg) throw new Error("先配置 Camera 0");
+      const parts = [
+        "lerobot-record",
+        "--robot.type=so101_follower",
+        `--robot.port=${quote(followerPort())}`,
+        `--robot.id=${quote(robotId())}`,
+        cameraArg,
+        "--teleop.type=so101_leader",
+        `--teleop.port=${quote(leaderPort())}`,
+        `--teleop.id=${quote(teleopId())}`,
+        `--display_data=${form.displayData ? "true" : "false"}`,
+        `--dataset.repo_id=${quote(repoId)}`,
+        `--dataset.num_episodes=${episodes}`,
+        `--dataset.single_task=${quote(requireValue(form.task, "Task label"))}`,
+        "--dataset.push_to_hub=false",
+        `--dataset.episode_time_s=${episodeTimeS}`,
+        `--dataset.reset_time_s=${resetTimeS}`,
+      ];
+      if (datasetRoot) parts.splice(10, 0, `--dataset.root=${quote(datasetRoot)}`);
+      if (shellDialect(status) === "powershell") {
+        return `Remove-Item -Recurse -Force ~/.cache/huggingface/lerobot/${quote(repoId)} -ErrorAction SilentlyContinue; ${parts.join(" ")}`;
+      }
+      return `rm -rf ~/.cache/huggingface/lerobot/${quote(repoId)} && ${parts.join(" ")}`;
+    }
+  }
 }
 
-function processRunId(event: ProcessOutputEvent | ProcessExitEvent) {
-  return event.runId ?? event.run_id ?? "";
+export const so101TestExports = {
+  initialForm,
+  parseConnectionSettings,
+  serializeConnectionSettings,
+  buildActionCommand,
+  shellArg
+};
+
+function statusLabel(phase: TerminalPhase) {
+  if (phase === "ready") return "Ready";
+  if (phase === "failed") return "Failed";
+  if (phase === "closed") return "Closed";
+  return "Starting";
+}
+
+function CheckButton({
+  state,
+  onClick,
+  disabled
+}: {
+  state: CheckState;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled || state.phase === "checking"}
+        className="rounded-md border border-theme px-3 py-2 text-xs font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {state.phase === "checking" ? "Checking" : "Check"}
+      </button>
+      {state.phase === "valid" ? <span className="text-lg font-bold text-green-500">✓</span> : null}
+      {state.phase === "invalid" ? <span className="text-sm font-semibold text-red-400">!</span> : null}
+    </div>
+  );
 }
 
 export function SO101Client() {
   const router = useRouter();
   const desktopBridgeAvailability = useDesktopBridgeAvailability();
   const [form, setForm] = useState<FormState>(initialForm);
+  const [cameraCount, setCameraCount] = useState(DEFAULT_CAMERA_COUNT);
+  const [connectionLoaded, setConnectionLoaded] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [status, setStatus] = useState<DesktopStatus | null>(null);
-  const [logs, setLogs] = useState<LogLine[]>([]);
-  const [detectedPorts, setDetectedPorts] = useState<PortInfo[]>([]);
-  const [detectedCameras, setDetectedCameras] = useState<CameraInfo[]>([]);
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [terminalPhase, setTerminalPhase] = useState<TerminalPhase>("starting");
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
+  const [portChecks, setPortChecks] = useState<Record<PortKey, CheckState>>({
+    followerPort: idleCheck,
+    leaderPort: idleCheck
+  });
+  const [cameraChecks, setCameraChecks] = useState<[CheckState, CheckState, CheckState]>([
+    idleCheck,
+    idleCheck,
+    idleCheck
+  ]);
+  const [previewingCamera, setPreviewingCamera] = useState<number | null>(null);
   const terminalRef = useRef<{ write: (data: string) => void; focus: () => void; dispose: () => void; resize: (cols: number, rows: number) => void; onData: (cb: (data: string) => void) => { dispose: () => void } } | null>(null);
   const terminalSessionRef = useRef<string | null>(null);
   const bridgeReady = desktopBridgeAvailability === "available";
+
+  useEffect(() => {
+    const saved = parseConnectionSettings(window.localStorage.getItem(CONNECTION_STORAGE_KEY));
+    if (saved) {
+      setForm((current) => ({
+        ...current,
+        followerPort: saved.followerPort,
+        leaderPort: saved.leaderPort,
+        robotId: saved.robotId,
+        teleopId: saved.teleopId,
+        cameras: saved.cameras
+      }));
+      setCameraCount(saved.cameraCount);
+    }
+    setConnectionLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!connectionLoaded) return;
+    window.localStorage.setItem(
+      CONNECTION_STORAGE_KEY,
+      serializeConnectionSettings(form, cameraCount)
+    );
+  }, [cameraCount, connectionLoaded, form]);
 
   useEffect(() => {
     if (desktopBridgeAvailability === "unavailable") {
@@ -168,8 +380,38 @@ export function SO101Client() {
     }
   }, [desktopBridgeAvailability, router]);
 
-  const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) => {
+  const updateField = <K extends keyof Omit<FormState, "cameras">>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
+    if (key === "followerPort" || key === "leaderPort") {
+      setPortChecks((current) => ({ ...current, [key]: idleCheck }));
+    }
+  };
+
+  const updateCamera = <K extends keyof CameraForm>(index: number, key: K, value: CameraForm[K]) => {
+    setForm((current) => {
+      const cameras = [...current.cameras] as [CameraForm, CameraForm, CameraForm];
+      cameras[index] = { ...cameras[index], [key]: value };
+      return { ...current, cameras };
+    });
+    setCameraChecks((current) => {
+      const next = [...current] as [CheckState, CheckState, CheckState];
+      next[index] = idleCheck;
+      return next;
+    });
+  };
+
+  const addCamera = () => {
+    const nextCount = Math.min(MAX_CAMERAS, cameraCount + 1);
+    if (nextCount === cameraCount) return;
+    const addedIndex = nextCount - 1;
+    setForm((currentForm) => {
+      const cameras = [...currentForm.cameras] as [CameraForm, CameraForm, CameraForm];
+      if (!cameras[addedIndex].id.trim()) {
+        cameras[addedIndex] = defaultCamera(addedIndex);
+      }
+      return { ...currentForm, cameras };
+    });
+    setCameraCount(nextCount);
   };
 
   const terminalContainerRef = useCallback((node: HTMLDivElement | null) => {
@@ -195,71 +437,13 @@ export function SO101Client() {
       });
       return;
     }
-    const nextStatus = await window.robotcloudDesktop.status();
-    setStatus(nextStatus);
-  }, []);
-
-  const applyDetectionMarkers = useCallback((text: string) => {
-    const portsPayload = markerPayload(text, "ROBOTCLOUD_PORTS_JSON=");
-    if (portsPayload) {
-      try {
-        const ports = JSON.parse(portsPayload) as PortInfo[];
-        const devices = ports.map((port) => port.device).filter(Boolean);
-        setDetectedPorts(ports);
-        setForm((current) => ({
-          ...current,
-          followerPort: current.followerPort || devices[0] || "",
-          leaderPort: current.leaderPort || devices.find((device) => device !== (current.followerPort || devices[0])) || ""
-        }));
-      } catch (error) {
-        appendLog(setLogs, "stderr", `Could not parse detected ports: ${String(error)}\n`);
-      }
-    }
-
-    const camerasPayload = markerPayload(text, "ROBOTCLOUD_CAMERAS_JSON=");
-    if (camerasPayload) {
-      try {
-        const cameras = JSON.parse(camerasPayload) as CameraInfo[];
-        const firstCamera = cameras[0];
-        setDetectedCameras(cameras);
-        if (firstCamera) {
-          const profile = firstCamera.default_stream_profile;
-          setForm((current) => ({
-            ...current,
-            cameraId: current.cameraId || cameraId(firstCamera),
-            width: profile?.width || current.width,
-            height: profile?.height || current.height,
-            fps: profile?.fps || current.fps
-          }));
-        }
-      } catch (error) {
-        appendLog(setLogs, "stderr", `Could not parse detected cameras: ${String(error)}\n`);
-      }
-    }
+    setStatus(await window.robotcloudDesktop.status());
   }, []);
 
   useEffect(() => {
     if (!bridgeReady) return;
-    refreshStatus().catch((error) => appendLog(setLogs, "stderr", String(error)));
+    refreshStatus().catch((error) => setTerminalError(String(error)));
   }, [bridgeReady, refreshStatus]);
-
-  useEffect(() => {
-    if (!bridgeReady || !window.robotcloudDesktop) return;
-    const offOutput = window.robotcloudDesktop.so101.onOutput((event) => {
-      applyDetectionMarkers(event.data);
-      appendLog(setLogs, event.stream, event.data);
-    });
-    const offExit = window.robotcloudDesktop.so101.onExit((event) => {
-      const runId = processRunId(event);
-      appendLog(setLogs, "system", `\n[process ${runId || "unknown"} exited: code=${event.code ?? "null"} signal=${event.signal ?? "null"}]\n`);
-      setActiveRunId((current) => (current === runId ? null : current));
-      refreshStatus().catch(() => undefined);
-    });
-    return () => {
-      offOutput();
-      offExit();
-    };
-  }, [applyDetectionMarkers, bridgeReady, refreshStatus]);
 
   useEffect(() => {
     if (!bridgeReady || !window.robotcloudDesktop || !terminalContainerEl || terminalRef.current) return;
@@ -299,7 +483,7 @@ export function SO101Client() {
         const currentSessionId = terminalSessionRef.current;
         if (!container || !currentSessionId) return;
         const cols = Math.max(40, Math.floor(container.clientWidth / 8));
-        const rows = Math.max(10, Math.floor(container.clientHeight / 17));
+        const rows = Math.max(14, Math.floor(container.clientHeight / 17));
         term.resize(cols, rows);
         window.robotcloudDesktop?.terminal.resize(currentSessionId, cols, rows).catch(() => undefined);
       };
@@ -319,10 +503,8 @@ export function SO101Client() {
     }
 
     startTerminal().catch((error) => {
-      const message = String(error);
       setTerminalPhase("failed");
-      setTerminalError(message);
-      appendLog(setLogs, "stderr", `Terminal failed: ${message}\n`);
+      setTerminalError(String(error));
     });
     return () => {
       disposed = true;
@@ -359,29 +541,85 @@ export function SO101Client() {
     };
   }, [bridgeReady]);
 
-  const runAction = async (action: string) => {
-    if (!window.robotcloudDesktop) {
-      appendLog(setLogs, "stderr", "RobotCloud Desktop bridge is not available.\n");
-      return;
+  const writeTerminalCommand = async (command: string) => {
+    const sessionId = terminalSessionRef.current;
+    if (!sessionId || !window.robotcloudDesktop) {
+      throw new Error("Terminal is not ready.");
     }
-    setLogs([]);
-    appendLog(setLogs, "system", `[starting ${action}]\n`);
-    const result = await window.robotcloudDesktop.so101.run(toRunConfig(action, form));
-    setActiveRunId(result.runId);
+    await window.robotcloudDesktop.terminal.write(sessionId, `${command}\r`);
+    terminalRef.current?.focus();
   };
 
-  const stopAction = async () => {
-    if (!activeRunId || !window.robotcloudDesktop) return;
-    const stoppedRunId = activeRunId;
-    const result = await window.robotcloudDesktop.so101.stop(stoppedRunId);
-    appendLog(
-      setLogs,
-      "system",
-      result.stopped
-        ? `\n[stop requested for ${stoppedRunId}]\n`
-        : `\n[process ${stoppedRunId} was already stopped]\n`
-    );
-    setActiveRunId(null);
+  const runAction = async (action: ActionId) => {
+    try {
+      setTerminalError(null);
+      await writeTerminalCommand(buildActionCommand(action, form, status, cameraCount));
+    } catch (error) {
+      setTerminalError(String(error));
+    }
+  };
+
+  const checkPort = async (key: PortKey) => {
+    if (!window.robotcloudDesktop) return;
+    setPortChecks((current) => ({ ...current, [key]: { phase: "checking", message: "" } }));
+    try {
+      const result = await window.robotcloudDesktop.so101.validatePort(form[key]);
+      setPortChecks((current) => ({
+        ...current,
+        [key]: { phase: result.ok ? "valid" : "invalid", message: result.message }
+      }));
+    } catch (error) {
+      setPortChecks((current) => ({
+        ...current,
+        [key]: { phase: "invalid", message: String(error) }
+      }));
+    }
+  };
+
+  const checkCamera = async (index: number) => {
+    if (!window.robotcloudDesktop) return;
+    const camera = form.cameras[index];
+    setCameraChecks((current) => {
+      const next = [...current] as [CheckState, CheckState, CheckState];
+      next[index] = { phase: "checking", message: "" };
+      return next;
+    });
+    try {
+      const result = await window.robotcloudDesktop.so101.validateCamera(camera.id, camera.width, camera.height);
+      setCameraChecks((current) => {
+        const next = [...current] as [CheckState, CheckState, CheckState];
+        next[index] = { phase: result.ok ? "valid" : "invalid", message: result.message };
+        return next;
+      });
+    } catch (error) {
+      setCameraChecks((current) => {
+        const next = [...current] as [CheckState, CheckState, CheckState];
+        next[index] = { phase: "invalid", message: String(error) };
+        return next;
+      });
+    }
+  };
+
+  const previewCamera = async (index: number) => {
+    if (!window.robotcloudDesktop) return;
+    const camera = form.cameras[index];
+    setPreviewingCamera(index);
+    try {
+      await window.robotcloudDesktop.so101.previewCamera(camera.id, camera.width, camera.height, camera.fps);
+      setCameraChecks((current) => {
+        const next = [...current] as [CheckState, CheckState, CheckState];
+        next[index] = { phase: "valid", message: "Preview opened." };
+        return next;
+      });
+    } catch (error) {
+      setCameraChecks((current) => {
+        const next = [...current] as [CheckState, CheckState, CheckState];
+        next[index] = { phase: "invalid", message: String(error) };
+        return next;
+      });
+    } finally {
+      setPreviewingCamera(null);
+    }
   };
 
   const statusCards = useMemo(
@@ -395,28 +633,222 @@ export function SO101Client() {
   );
 
   if (!bridgeReady) {
-    return null;
+    return (
+      <main className="flex min-h-[calc(100vh-10rem)] items-center justify-center">
+        <section className="w-full max-w-md rounded-lg border border-theme bg-card p-5 text-center">
+          <p className="text-sm font-semibold accent-text">Starting RobotCloud Desktop</p>
+          <p className="mt-2 text-xs text-muted">Waiting for the local desktop bridge.</p>
+        </section>
+      </main>
+    );
   }
 
   return (
-    <main className="space-y-6">
-      <header className="space-y-2">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 className="text-3xl font-bold text-body">SO101 Desktop Workbench</h1>
-            <p className="text-sm text-muted">
-              Local SO101 setup, calibration, teleoperation, dataset recording, and RobotCloud integration.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => refreshStatus()}
-            className="rounded-md border border-theme px-3 py-2 text-sm font-semibold accent-text transition hover:accent-bg"
-          >
-            Refresh status
-          </button>
-        </div>
+    <main className="space-y-5">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-3xl font-bold text-body">SO101 Desktop Workbench</h1>
+        <button
+          type="button"
+          onClick={() => refreshStatus()}
+          className="rounded-md border border-theme px-3 py-2 text-sm font-semibold accent-text transition hover:accent-bg"
+        >
+          Refresh status
+        </button>
       </header>
+
+      <section className="rounded-lg border border-theme bg-card p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-xl font-semibold accent-text">Terminal</h2>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted">{statusLabel(terminalPhase)}</span>
+            <button
+              type="button"
+              onClick={() => setActionsOpen((current) => !current)}
+              aria-expanded={actionsOpen}
+              aria-label="Toggle actions"
+              className="flex h-8 w-8 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg"
+            >
+              {actionsOpen ? "-" : "+"}
+            </button>
+          </div>
+        </div>
+        {actionsOpen ? (
+          <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
+            {actions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                onClick={() => runAction(action.id)}
+                disabled={terminalPhase !== "ready"}
+                className="shrink-0 rounded-md border border-theme bg-surface px-3 py-2 text-sm font-semibold accent-text transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div
+          ref={terminalContainerRef}
+          onClick={() => terminalRef.current?.focus()}
+          className="mt-4 h-[30rem] overflow-hidden rounded-md border border-theme bg-[#07111f] p-2"
+        />
+        {terminalError ? <p className="mt-3 text-xs text-red-400">{terminalError}</p> : null}
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-2">
+        <section className="rounded-lg border border-theme bg-card p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-xl font-semibold accent-text">Connection</h2>
+              <button
+                type="button"
+                onClick={addCamera}
+                disabled={cameraCount >= MAX_CAMERAS}
+                aria-label="Add camera"
+                className="flex h-8 w-8 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                +
+              </button>
+            </div>
+            <div className="mt-4 grid gap-4">
+              {([
+                ["followerPort", "Follower port"],
+                ["leaderPort", "Leader port"]
+              ] as Array<[PortKey, string]>).map(([key, label]) => (
+                <div key={key}>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <label className="min-w-0 flex-1 text-sm">
+                      <span className="text-muted">{label}</span>
+                      <input
+                        value={form[key]}
+                        onChange={(event) => updateField(key, event.target.value)}
+                        placeholder="/dev/cu.usbmodem..."
+                        className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body"
+                      />
+                    </label>
+                    <CheckButton state={portChecks[key]} onClick={() => checkPort(key)} disabled={!form[key].trim()} />
+                  </div>
+                  {portChecks[key].message ? <p className="mt-1 text-xs text-muted">{portChecks[key].message}</p> : null}
+                </div>
+              ))}
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="text-sm">
+                  <span className="text-muted">Robot ID</span>
+                  <input
+                    value={form.robotId}
+                    onChange={(event) => updateField("robotId", event.target.value)}
+                    className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body"
+                  />
+                </label>
+                <label className="text-sm">
+                  <span className="text-muted">Teleop ID</span>
+                  <input
+                    value={form.teleopId}
+                    onChange={(event) => updateField("teleopId", event.target.value)}
+                    className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body"
+                  />
+                </label>
+              </div>
+
+              {form.cameras.slice(0, cameraCount).map((camera, index) => (
+                <div key={cameraLabels[index]} className="rounded-md border border-theme bg-surface p-3">
+                  <div className="flex flex-wrap items-end gap-2">
+                    <label className="min-w-0 flex-1 text-sm">
+                      <span className="text-muted">{cameraLabels[index]} id/path</span>
+                      <input
+                        value={camera.id}
+                        onChange={(event) => updateCamera(index, "id", event.target.value)}
+                        placeholder={String(index)}
+                        className="mt-1 w-full rounded-md border border-theme bg-card p-2 text-body"
+                      />
+                    </label>
+                    <CheckButton
+                      state={cameraChecks[index]}
+                      onClick={() => checkCamera(index)}
+                      disabled={!camera.id.trim()}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => previewCamera(index)}
+                      disabled={!camera.id.trim() || previewingCamera === index}
+                      className="rounded-md border border-theme px-3 py-2 text-xs font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {previewingCamera === index ? "Opening" : "Preview"}
+                    </button>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                    <label className="text-xs text-muted">
+                      Width
+                      <input
+                        type="number"
+                        value={camera.width}
+                        onChange={(event) => updateCamera(index, "width", Number(event.target.value))}
+                        className="mt-1 w-full rounded-md border border-theme bg-card p-2 text-body"
+                      />
+                    </label>
+                    <label className="text-xs text-muted">
+                      Height
+                      <input
+                        type="number"
+                        value={camera.height}
+                        onChange={(event) => updateCamera(index, "height", Number(event.target.value))}
+                        className="mt-1 w-full rounded-md border border-theme bg-card p-2 text-body"
+                      />
+                    </label>
+                    <label className="text-xs text-muted">
+                      FPS
+                      <input
+                        type="number"
+                        value={camera.fps}
+                        onChange={(event) => updateCamera(index, "fps", Number(event.target.value))}
+                        className="mt-1 w-full rounded-md border border-theme bg-card p-2 text-body"
+                      />
+                    </label>
+                  </div>
+                  {cameraChecks[index].message ? <p className="mt-2 text-xs text-muted">{cameraChecks[index].message}</p> : null}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-theme bg-card p-5">
+            <h2 className="text-xl font-semibold accent-text">Record</h2>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <label className="text-sm">
+                <span className="text-muted">Dataset repo id</span>
+                <input value={form.datasetRepoId} onChange={(event) => updateField("datasetRepoId", event.target.value)} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">Dataset root</span>
+                <input value={form.datasetRoot} onChange={(event) => updateField("datasetRoot", event.target.value)} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">Episodes</span>
+                <input type="number" value={form.episodes} onChange={(event) => updateField("episodes", Number(event.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">Episode seconds</span>
+                <input type="number" value={form.episodeTimeS} onChange={(event) => updateField("episodeTimeS", Number(event.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">Teleop seconds</span>
+                <input type="number" value={form.teleopTimeS} onChange={(event) => updateField("teleopTimeS", Number(event.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">Max relative target</span>
+                <input type="number" step="0.5" value={form.maxRelativeTarget} onChange={(event) => updateField("maxRelativeTarget", Number(event.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+              </label>
+              <label className="text-sm md:col-span-2">
+                <span className="text-muted">Task label</span>
+                <input value={form.task} onChange={(event) => updateField("task", event.target.value)} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input type="checkbox" checked={form.displayData} onChange={(event) => updateField("displayData", event.target.checked)} />
+                Display LeRobot data windows
+              </label>
+            </div>
+          </section>
+      </section>
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {statusCards.map((card) => (
@@ -428,178 +860,6 @@ export function SO101Client() {
             <p className="mt-2 break-all text-xs text-muted">{card.detail}</p>
           </div>
         ))}
-      </section>
-
-      <section className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-        <div className="space-y-4">
-          <section className="rounded-lg border border-theme bg-card p-5">
-            <h2 className="text-xl font-semibold accent-text">Connection</h2>
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              <label className="text-sm">
-                <span className="text-muted">Follower port</span>
-                <input
-                  value={form.followerPort}
-                  onChange={(e) => updateField("followerPort", e.target.value)}
-                  list="so101-detected-ports"
-                  placeholder="Run Detect ports"
-                  className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body"
-                />
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Leader port</span>
-                <input
-                  value={form.leaderPort}
-                  onChange={(e) => updateField("leaderPort", e.target.value)}
-                  list="so101-detected-ports"
-                  placeholder="Run Detect ports"
-                  className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body"
-                />
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Camera id/path</span>
-                <input
-                  value={form.cameraId}
-                  onChange={(e) => updateField("cameraId", e.target.value)}
-                  list="so101-detected-cameras"
-                  placeholder="Run Detect cameras"
-                  className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body"
-                />
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">FPS</span>
-                <input type="number" value={form.fps} onChange={(e) => updateField("fps", Number(e.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Width</span>
-                <input type="number" value={form.width} onChange={(e) => updateField("width", Number(e.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Height</span>
-                <input type="number" value={form.height} onChange={(e) => updateField("height", Number(e.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
-              </label>
-            </div>
-            <datalist id="so101-detected-ports">
-              {detectedPorts.map((port) => (
-                <option key={port.device} value={port.device} label={portLabel(port)} />
-              ))}
-            </datalist>
-            <datalist id="so101-detected-cameras">
-              {detectedCameras.map((camera) => {
-                const id = cameraId(camera);
-                return <option key={id} value={id} label={cameraLabel(camera)} />;
-              })}
-            </datalist>
-            {detectedPorts.length || detectedCameras.length ? (
-              <div className="mt-4 space-y-2 text-xs text-muted">
-                {detectedPorts.length ? (
-                  <p>Ports: {detectedPorts.map((port) => portLabel(port)).join("; ")}</p>
-                ) : null}
-                {detectedCameras.length ? (
-                  <p>Cameras: {detectedCameras.map((camera) => cameraLabel(camera)).join("; ")}</p>
-                ) : null}
-              </div>
-            ) : null}
-          </section>
-
-          <section className="rounded-lg border border-theme bg-card p-5">
-            <h2 className="text-xl font-semibold accent-text">Capture</h2>
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              <label className="text-sm">
-                <span className="text-muted">Dataset repo id</span>
-                <input value={form.datasetRepoId} onChange={(e) => updateField("datasetRepoId", e.target.value)} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Dataset root</span>
-                <input value={form.datasetRoot} onChange={(e) => updateField("datasetRoot", e.target.value)} placeholder="Auto if empty" className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Episodes</span>
-                <input type="number" value={form.episodes} onChange={(e) => updateField("episodes", Number(e.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Episode seconds</span>
-                <input type="number" value={form.episodeTimeS} onChange={(e) => updateField("episodeTimeS", Number(e.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Teleop seconds</span>
-                <input type="number" value={form.teleopTimeS} onChange={(e) => updateField("teleopTimeS", Number(e.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Max relative target</span>
-                <input type="number" step="0.5" value={form.maxRelativeTarget} onChange={(e) => updateField("maxRelativeTarget", Number(e.target.value))} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
-              </label>
-              <label className="text-sm md:col-span-2">
-                <span className="text-muted">Task label</span>
-                <input value={form.task} onChange={(e) => updateField("task", e.target.value)} className="mt-1 w-full rounded-md border border-theme bg-surface p-2 text-body" />
-              </label>
-              <label className="flex items-center gap-2 text-sm text-muted">
-                <input type="checkbox" checked={form.displayData} onChange={(e) => updateField("displayData", e.target.checked)} />
-                Display LeRobot data windows
-              </label>
-            </div>
-          </section>
-        </div>
-
-        <div className="space-y-4">
-          <section className="rounded-lg border border-theme bg-card p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-xl font-semibold accent-text">Actions</h2>
-              <button
-                type="button"
-                onClick={stopAction}
-                disabled={!activeRunId}
-                className="rounded-md border border-red-500/50 px-3 py-2 text-sm font-semibold text-red-400 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Stop current run
-              </button>
-            </div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              {quickActions.map((action) => (
-                <button
-                  key={action.id}
-                  type="button"
-                  onClick={() => runAction(action.id)}
-                  disabled={!bridgeReady || Boolean(activeRunId)}
-                  className="rounded-lg border border-theme bg-surface p-3 text-left transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <span className="block font-semibold accent-text">{action.label}</span>
-                  <span className="mt-1 block text-xs text-muted">{action.description}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="rounded-lg border border-theme bg-card p-5">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-xl font-semibold accent-text">Command Output</h2>
-              <span className="text-xs text-muted">{activeRunId ? `Running ${activeRunId}` : "Idle"}</span>
-            </div>
-            <pre className="mt-4 h-72 overflow-auto rounded-md bg-[#07111f] p-3 text-xs leading-relaxed text-[#d9e8f2]">
-              {logs.length ? logs.map((line) => line.text).join("") : "No command output yet."}
-            </pre>
-          </section>
-
-          <section className="rounded-lg border border-theme bg-card p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-xl font-semibold accent-text">Terminal</h2>
-              <span className="text-xs text-muted">
-                {terminalPhase === "ready"
-                  ? "Ready"
-                  : terminalPhase === "failed"
-                    ? "Failed"
-                    : terminalPhase === "closed"
-                      ? "Closed"
-                      : "Starting"}
-              </span>
-            </div>
-            <div
-              ref={terminalContainerRef}
-              onClick={() => terminalRef.current?.focus()}
-              className="mt-4 h-72 overflow-hidden rounded-md border border-theme bg-[#07111f] p-2"
-            />
-            {terminalError ? <p className="mt-3 text-xs text-red-400">{terminalError}</p> : null}
-          </section>
-        </div>
       </section>
     </main>
   );

@@ -10,6 +10,7 @@ endif
 REQUIRED_ENV_VARS := \
 	BACKEND_HOST \
 	BACKEND_PORT \
+	FRONTEND_PORT \
 	PUBLIC_API_BASE_URL \
 	DJANGO_ALLOWED_HOSTS \
 	DJANGO_CORS_ALLOWED_ORIGINS \
@@ -39,11 +40,20 @@ info-volc:
 	@echo "ssh -i ~/code/scripts/envrc/volcengine-robotcloud.pem root@115.190.243.112"
 	@echo "/opt/robotcloud"
 
+build-desktop:
+	cd desktop && pnpm build:mac:debug
+
 ####### DEPLOY ########
 serve:
 	cd backend && \
 	USE_SQLITE=1 DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) DJANGO_CORS_ALLOWED_ORIGINS=$(DJANGO_CORS_ALLOWED_ORIGINS) USE_IN_MEMORY_CACHE=1 \
 	uv run gunicorn robotcloud_backend.wsgi:application -b $(BACKEND_HOST):$(BACKEND_PORT)
+
+run-frontend:
+	( cd frontend && NEXT_PUBLIC_API_BASE_URL=$(PUBLIC_API_BASE_URL) npm run dev -- --hostname $(FRONTEND_HOST) --port $(FRONTEND_PORT) ) & \
+	FRONT_PID=$$!; \
+	trap 'kill $$FRONT_PID 2>/dev/null || true' INT TERM EXIT; \
+	wait $$FRONT_PID
 
 run-all:
 	@set -e; \

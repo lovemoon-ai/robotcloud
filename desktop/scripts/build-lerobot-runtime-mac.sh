@@ -13,7 +13,7 @@ LEROBOT_SPEC="lerobot==0.5.1"
 TORCH_SPEC="torch==2.10.0"
 TORCHVISION_SPEC="torchvision==0.25.0"
 TORCH_INDEX_URL=""
-EXTRA_PIP_PACKAGES=()
+EXTRA_PIP_PACKAGES=("feetech-servo-sdk>=1.0.0,<2.0.0")
 FORCE=0
 SKIP_SMOKE_TEST=0
 
@@ -239,7 +239,7 @@ test_runtime_env() {
   fi
 
   if [[ "${SKIP_SMOKE_TEST}" -ne 1 ]]; then
-    run_checked "${python}" -c "import lerobot, torch, torchvision, serial; print('runtime imports ok')"
+    run_checked "${python}" -c "import lerobot, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')"
     PATH="${ENV_PATH}/bin:${PATH}" run_checked "${lerobot_info}"
   fi
 }

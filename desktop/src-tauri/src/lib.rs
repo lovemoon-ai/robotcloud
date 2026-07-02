@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 use uuid::Uuid;
 
 const RELEASE_WEB_URL: &str = "https://robotcloud.conductor-ai.top/so101/";
-const DEBUG_WEB_URL: &str = "http://127.0.0.1:3000/so101/";
+const DEBUG_WEB_URL: &str = "http://127.0.0.1:6151/so101/";
 
 const BRIDGE_SCRIPT: &str = r#"
 (function () {
@@ -45,6 +45,9 @@ const BRIDGE_SCRIPT: &str = r#"
       so101: {
         run: function (config) { return core.invoke("so101_run", { config: config }); },
         stop: function (runId) { return core.invoke("so101_stop", { runId: runId }); },
+        validatePort: function (value) { return core.invoke("so101_validate_port", { value: value }); },
+        validateCamera: function (cameraId, width, height) { return core.invoke("so101_validate_camera", { cameraId: cameraId, width: width, height: height }); },
+        previewCamera: function (cameraId, width, height, fps) { return core.invoke("so101_preview_camera", { cameraId: cameraId, width: width, height: height, fps: fps }); },
         onOutput: function (callback) { return listen("so101-output", callback); },
         onExit: function (callback) { return listen("so101-exit", callback); }
       },
@@ -141,6 +144,19 @@ struct TerminalExitEvent {
     signal: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ValidationResult {
+    ok: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewStarted {
+    run_id: String,
+}
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct So101RunConfig {
@@ -170,6 +186,14 @@ fn default_web_url() -> &'static str {
         DEBUG_WEB_URL
     } else {
         RELEASE_WEB_URL
+    }
+}
+
+fn app_title() -> &'static str {
+    if cfg!(debug_assertions) {
+        "RobotCloud-debug"
+    } else {
+        "RobotCloud"
     }
 }
 
@@ -446,27 +470,32 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn command_env(app: &AppHandle) -> Result<Vec<(String, String)>, String> {
-    let runtime = runtime_path(app);
-    let data = data_dir(app)?;
+fn build_command_path(
+    runtime: &Path,
+    current_path: Option<std::ffi::OsString>,
+) -> Result<String, String> {
     let mut path_parts = Vec::new();
     if cfg!(target_os = "windows") {
         path_parts.push(runtime.join("Scripts"));
         path_parts.push(runtime.join("Library").join("bin"));
-        path_parts.push(runtime.clone());
+        path_parts.push(runtime.to_path_buf());
     } else {
         path_parts.push(runtime.join("bin"));
     }
-    let mut joined_parts: Vec<std::ffi::OsString> = path_parts
-        .iter()
-        .map(|path| path.as_os_str().to_os_string())
-        .collect();
-    if let Some(current_path) = env::var_os("PATH") {
-        joined_parts.push(current_path);
+    if let Some(current_path) = current_path {
+        path_parts.extend(env::split_paths(&current_path));
     }
-    let path_value = env::join_paths(joined_parts).map_err(|error| error.to_string())?;
+    env::join_paths(path_parts)
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(|error| error.to_string())
+}
+
+fn command_env(app: &AppHandle) -> Result<Vec<(String, String)>, String> {
+    let runtime = runtime_path(app);
+    let data = data_dir(app)?;
+    let path_value = build_command_path(&runtime, env::var_os("PATH"))?;
     Ok(vec![
-        ("PATH".to_string(), path_value.to_string_lossy().to_string()),
+        ("PATH".to_string(), path_value),
         ("PYTHONUTF8".to_string(), "1".to_string()),
         ("PYTHONIOENCODING".to_string(), "utf-8".to_string()),
         ("ROBOTCLOUD_API_BASE_URL".to_string(), api_base_url()),
@@ -495,6 +524,66 @@ fn powershell_program() -> String {
         }
     }
     "powershell.exe".to_string()
+}
+
+#[cfg(unix)]
+fn valid_unix_shell(shell: &str) -> Option<String> {
+    let shell = shell.trim();
+    if shell.is_empty() || shell.contains('\0') {
+        return None;
+    }
+    let path = Path::new(shell);
+    if path.is_absolute() && path.is_file() {
+        Some(shell.to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn unix_terminal_shell() -> String {
+    if let Ok(shell) = env::var("SHELL") {
+        if let Some(shell) = valid_unix_shell(&shell) {
+            return shell;
+        }
+    }
+
+    for candidate in [
+        "/bin/zsh",
+        "/bin/bash",
+        "/usr/bin/zsh",
+        "/usr/bin/bash",
+        "/bin/sh",
+        "/usr/bin/sh",
+    ] {
+        if let Some(shell) = valid_unix_shell(candidate) {
+            return shell;
+        }
+    }
+
+    "/bin/sh".to_string()
+}
+
+fn terminal_command() -> (String, Vec<String>) {
+    if cfg!(target_os = "windows") {
+        (
+            powershell_program(),
+            vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+            ],
+        )
+    } else {
+        #[cfg(unix)]
+        {
+            return (unix_terminal_shell(), vec!["-l".to_string()]);
+        }
+
+        #[allow(unreachable_code)]
+        ("/bin/sh".to_string(), vec!["-l".to_string()])
+    }
 }
 
 fn allowed_action(action: &str) -> bool {
@@ -912,12 +1001,152 @@ fn watch_terminal_process(
     });
 }
 
+const CAMERA_VALIDATE_SCRIPT: &str = r#"
+import sys
+
+raw = sys.argv[1].strip()
+width = int(sys.argv[2])
+height = int(sys.argv[3])
+
+try:
+    import cv2
+except Exception as exc:
+    raise SystemExit(f"Could not import OpenCV: {exc}")
+
+source = int(raw) if raw.isdigit() else raw
+cap = cv2.VideoCapture(source)
+if width > 0:
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+if height > 0:
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+if not cap.isOpened():
+    cap.release()
+    raise SystemExit(f"Camera is not available: {raw}")
+
+ok, frame = cap.read()
+cap.release()
+if not ok or frame is None:
+    raise SystemExit(f"Camera opened but did not return a frame: {raw}")
+
+print(f"Camera is available: {raw}")
+"#;
+
+const CAMERA_PREVIEW_SCRIPT: &str = r#"
+import sys
+import time
+
+raw = sys.argv[1].strip()
+width = int(sys.argv[2])
+height = int(sys.argv[3])
+fps = int(sys.argv[4])
+
+try:
+    import cv2
+except Exception as exc:
+    raise SystemExit(f"Could not import OpenCV: {exc}")
+
+source = int(raw) if raw.isdigit() else raw
+cap = cv2.VideoCapture(source)
+if width > 0:
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+if height > 0:
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+if fps > 0:
+    cap.set(cv2.CAP_PROP_FPS, fps)
+
+if not cap.isOpened():
+    cap.release()
+    raise SystemExit(f"Camera is not available: {raw}")
+
+window = f"RobotCloud Camera Preview - {raw}"
+cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+while True:
+    ok, frame = cap.read()
+    if not ok or frame is None:
+        time.sleep(0.05)
+        continue
+    cv2.imshow(window, frame)
+    key = cv2.waitKey(1) & 0xFF
+    if key in (27, ord("q")):
+        break
+    try:
+        if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+            break
+    except cv2.error:
+        break
+
+cap.release()
+cv2.destroyWindow(window)
+"#;
+
+fn ok_validation(message: impl Into<String>) -> ValidationResult {
+    ValidationResult {
+        ok: true,
+        message: message.into(),
+    }
+}
+
+fn failed_validation(message: impl Into<String>) -> ValidationResult {
+    ValidationResult {
+        ok: false,
+        message: message.into(),
+    }
+}
+
+fn trim_required(value: &str, label: &str) -> Result<String, ValidationResult> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(failed_validation(format!("{label} is required.")))
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+fn camera_source_is_readable(
+    app: &AppHandle,
+    camera_id: &str,
+    width: u32,
+    height: u32,
+) -> Result<ValidationResult, String> {
+    let runtime = ensure_runtime(app)?;
+    let width = width.to_string();
+    let height = height.to_string();
+    let output = Command::new(python_path(&runtime))
+        .args(["-c", CAMERA_VALIDATE_SCRIPT, camera_id, &width, &height])
+        .current_dir(data_dir(app)?)
+        .envs(command_env(app)?)
+        .output()
+        .map_err(|error| format!("failed to validate camera: {error}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if output.status.success() {
+        Ok(ok_validation(if stdout.is_empty() {
+            format!("Camera is available: {camera_id}")
+        } else {
+            stdout
+        }))
+    } else {
+        Ok(failed_validation(if stderr.is_empty() {
+            format!("Camera validation failed: {camera_id}")
+        } else {
+            stderr
+        }))
+    }
+}
+
 #[tauri::command]
 fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
-    let runtime_result = ensure_runtime(&app);
-    let runtime_error = runtime_result.as_ref().err().cloned();
-    let runtime = runtime_result.unwrap_or_else(|_| runtime_path(&app));
+    let runtime = runtime_path(&app);
     let archive = runtime_archive_path(&app);
+    let runtime_ready = python_path(&runtime).exists();
+    let runtime_archive_ready = archive.as_ref().is_some_and(|path| path.exists());
+    let runtime_error = if runtime_ready || runtime_archive_ready {
+        None
+    } else {
+        Some(format!("LeRobot runtime not found: {}", runtime.display()))
+    };
     let script = script_path(&app);
     let data = data_dir(&app)?;
     Ok(DesktopStatus {
@@ -926,9 +1155,9 @@ fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
         app_version: app.package_info().version.to_string(),
         api_base_url: api_base_url(),
         web_url: web_url(),
-        runtime_ready: python_path(&runtime).exists(),
+        runtime_ready,
         runtime_path: Some(runtime.to_string_lossy().to_string()),
-        runtime_archive_ready: archive.as_ref().is_some_and(|path| path.exists()),
+        runtime_archive_ready,
         runtime_archive_path: archive.map(|path| path.to_string_lossy().to_string()),
         runtime_error,
         script_ready: script.exists(),
@@ -1012,25 +1241,103 @@ fn so101_stop(state: State<AppState>, run_id: String) -> Result<serde_json::Valu
 }
 
 #[tauri::command]
+fn so101_validate_port(value: String) -> ValidationResult {
+    let value = match trim_required(&value, "port") {
+        Ok(value) => value,
+        Err(result) => return result,
+    };
+
+    if cfg!(target_os = "windows") {
+        let upper = value.to_ascii_uppercase();
+        let is_com = upper.strip_prefix("COM").is_some_and(|suffix| {
+            !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+        });
+        if is_com || Path::new(&value).exists() {
+            ok_validation(format!("Port is available: {value}"))
+        } else {
+            failed_validation(format!("Port was not found: {value}"))
+        }
+    } else if Path::new(&value).exists() {
+        ok_validation(format!("Port is available: {value}"))
+    } else {
+        failed_validation(format!("Port was not found: {value}"))
+    }
+}
+
+#[tauri::command]
+fn so101_validate_camera(
+    app: AppHandle,
+    camera_id: String,
+    width: u32,
+    height: u32,
+) -> Result<ValidationResult, String> {
+    let camera_id = match trim_required(&camera_id, "camera id") {
+        Ok(value) => value,
+        Err(result) => return Ok(result),
+    };
+    camera_source_is_readable(&app, &camera_id, width, height)
+}
+
+#[tauri::command]
+fn so101_preview_camera(
+    app: AppHandle,
+    state: State<AppState>,
+    camera_id: String,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> Result<PreviewStarted, String> {
+    let camera_id = trim_required(&camera_id, "camera id").map_err(|result| result.message)?;
+    let runtime = ensure_runtime(&app)?;
+    let run_id = Uuid::new_v4().to_string();
+    let mut child = Command::new(python_path(&runtime))
+        .arg("-c")
+        .arg(CAMERA_PREVIEW_SCRIPT)
+        .arg(&camera_id)
+        .arg(width.to_string())
+        .arg(height.to_string())
+        .arg(fps.to_string())
+        .current_dir(data_dir(&app)?)
+        .envs(command_env(&app)?)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to start camera preview: {error}"))?;
+
+    if let Some(stdout) = child.stdout.take() {
+        spawn_reader(
+            app.clone(),
+            "so101-output",
+            run_id.clone(),
+            Some("stdout"),
+            stdout,
+        );
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_reader(
+            app.clone(),
+            "so101-output",
+            run_id.clone(),
+            Some("stderr"),
+            stderr,
+        );
+    }
+
+    state
+        .processes
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(run_id.clone(), Arc::new(Mutex::new(child)));
+    watch_process(app, state.processes.clone(), run_id.clone(), "so101-exit");
+    Ok(PreviewStarted { run_id })
+}
+
+#[tauri::command]
 fn terminal_start(app: AppHandle, state: State<AppState>) -> Result<TerminalStarted, String> {
     ensure_runtime(&app)?;
     let session_id = Uuid::new_v4().to_string();
-    let (shell, args): (String, Vec<String>) = if cfg!(target_os = "windows") {
-        (
-            powershell_program(),
-            vec![
-                "-NoLogo".to_string(),
-                "-NoProfile".to_string(),
-                "-ExecutionPolicy".to_string(),
-                "Bypass".to_string(),
-            ],
-        )
-    } else {
-        (
-            env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
-            vec!["-l".to_string()],
-        )
-    };
+    let (shell, args) = terminal_command();
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -1172,6 +1479,9 @@ pub fn run() {
             desktop_status,
             so101_run,
             so101_stop,
+            so101_validate_port,
+            so101_validate_camera,
+            so101_preview_camera,
             terminal_start,
             terminal_write,
             terminal_resize,
@@ -1185,7 +1495,7 @@ pub fn run() {
                 ))
             })?;
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed_url))
-                .title("RobotCloud")
+                .title(app_title())
                 .inner_size(1280.0, 860.0)
                 .min_inner_size(980.0, 700.0)
                 .initialization_script(BRIDGE_SCRIPT)
@@ -1210,12 +1520,21 @@ mod tests {
     #[test]
     fn default_web_url_follows_build_profile() {
         if cfg!(debug_assertions) {
-            assert_eq!(default_web_url(), "http://127.0.0.1:3000/so101/");
+            assert_eq!(default_web_url(), "http://127.0.0.1:6151/so101/");
         } else {
             assert_eq!(
                 default_web_url(),
                 "https://robotcloud.conductor-ai.top/so101/"
             );
+        }
+    }
+
+    #[test]
+    fn app_title_follows_build_profile() {
+        if cfg!(debug_assertions) {
+            assert_eq!(app_title(), "RobotCloud-debug");
+        } else {
+            assert_eq!(app_title(), "RobotCloud");
         }
     }
 
@@ -1259,6 +1578,39 @@ mod tests {
             assert_eq!(args.first().map(String::as_str), Some("bash"));
             assert!(args.windows(2).any(|pair| pair == ["--action", "info"]));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_invalid_shell_env_values() {
+        assert!(valid_unix_shell("C:\\Windows\\System32\\cmd.exe").is_none());
+        assert!(valid_unix_shell("zsh").is_none());
+        assert!(valid_unix_shell("").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_command_uses_absolute_unix_shell() {
+        let (program, args) = terminal_command();
+        assert!(Path::new(&program).is_absolute());
+        assert!(!program.contains('\\'));
+        assert_eq!(args, vec!["-l".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_path_splits_existing_path_before_joining() {
+        let runtime = Path::new("/tmp/robotcloud-runtime");
+        let path = build_command_path(
+            runtime,
+            Some(std::ffi::OsString::from("/usr/bin:/bin:/opt/homebrew/bin")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            path,
+            "/tmp/robotcloud-runtime/bin:/usr/bin:/bin:/opt/homebrew/bin"
+        );
     }
 
     #[cfg(unix)]
