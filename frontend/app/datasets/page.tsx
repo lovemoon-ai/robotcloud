@@ -9,13 +9,41 @@ import { useAuthStore } from "@/store/useAuthStore";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useLocaleStore } from "@/store/useLocaleStore";
+import {
+  clearPreparedDatasetUpload,
+  readPreparedDatasetUpload,
+  type PreparedDatasetUploadState
+} from "@/desktop/preparedDatasetUpload";
 
 interface DatasetForm {
   name: string;
   description: string;
   visibility: "public" | "private";
   targetNode: string;
-  file: FileList;
+  file?: FileList;
+}
+
+function normalizeArrayBuffer(value: unknown): ArrayBuffer {
+  if (value instanceof ArrayBuffer) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) {
+    const view = value as ArrayBufferView;
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice().buffer;
+  }
+  if (Array.isArray(value)) {
+    return new Uint8Array(value).buffer;
+  }
+  throw new Error("Invalid prepared upload file response");
+}
+
+function preparedUploadLastModified(value: string): number {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
 export default function DatasetsPage() {
@@ -26,6 +54,7 @@ export default function DatasetsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [preparedUpload, setPreparedUpload] = useState<PreparedDatasetUploadState | null>(null);
   const { data, isLoading, error } = useQuery({
     queryKey: ["datasets"],
     queryFn: robotCloudApi.listDatasets,
@@ -69,6 +98,10 @@ export default function DatasetsPage() {
           uploading: "上传中...",
           success: "数据集上传成功",
           missingFile: "请选择要上传的压缩文件。",
+          preparedLabel: "已准备的数据包",
+          preparedSource: "来自 SO101 Desktop",
+          preparedClear: "移除",
+          preparedReadError: "读取已打包数据失败，请返回 SO101 重新打包。",
           fallbackError: "上传失败，请稍后重试。"
         },
         list: {
@@ -123,6 +156,10 @@ export default function DatasetsPage() {
           uploading: "Uploading...",
           success: "Dataset uploaded successfully",
           missingFile: "Select an archive file to upload.",
+          preparedLabel: "Prepared package",
+          preparedSource: "From SO101 Desktop",
+          preparedClear: "Remove",
+          preparedReadError: "Could not read the prepared package. Go back to SO101 and package it again.",
           fallbackError: "Upload failed, please try again later."
         },
         list: {
@@ -161,6 +198,17 @@ export default function DatasetsPage() {
   const selectedTargetNode = form.watch("targetNode");
 
   useEffect(() => {
+    const prepared = readPreparedDatasetUpload();
+    if (!prepared) {
+      return;
+    }
+    setPreparedUpload(prepared);
+    form.setValue("name", prepared.name, { shouldDirty: false });
+    form.setValue("description", prepared.description, { shouldDirty: false });
+    form.setValue("visibility", prepared.visibility, { shouldDirty: false });
+  }, [form]);
+
+  useEffect(() => {
     if (!token) {
       return;
     }
@@ -186,6 +234,8 @@ export default function DatasetsPage() {
       setSuccess(copy.upload.success);
       setFormError(null);
       setUploadProgress(0);
+      clearPreparedDatasetUpload();
+      setPreparedUpload(null);
       form.reset({
         name: "",
         description: "",
@@ -218,13 +268,38 @@ export default function DatasetsPage() {
     }
   };
 
+  const clearPreparedUpload = () => {
+    clearPreparedDatasetUpload();
+    setPreparedUpload(null);
+  };
+
+  const readPreparedUploadFile = async (prepared: PreparedDatasetUploadState): Promise<File> => {
+    if (!window.robotcloudDesktop?.dataset) {
+      throw new Error(copy.upload.preparedReadError);
+    }
+    const buffer = normalizeArrayBuffer(await window.robotcloudDesktop.dataset.readPreparedUpload(prepared.filePath));
+    return new File([buffer], prepared.fileName, {
+      type: "application/zip",
+      lastModified: preparedUploadLastModified(prepared.createdAt)
+    });
+  };
+
   const onSubmit = form.handleSubmit(async (values) => {
     if (!token) {
       setFormError(copy.upload.loginNotice);
       router.push("/login");
       return;
     }
-    const file = values.file?.[0];
+    let file = values.file?.[0];
+    if (!file && preparedUpload) {
+      try {
+        file = await readPreparedUploadFile(preparedUpload);
+      } catch (readError) {
+        setSuccess(null);
+        setFormError(readError instanceof Error ? readError.message : copy.upload.preparedReadError);
+        return;
+      }
+    }
     if (!file) {
       setFormError(copy.upload.missingFile);
       return;
@@ -236,14 +311,18 @@ export default function DatasetsPage() {
     setFormError(null);
     setSuccess(null);
     setUploadProgress(0);
-    await mutation.mutateAsync({
-      file,
-      name: values.name,
-      description: values.description,
-      visibility: values.visibility,
-      targetNode: values.targetNode,
-      onProgress: (percent) => setUploadProgress(percent)
-    });
+    try {
+      await mutation.mutateAsync({
+        file,
+        name: values.name,
+        description: values.description,
+        visibility: values.visibility,
+        targetNode: values.targetNode,
+        onProgress: (percent) => setUploadProgress(percent)
+      });
+    } catch {
+      // Error state is handled by the mutation callbacks.
+    }
   });
 
   return (
@@ -276,13 +355,38 @@ export default function DatasetsPage() {
             <input
               type="file"
               accept=".zip,.tar,.gz,.tgz,.rar"
-              {...form.register("file", { required: copy.upload.fileRequired })}
+              {...form.register("file", {
+                validate: (value) => Boolean(preparedUpload || value?.[0]) || copy.upload.fileRequired
+              })}
               className="mt-1 w-full rounded-md border border-dashed border-theme bg-surface p-2 text-sm file:mr-3 file:rounded-md file:border-0 file:gradient-primary file:px-3 file:py-1 file:font-semibold file:text-white hover:file:opacity-90"
             />
             {form.formState.errors.file ? (
               <span className="text-xs text-red-400">{form.formState.errors.file.message as string}</span>
             ) : null}
           </label>
+          {preparedUpload ? (
+            <div className="rounded-md border border-primary/30 accent-bg p-3 text-sm">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-semibold text-primary-light">{copy.upload.preparedLabel}</p>
+                  <p className="mt-1 break-all text-xs text-muted">
+                    {preparedUpload.fileName}
+                    {formatBytes(preparedUpload.fileSize) ? ` · ${formatBytes(preparedUpload.fileSize)}` : ""}
+                  </p>
+                  <p className="mt-1 break-all text-[11px] text-muted">
+                    {copy.upload.preparedSource} · {preparedUpload.datasetRoot}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearPreparedUpload}
+                  className="rounded-md border border-theme px-2 py-1 text-xs font-semibold accent-text transition hover:bg-surface"
+                >
+                  {copy.upload.preparedClear}
+                </button>
+              </div>
+            </div>
+          ) : null}
           <label className="block text-sm">
             <span className="text-muted">{copy.upload.visibilityLabel}</span>
             <select

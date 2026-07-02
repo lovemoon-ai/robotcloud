@@ -6,7 +6,7 @@
 https://robotcloud.conductor-ai.top
 ```
 
-> 范围边界：本文只部署 Web 前端 + Django 后端，不部署 GPU Agent，不启动 scheduler。GPU Agent 需要在 GPU 机器上单独部署，并通过 Backend 注册。
+> 范围边界：本文部署 Web 前端 + Django 后端 + 后端侧 scheduler；不在 Volc Web 服务器上部署 GPU Agent。GPU Agent 需要在 GPU 机器上单独部署，并通过 Backend 注册。
 
 ---
 
@@ -15,12 +15,14 @@ https://robotcloud.conductor-ai.top
 **线上形态**
 - 前端：Next.js `output: "export"`，构建后是静态文件，由 nginx 直接托管。
 - 后端：Django + DRF，通过 gunicorn 监听 `127.0.0.1:6150`。
+- Scheduler：Django management command `manage.py run_scheduler`，作为 `robotcloud-scheduler.service` 跑在同一台 Volc Web / 后端服务器上，读取同一个 SQLite 数据库并把 queued 训练任务派发给 GPU Agent。
 - 反向代理：nginx
   - `/` -> `/opt/robotcloud/frontend/out`
   - `/api/` -> `http://127.0.0.1:6150/api/`
   - `/storage/` -> `http://127.0.0.1:6150/storage/`
 - 数据库：SQLite，默认 `/opt/robotcloud/backend/db.sqlite3`。
-- 进程：只需要 `robotcloud-backend.service`；不要启动 `make scheduler`、`make agent` 或 GPU Agent systemd。
+- GPU Agent：不跑在 Volc Web 服务器上；它跑在 GPU 机器上，负责执行 `lerobot-train`、回报 heartbeat/status/log。
+- 进程：Volc Web 服务器需要 `robotcloud-backend.service` 和 `robotcloud-scheduler.service`；不要在 Volc Web 服务器上启动 `make agent` 或 GPU Agent systemd。
 
 **发布铁律**
 > 部署前先把本地改动 `commit` + `push` 到远程。服务器只通过 `git fetch && git reset --hard origin/main` 同步 tracked 文件，然后在服务器构建、迁移、重启。不要绕过 git 直接传代码，也不要在服务器上手改 tracked 文件。
@@ -161,9 +163,9 @@ ssh -i "$SSH_KEY" "$SERVER" '
 '
 ```
 
-### 1.8 systemd 后端服务
+### 1.8 systemd 后端与 Scheduler 服务
 
-只创建后端服务，不创建 scheduler / agent 服务。
+Scheduler 应该跑在 Volc Web / 后端服务器上，不跑在 GPU 机器上。它必须和 Django 后端使用同一个数据库，否则看不到用户创建的 queued 任务。GPU 机器只运行 GPU Agent。
 
 ```sh
 ssh -i "$SSH_KEY" "$SERVER" 'cat > /etc/systemd/system/robotcloud-backend.service <<"UNIT"
@@ -182,14 +184,32 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UNIT
+cat > /etc/systemd/system/robotcloud-scheduler.service <<"UNIT"
+[Unit]
+Description=RobotCloud Scheduler
+After=network.target robotcloud-backend.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/robotcloud/backend
+Environment=ENV_FILE=.env
+ExecStart=/opt/robotcloud/backend/.venv/bin/python manage.py run_scheduler
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
 systemctl daemon-reload
 systemctl enable --now robotcloud-backend.service
+systemctl enable --now robotcloud-scheduler.service
 sleep 3
 systemctl is-active robotcloud-backend.service
+systemctl is-active robotcloud-scheduler.service
 curl -s -o /dev/null -w "backend_local=%{http_code}\n" http://127.0.0.1:6150/api/v1/dashboard/summary'
 ```
 
-`backend_local=400` 是未登录请求的预期响应。
+`backend_local=400` 是未登录请求的预期响应。Scheduler 本身没有 HTTP 端口，使用 `systemctl status` / `journalctl` 验证。
 
 ### 1.9 nginx 站点
 
@@ -348,8 +368,10 @@ ssh -i "$SSH_KEY" "$SERVER" '
   ENV_FILE=.env USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 python manage.py migrate --noinput
   ENV_FILE=.env USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 python manage.py collectstatic --noinput --clear
   systemctl restart robotcloud-backend.service
+  systemctl restart robotcloud-scheduler.service
   sleep 3
   systemctl is-active robotcloud-backend.service
+  systemctl is-active robotcloud-scheduler.service
   nginx -t && systemctl reload nginx
 '
 ```
@@ -373,10 +395,13 @@ ssh -i "$SSH_KEY" "$SERVER" 'echo "server HEAD: $(git -C /opt/robotcloud rev-par
 ssh -i "$SSH_KEY" "$SERVER" '
   cd /opt/robotcloud/backend
   mkdir -p backups
+  systemctl stop robotcloud-scheduler.service
   systemctl stop robotcloud-backend.service
   cp db.sqlite3 backups/db.sqlite3.bak-$(date +%Y%m%d-%H%M%S)
   systemctl start robotcloud-backend.service
+  systemctl start robotcloud-scheduler.service
   systemctl is-active robotcloud-backend.service
+  systemctl is-active robotcloud-scheduler.service
 '
 ```
 
@@ -394,6 +419,7 @@ scp -i "$SSH_KEY" "$SERVER:/opt/robotcloud/backend/db.sqlite3" .runtime/robotclo
 ```sh
 ssh -i "$SSH_KEY" "$SERVER" '
   cd /opt/robotcloud/backend
+  systemctl stop robotcloud-scheduler.service
   systemctl stop robotcloud-backend.service
   mkdir -p backups
   cp db.sqlite3 backups/db.sqlite3.bak-$(date +%Y%m%d-%H%M%S)
@@ -402,8 +428,10 @@ ssh -i "$SSH_KEY" "$SERVER" '
 scp -i "$SSH_KEY" ./db.sqlite3 "$SERVER:/opt/robotcloud/backend/db.sqlite3"
 ssh -i "$SSH_KEY" "$SERVER" '
   systemctl start robotcloud-backend.service
+  systemctl start robotcloud-scheduler.service
   sleep 3
   systemctl is-active robotcloud-backend.service
+  systemctl is-active robotcloud-scheduler.service
 '
 ```
 
@@ -415,7 +443,9 @@ ssh -i "$SSH_KEY" "$SERVER" '
 
 ```sh
 ssh -i "$SSH_KEY" "$SERVER" 'systemctl status robotcloud-backend.service --no-pager -l'
+ssh -i "$SSH_KEY" "$SERVER" 'systemctl status robotcloud-scheduler.service --no-pager -l'
 ssh -i "$SSH_KEY" "$SERVER" 'journalctl -u robotcloud-backend.service -n 100 --no-pager'
+ssh -i "$SSH_KEY" "$SERVER" 'journalctl -u robotcloud-scheduler.service -n 100 --no-pager'
 ssh -i "$SSH_KEY" "$SERVER" 'tail -100 /var/log/nginx/robotcloud_error.log'
 ssh -i "$SSH_KEY" "$SERVER" 'tail -100 /var/log/nginx/robotcloud_access.log'
 ```
@@ -424,6 +454,7 @@ ssh -i "$SSH_KEY" "$SERVER" 'tail -100 /var/log/nginx/robotcloud_access.log'
 
 ```sh
 ssh -i "$SSH_KEY" "$SERVER" 'systemctl restart robotcloud-backend.service'
+ssh -i "$SSH_KEY" "$SERVER" 'systemctl restart robotcloud-scheduler.service'
 ssh -i "$SSH_KEY" "$SERVER" 'nginx -t && systemctl reload nginx'
 ```
 
@@ -443,7 +474,7 @@ ssh -i "$SSH_KEY" "$SERVER" '
 '
 ```
 
-期望只看到 `robotcloud-backend.service` 和 `127.0.0.1:6150`。服务器上已有的云厂商监控 agent 或其它项目服务不属于 RobotCloud GPU Agent。
+期望至少看到 `robotcloud-backend.service`、`robotcloud-scheduler.service` 和 `127.0.0.1:6150`。如果后端通过 SSH tunnel 访问 GPU Agent，也可能看到类似 `robotcloud-h20-tunnel.service` 和本地 `127.0.0.1:6153` 转发端口。不要在 Volc Web 服务器上看到 `python -m gpu_agent` 这类 GPU Agent 进程。服务器上已有的云厂商监控 agent 或其它项目服务不属于 RobotCloud GPU Agent。
 
 ---
 
@@ -463,6 +494,7 @@ ssh -i "$SSH_KEY" "$SERVER" '
   . .venv/bin/activate
   ENV_FILE=.env USE_SQLITE=1 USE_IN_MEMORY_CACHE=1 python manage.py migrate --noinput
   systemctl restart robotcloud-backend.service
+  systemctl restart robotcloud-scheduler.service
 '
 ```
 
@@ -482,10 +514,11 @@ ssh -i "$SSH_KEY" "$SERVER" '
 | `/api/v1/dashboard/summary` 返回 400 | 未登录请求的正常结果，不是后端异常。 |
 | 登录/上传数据后状态丢失 | 当前轻量部署用 in-memory token cache，服务重启会导致登录 token 失效。需要长期会话时切 Redis。 |
 | 数据集上传提示没有 GPU Agent | 这是预期：本 SOP 不部署 GPU Agent。需要先在 GPU 机器上启动 Agent 并配置 `AGENT_PUBLIC_BASE_URL`。 |
+| 训练任务一直 `queued` | 先查 `systemctl is-active robotcloud-scheduler.service`。Scheduler 应在 Volc Web / 后端服务器上运行；再查 `journalctl -u robotcloud-scheduler.service -n 100 --no-pager` 和 `/api/v1/agents/active` 确认 GPU Agent 在线。 |
 | `502 Bad Gateway` | `robotcloud-backend.service` 未运行或 gunicorn 没监听 `127.0.0.1:6150`。看 `journalctl -u robotcloud-backend.service`。 |
 | 服务器没有 `python3 -m venv` | 安装 `python3.10-venv`。 |
 | 线上还是旧页面 | 服务器没有 reset 到最新 commit，或前端没有重新 `npm run build`。核对 local/server HEAD。 |
-| 不小心启动了 scheduler/agent | 停掉对应进程/服务。本部署只保留 `robotcloud-backend.service`。 |
+| 不小心在 Volc Web 服务器上启动了 GPU Agent | 停掉 `python -m gpu_agent` 或对应 systemd。Volc Web 服务器只保留 backend、scheduler，以及可选的 Agent SSH tunnel；GPU Agent 应跑在 GPU 机器。 |
 
 ---
 
@@ -498,5 +531,6 @@ ssh -i "$SSH_KEY" "$SERVER" '
 - SQLite：`/opt/robotcloud/backend/db.sqlite3`
 - 数据集目录：`/opt/robotcloud/backend/storage/datasets`
 - systemd：`/etc/systemd/system/robotcloud-backend.service`
+- systemd：`/etc/systemd/system/robotcloud-scheduler.service`
 - nginx：`/etc/nginx/sites-available/robotcloud`
 - 线上域名：`https://robotcloud.conductor-ai.top`

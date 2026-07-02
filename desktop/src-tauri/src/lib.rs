@@ -4,14 +4,17 @@ use std::{
     collections::HashMap,
     env,
     fs::{self, File},
-    io::{BufReader, Read, Write},
+    io::{BufReader, Read, Seek, Write},
     path::{Path, PathBuf},
     process::{Child as StdChild, Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    ipc::Response, AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder,
+    WindowEvent,
+};
 use uuid::Uuid;
 
 const RELEASE_WEB_URL: &str = "https://robotcloud.conductor-ai.top/so101/";
@@ -50,6 +53,10 @@ const BRIDGE_SCRIPT: &str = r#"
         previewCamera: function (cameraId, width, height, fps) { return core.invoke("so101_preview_camera", { cameraId: cameraId, width: width, height: height, fps: fps }); },
         onOutput: function (callback) { return listen("so101-output", callback); },
         onExit: function (callback) { return listen("so101-exit", callback); }
+      },
+      dataset: {
+        prepareUpload: function (config) { return core.invoke("dataset_prepare_upload", { config: config }); },
+        readPreparedUpload: function (filePath) { return core.invoke("dataset_read_prepared_upload", { filePath: filePath }); }
       },
       terminal: {
         start: function () { return core.invoke("terminal_start"); },
@@ -179,6 +186,27 @@ struct So101RunConfig {
     teleop_time_s: Option<f64>,
     max_relative_target: Option<f64>,
     display_data: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DatasetPrepareUploadConfig {
+    dataset_root: String,
+    dataset_repo_id: String,
+    task: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreparedDatasetUpload {
+    file_path: String,
+    file_name: String,
+    file_size: u64,
+    dataset_root: String,
+    name: String,
+    description: String,
+    visibility: String,
+    created_at: String,
 }
 
 fn default_web_url() -> &'static str {
@@ -468,6 +496,105 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     Ok(dir)
+}
+
+fn prepared_upload_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = data_dir(app)?.join("prepared_uploads");
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    Ok(dir)
+}
+
+fn dataset_repo_path(repo_id: &str) -> Result<PathBuf, String> {
+    let mut path = PathBuf::new();
+    let mut has_segment = false;
+    for segment in repo_id.split(|ch| ch == '/' || ch == '\\') {
+        if segment.is_empty() || segment == "." || segment == ".." || segment.contains('\0') {
+            return Err("Dataset repo id must be a relative namespace/name path.".to_string());
+        }
+        has_segment = true;
+        path.push(segment);
+    }
+    if !has_segment {
+        return Err("Dataset repo id is required.".to_string());
+    }
+    Ok(path)
+}
+
+fn trusted_dataset_root(app: &AppHandle, repo_id: &str) -> Result<PathBuf, String> {
+    let root = data_dir(app)?.join("datasets");
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    Ok(root.join(dataset_repo_path(repo_id)?))
+}
+
+fn sanitize_file_stem(value: &str) -> String {
+    let mut stem = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['_', '.'])
+        .chars()
+        .take(80)
+        .collect::<String>();
+    if stem.is_empty() {
+        stem = "so101_dataset".to_string();
+    }
+    stem
+}
+
+fn zip_entry_name(source_root: &Path, path: &Path) -> Result<String, String> {
+    let relative = path
+        .strip_prefix(source_root)
+        .map_err(|error| error.to_string())?;
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn zip_directory<W: Write + Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    source_root: &Path,
+    current: &Path,
+    file_options: zip::write::FileOptions,
+    dir_options: zip::write::FileOptions,
+) -> Result<u64, String> {
+    let mut file_count = 0_u64;
+    for entry in fs::read_dir(current).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let resolved_path = path.canonicalize().map_err(|error| error.to_string())?;
+        if !resolved_path.starts_with(source_root) {
+            return Err(format!(
+                "Refusing to package path outside dataset root: {}",
+                path.display()
+            ));
+        }
+        let entry_name = zip_entry_name(source_root, &path)?;
+        if file_type.is_dir() {
+            if !entry_name.is_empty() {
+                zip.add_directory(format!("{entry_name}/"), dir_options)
+                    .map_err(|error| error.to_string())?;
+            }
+            file_count += zip_directory(zip, source_root, &path, file_options, dir_options)?;
+        } else if file_type.is_file() {
+            if entry_name.is_empty() {
+                continue;
+            }
+            zip.start_file(entry_name, file_options)
+                .map_err(|error| error.to_string())?;
+            let mut input = File::open(&path).map_err(|error| error.to_string())?;
+            std::io::copy(&mut input, zip).map_err(|error| error.to_string())?;
+            file_count += 1;
+        }
+    }
+    Ok(file_count)
 }
 
 fn build_command_path(
@@ -1153,6 +1280,131 @@ fn camera_source_is_readable(
 }
 
 #[tauri::command]
+fn dataset_prepare_upload(
+    app: AppHandle,
+    config: DatasetPrepareUploadConfig,
+) -> Result<PreparedDatasetUpload, String> {
+    let dataset_root = config.dataset_root.trim();
+    if dataset_root.is_empty() {
+        return Err("Dataset root is required.".to_string());
+    }
+    let dataset_repo_id = config.dataset_repo_id.trim();
+    if dataset_repo_id.is_empty() {
+        return Err("Dataset repo id is required.".to_string());
+    }
+
+    let trusted_root = data_dir(&app)?.join("datasets");
+    fs::create_dir_all(&trusted_root).map_err(|error| error.to_string())?;
+    let trusted_root = trusted_root
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let expected_source = trusted_dataset_root(&app, dataset_repo_id)?
+        .canonicalize()
+        .map_err(|error| {
+            format!("Dataset root was not found for repo id {dataset_repo_id}: {error}")
+        })?;
+    let source = PathBuf::from(dataset_root)
+        .canonicalize()
+        .map_err(|error| format!("Dataset root was not found: {dataset_root}: {error}"))?;
+    if source != expected_source || !source.starts_with(&trusted_root) {
+        return Err(format!(
+            "Dataset root must match RobotCloud data directory for repo id {dataset_repo_id}: {}",
+            expected_source.display()
+        ));
+    }
+    if !source.is_dir() {
+        return Err(format!(
+            "Dataset root is not a directory: {}",
+            source.display()
+        ));
+    }
+
+    let upload_dir = prepared_upload_dir(&app)?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if upload_dir.starts_with(&source) {
+        return Err("Prepared upload cache cannot be inside the dataset root.".to_string());
+    }
+    let package_id = Uuid::new_v4().to_string();
+    let package_suffix = package_id.chars().take(8).collect::<String>();
+    let file_name = format!(
+        "{}-{}.zip",
+        sanitize_file_stem(dataset_repo_id),
+        package_suffix
+    );
+    let temp_path = upload_dir.join(format!("{file_name}.partial"));
+    let final_path = upload_dir.join(&file_name);
+
+    let zip_file = File::create(&temp_path).map_err(|error| error.to_string())?;
+    let mut zip = zip::ZipWriter::new(zip_file);
+    let file_options = zip::write::FileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+    let dir_options = zip::write::FileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o755);
+    let file_count = zip_directory(&mut zip, &source, &source, file_options, dir_options)?;
+    zip.finish().map_err(|error| error.to_string())?;
+
+    if file_count == 0 {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!("Dataset root has no files: {}", source.display()));
+    }
+    if final_path.exists() {
+        fs::remove_file(&final_path).map_err(|error| error.to_string())?;
+    }
+    fs::rename(&temp_path, &final_path).map_err(|error| error.to_string())?;
+
+    let file_size = fs::metadata(&final_path)
+        .map_err(|error| error.to_string())?
+        .len();
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+    let task = config.task.unwrap_or_default();
+    let task = task.trim();
+    let description = if task.is_empty() {
+        format!("SO101 Desktop recording from {}", source.display())
+    } else {
+        format!("SO101 Desktop recording: {task}")
+    };
+
+    Ok(PreparedDatasetUpload {
+        file_path: final_path.to_string_lossy().to_string(),
+        file_name,
+        file_size,
+        dataset_root: source.to_string_lossy().to_string(),
+        name: dataset_repo_id.to_string(),
+        description,
+        visibility: "private".to_string(),
+        created_at,
+    })
+}
+
+#[tauri::command]
+fn dataset_read_prepared_upload(app: AppHandle, file_path: String) -> Result<Response, String> {
+    let upload_dir = prepared_upload_dir(&app)?;
+    let upload_dir = upload_dir
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let file = PathBuf::from(file_path.trim())
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !file.starts_with(&upload_dir) {
+        return Err("Prepared upload file is outside the RobotCloud upload cache.".to_string());
+    }
+    if !file.is_file() {
+        return Err(format!(
+            "Prepared upload file was not found: {}",
+            file.display()
+        ));
+    }
+    let bytes = fs::read(&file).map_err(|error| error.to_string())?;
+    Ok(Response::new(bytes))
+}
+
+#[tauri::command]
 fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
     let runtime = runtime_path(&app);
     let archive = runtime_archive_path(&app);
@@ -1492,6 +1744,8 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             desktop_status,
+            dataset_prepare_upload,
+            dataset_read_prepared_upload,
             so101_run,
             so101_stop,
             so101_validate_port,

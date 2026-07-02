@@ -719,6 +719,7 @@ class TrainingJob(threading.Thread):
     DEFAULT_CMD = "python train.py"
     PROGRESS_TOKEN_RE = re.compile(r"progress\s*[:=]\s*(\d+(?:\.\d+)?)(%?)", re.IGNORECASE)
     STEP_PROGRESS_RE = re.compile(r"(epoch|step|iter(?:ation)?|batch)\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
+    LEROBOT_STEP_RE = re.compile(r"\bstep\s*:\s*(\d+(?:\.\d+)?)([KMG])?\b", re.IGNORECASE)
     PERCENT_BAR_RE = re.compile(r"(?<!\d)(\d{1,3}(?:\.\d+)?)%")
     METRIC_PATTERNS = [
         ("loss", re.compile(r"loss(?:[_\w]*)\s*[:=]\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)", re.IGNORECASE)),
@@ -1387,7 +1388,18 @@ class TrainingJob(threading.Thread):
             metrics = {"stage": match.group(1).lower(), **self._parse_metrics(text)}
             metrics["current_step"] = int(current)
             metrics["total_steps"] = int(total)
-            return {"progress": current / total, "metrics": metrics}
+            return {"progress": self._clamp_progress_ratio(current / total), "metrics": metrics}
+        match = self.LEROBOT_STEP_RE.search(text)
+        if match:
+            current_step = self._parse_compact_count(match.group(1), match.group(2))
+            total_steps = self._configured_total_steps()
+            metrics = {"stage": "step", **self._parse_metrics(text)}
+            metrics["current_step"] = current_step
+            if total_steps:
+                metrics["total_steps"] = total_steps
+                progress = current_step / max(float(total_steps), 1.0)
+                return {"progress": self._clamp_progress_ratio(progress), "metrics": metrics}
+            return {"metrics": metrics}
         percent_match = self.PERCENT_BAR_RE.search(text)
         if percent_match:
             progress_val = self._normalize_progress(percent_match.group(1), True)
@@ -1435,6 +1447,27 @@ class TrainingJob(threading.Thread):
             except (TypeError, ValueError):
                 metrics[name] = value_str
         return metrics
+
+    def _configured_total_steps(self) -> Optional[int]:
+        for key in ("steps", "max_steps", "total_steps"):
+            raw = self.params.get(key)
+            try:
+                total = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if total > 0:
+                return total
+        return None
+
+    @staticmethod
+    def _parse_compact_count(value: str, suffix: Optional[str]) -> int:
+        multipliers = {"K": 1_000, "M": 1_000_000, "G": 1_000_000_000}
+        multiplier = multipliers.get((suffix or "").upper(), 1)
+        return int(float(value) * multiplier)
+
+    @staticmethod
+    def _clamp_progress_ratio(progress: float) -> float:
+        return max(0.0, min(progress, 1.0))
 
     def _extract_json(self, text: str) -> Optional[Dict[str, Any]]:
         if "{" not in text or "}" not in text:

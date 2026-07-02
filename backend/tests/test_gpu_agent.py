@@ -229,6 +229,47 @@ def test_training_job_parses_progress_from_logs(tmp_path: Path) -> None:
     assert pytest.approx(notifications[-1][2], rel=1e-6) == 0.95
 
 
+def test_training_job_parses_lerobot_step_logs(tmp_path: Path) -> None:
+    agent = _StubAgent()
+    job = TrainingJob(
+        agent=agent,
+        task_id=12,
+        gpus=[0],
+        params={"steps": 5000},
+        dataset_path="/tmp/data",
+        cmd="python train.py",
+        log_dir=tmp_path / "logs",
+        work_dir=_repo_root(),
+    )
+
+    job._handle_output_line(
+        "INFO 2026-07-02 21:12:20 ot_train.py:351 step:200 smpl:3K ep:21 "
+        "epch:0.71 loss:6.010 grdn:113.250 lr:1.0e-05 updt_s:0.171 data_s:0.020"
+    )
+    job._handle_output_line(
+        "INFO 2026-07-02 21:13:59 ot_train.py:351 step:1K smpl:16K ep:106 "
+        "epch:3.55 loss:1.638 grdn:46.851 lr:1.0e-05 updt_s:0.105 data_s:0.011"
+    )
+    job._handle_output_line(
+        "INFO 2026-07-02 21:14:30 ot_train.py:351 step:6K smpl:16K ep:106 "
+        "epch:3.55 loss:1.100 grdn:40.000 lr:1.0e-05 updt_s:0.105 data_s:0.011"
+    )
+
+    notifications = agent.notifications
+    assert len(notifications) == 3
+    assert notifications[0][1] == "running"
+    assert pytest.approx(notifications[0][2], rel=1e-6) == 0.04
+    assert notifications[0][3]["current_step"] == 200
+    assert notifications[0][3]["total_steps"] == 5000
+    assert pytest.approx(notifications[0][3]["loss"], rel=1e-6) == 6.01
+    assert pytest.approx(notifications[0][3]["lr"], rel=1e-6) == 1.0e-05
+    assert pytest.approx(notifications[1][2], rel=1e-6) == 0.2
+    assert notifications[1][3]["current_step"] == 1000
+    assert pytest.approx(notifications[1][3]["loss"], rel=1e-6) == 1.638
+    assert notifications[2][2] == 1.0
+    assert notifications[2][3]["current_step"] == 6000
+
+
 def test_training_job_rejects_zip_path_traversal(tmp_path: Path) -> None:
     agent = _StubAgent()
     archive_path = tmp_path / "bad.zip"

@@ -37,6 +37,23 @@ type So101RunConfig = {
   displayData?: boolean;
 };
 
+type DatasetPrepareUploadConfig = {
+  datasetRoot: string;
+  datasetRepoId: string;
+  task?: string;
+};
+
+type PreparedDatasetUpload = {
+  filePath: string;
+  fileName: string;
+  fileSize: number;
+  datasetRoot: string;
+  name: string;
+  description: string;
+  visibility: "public" | "private";
+  createdAt: string;
+};
+
 type ProcessOutputEvent = {
   runId?: string;
   run_id?: string;
@@ -83,6 +100,10 @@ type DesktopBridge = {
     previewCamera: (cameraId: string, width: number, height: number, fps: number) => Promise<{ runId: string }>;
     onOutput: (callback: (event: ProcessOutputEvent) => void) => () => void;
     onExit: (callback: (event: ProcessExitEvent) => void) => () => void;
+  };
+  dataset: {
+    prepareUpload: (config: DatasetPrepareUploadConfig) => Promise<PreparedDatasetUpload>;
+    readPreparedUpload: (filePath: string) => Promise<ArrayBuffer>;
   };
   terminal: {
     start: () => Promise<TerminalStarted>;

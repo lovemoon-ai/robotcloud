@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { writePreparedDatasetUpload } from "@/desktop/preparedDatasetUpload";
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
 
 type CameraForm = {
@@ -588,6 +589,7 @@ export function SO101Client() {
   const [cameraCount, setCameraCount] = useState(DEFAULT_CAMERA_COUNT);
   const [connectionLoaded, setConnectionLoaded] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [uploadPreparing, setUploadPreparing] = useState(false);
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [terminalState, setTerminalState] = useState<TerminalStoreSnapshot>(() => persistentTerminalSnapshot());
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
@@ -755,6 +757,29 @@ export function SO101Client() {
       await writeTerminalCommand(buildActionCommand(action, form, status, cameraCount));
     } catch (error) {
       setPersistentTerminalError(String(error));
+    }
+  };
+
+  const prepareDatasetUpload = async () => {
+    try {
+      if (!window.robotcloudDesktop?.dataset) {
+        throw new Error("Desktop dataset bridge is not ready.");
+      }
+      const datasetRepoId = requireValue(form.datasetRepoId, "Dataset repo id");
+      const datasetRoot = requireValue(resolvedDatasetRoot(form, status), "Dataset root");
+      setUploadPreparing(true);
+      setPersistentTerminalError(null);
+      const prepared = await window.robotcloudDesktop.dataset.prepareUpload({
+        datasetRoot,
+        datasetRepoId,
+        task: form.task
+      });
+      writePreparedDatasetUpload(prepared);
+      router.push("/datasets?source=so101");
+    } catch (error) {
+      setPersistentTerminalError(String(error));
+    } finally {
+      setUploadPreparing(false);
     }
   };
 
@@ -1072,6 +1097,16 @@ export function SO101Client() {
                 <input type="checkbox" checked={form.displayData} onChange={(event) => updateField("displayData", event.target.checked)} />
                 Display LeRobot data windows
               </label>
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={prepareDatasetUpload}
+                disabled={uploadPreparing}
+                className="rounded-md gradient-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {uploadPreparing ? "Packaging..." : "Upload"}
+              </button>
             </div>
           </section>
       </section>
