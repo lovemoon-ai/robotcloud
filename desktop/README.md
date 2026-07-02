@@ -7,14 +7,14 @@ capabilities through a narrow JavaScript bridge.
 Default web URL:
 
 ```text
-https://robotcloud.conductor-ai.top/desktop/so101/
+https://robotcloud.conductor-ai.top/so101/
 ```
 
-For local desktop frontend testing, start the frontend with its desktop build
-mode/base path and point the shell at that URL:
+For local desktop frontend testing, start the frontend and point the shell at
+the local SO101 route:
 
 ```powershell
-$env:ROBOTCLOUD_DESKTOP_URL="http://127.0.0.1:3000/desktop/so101/"
+$env:ROBOTCLOUD_DESKTOP_URL="http://127.0.0.1:3000/so101/"
 pnpm dev
 ```
 
