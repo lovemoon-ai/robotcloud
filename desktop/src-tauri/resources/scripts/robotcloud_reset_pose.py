@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import json
 import logging
+import math
 import os
 import re
 import statistics
@@ -12,6 +13,7 @@ from pprint import pformat
 from typing import Any
 
 from lerobot.configs import parser
+from lerobot.processor import make_default_processors
 from lerobot.robots import RobotConfig, make_robot_from_config, so_follower  # noqa: F401
 from lerobot.teleoperators import TeleoperatorConfig, make_teleoperator_from_config, so_leader  # noqa: F401
 from lerobot.utils.import_utils import register_third_party_plugins
@@ -67,15 +69,10 @@ def numeric_action(action: dict[str, Any]) -> dict[str, float]:
     return values
 
 
-def max_window_span(samples: deque[tuple[float, dict[str, float]]]) -> float:
-    keys = samples[0][1].keys()
-    span = 0.0
-    for key in keys:
-        values = [sample[key] for _, sample in samples if key in sample]
-        if len(values) != len(samples):
-            return float("inf")
-        span = max(span, max(values) - min(values))
-    return span
+def action_distance(first: dict[str, float], second: dict[str, float]) -> float:
+    if first.keys() != second.keys():
+        return float("inf")
+    return max(abs(second[key] - first[key]) for key in first)
 
 
 def mean_pose(samples: deque[tuple[float, dict[str, float]]]) -> dict[str, float]:
@@ -93,24 +90,70 @@ def save_reset_pose(cfg: ResetPoseConfig) -> None:
 
     robot = make_robot_from_config(cfg.robot)
     teleop = make_teleoperator_from_config(cfg.teleop)
+    teleop_action_processor, robot_action_processor, _ = make_default_processors()
     samples: deque[tuple[float, dict[str, float]]] = deque()
+    countdown_started_at: float | None = None
+    countdown_reference: dict[str, float] | None = None
+    last_action: dict[str, float] | None = None
+    last_countdown_value: int | None = None
 
     try:
         robot.connect()
         teleop.connect()
-        print(f"Hold the reset action still for {HOLD_TIME_S:.0f}s.")
+        print("Teleoperation active. Use the leader to move the follower into the reset pose.")
+        print(f"Hold still; the reset action will be recorded after a {HOLD_TIME_S:.0f}s countdown.")
 
         while True:
             start_loop_t = time.perf_counter()
-            _ = robot.get_observation()
-            action = numeric_action(teleop.get_action())
+            obs = robot.get_observation()
+            action_values = teleop_action_processor((teleop.get_action(), obs))
+            robot_action_to_send = robot_action_processor((action_values, obs))
+            _ = robot.send_action(robot_action_to_send)
+            action = numeric_action(action_values)
             now = time.perf_counter()
-            samples.append((now, action))
-            while samples and now - samples[0][0] > HOLD_TIME_S:
-                samples.popleft()
 
-            window_s = samples[-1][0] - samples[0][0] if len(samples) > 1 else 0.0
-            if window_s >= HOLD_TIME_S and max_window_span(samples) <= STATIONARY_TOLERANCE:
+            moved_since_last = (
+                last_action is not None and action_distance(last_action, action) > STATIONARY_TOLERANCE
+            )
+            last_action = action
+
+            if moved_since_last:
+                if countdown_started_at is not None and now - countdown_started_at >= 0.5:
+                    print("Movement detected. Countdown reset.")
+                countdown_started_at = None
+                countdown_reference = None
+                samples.clear()
+                last_countdown_value = None
+            else:
+                if (
+                    countdown_reference is not None
+                    and action_distance(countdown_reference, action) > STATIONARY_TOLERANCE
+                ):
+                    print("Movement detected. Countdown reset.")
+                    countdown_started_at = None
+                    countdown_reference = None
+                    samples.clear()
+                    last_countdown_value = None
+
+                if countdown_started_at is None:
+                    countdown_started_at = now
+                    countdown_reference = action
+                    samples.clear()
+                    last_countdown_value = None
+                    print("Countdown started. Keep the leader still.")
+
+                samples.append((now, action))
+                elapsed_s = now - countdown_started_at
+                countdown_value = math.ceil(max(HOLD_TIME_S - elapsed_s, 0.0))
+                if countdown_value > 0 and countdown_value != last_countdown_value:
+                    print(f"Recording reset pose in {countdown_value}...")
+                    last_countdown_value = countdown_value
+
+                if elapsed_s < HOLD_TIME_S:
+                    dt_s = time.perf_counter() - start_loop_t
+                    precise_sleep(max(1 / cfg.fps - dt_s, 0.0))
+                    continue
+
                 pose = mean_pose(samples)
                 path = reset_pose_path(cfg.robot.id)
                 payload = {
