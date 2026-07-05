@@ -414,6 +414,59 @@ describe("SO101 command generation", () => {
     expect(command).not.toContain('"local/$(touch /tmp/repo)"');
   });
 
+  it("builds auto record commands with min and max episode windows", () => {
+    const command = buildActionCommand(
+      "record-auto",
+      {
+        ...initialForm,
+        followerPort: "/dev/cu.usbmodem-follower",
+        leaderPort: "/dev/cu.usbmodem-leader",
+        robotId: "robot-one",
+        teleopId: "leader-one",
+        datasetRepoId: "local/auto_dataset",
+        minEpisodeTimeS: 3,
+        maxEpisodeTimeS: 45,
+        task: "Pick the cube"
+      },
+      desktopStatus,
+      1
+    );
+
+    expect(command).toContain("bash '/script'");
+    expect(command).toContain("--action 'record-auto'");
+    expect(command).toContain("--camera-config '{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30} }'");
+    expect(command).toContain("--min-episode-time-s '3'");
+    expect(command).toContain("--max-episode-time-s '45'");
+    expect(command).not.toContain("--dataset.episode_time_s");
+    expect(command).not.toContain("--dataset.reset_time_s");
+  });
+
+  it("builds find-port commands through the desktop script", () => {
+    const command = buildActionCommand("find-port", initialForm, desktopStatus, 1);
+
+    expect(command).toBe("bash '/script' --action 'find-port'");
+  });
+
+  it("builds reset pose commands through the desktop script", () => {
+    const command = buildActionCommand(
+      "record-reset-pose",
+      {
+        ...initialForm,
+        followerPort: "/dev/cu.usbmodem-follower",
+        leaderPort: "/dev/cu.usbmodem-leader",
+        robotId: "robot-one",
+        teleopId: "leader-one"
+      },
+      desktopStatus,
+      1
+    );
+
+    expect(command).toContain("bash '/script'");
+    expect(command).toContain("--action 'record-reset-pose'");
+    expect(command).toContain("--follower-port '/dev/cu.usbmodem-follower'");
+    expect(command).toContain("--leader-port '/dev/cu.usbmodem-leader'");
+  });
+
   it("rejects invalid record numbers before writing a command", () => {
     expect(() =>
       buildActionCommand(
@@ -442,6 +495,22 @@ describe("SO101 command generation", () => {
         1
       )
     ).toThrow("先配置 Episode seconds");
+
+    expect(() =>
+      buildActionCommand(
+        "record-auto",
+        {
+          ...initialForm,
+          followerPort: "/dev/cu.usbmodem-follower",
+          leaderPort: "/dev/cu.usbmodem-leader",
+          task: "Pick",
+          minEpisodeTimeS: 5,
+          maxEpisodeTimeS: 4
+        },
+        desktopStatus,
+        1
+      )
+    ).toThrow("先配置 Max episode seconds");
   });
 
   it("normalizes saved connection settings from local storage payloads", () => {

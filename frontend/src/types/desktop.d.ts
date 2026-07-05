@@ -20,6 +20,7 @@ type So101RunConfig = {
   followerPort?: string;
   leaderPort?: string;
   cameraId?: string;
+  cameraConfig?: string;
   cameraIndex?: number;
   width?: number;
   height?: number;
@@ -30,6 +31,8 @@ type So101RunConfig = {
   datasetRoot?: string;
   episodes?: number;
   episodeTimeS?: number;
+  minEpisodeTimeS?: number;
+  maxEpisodeTimeS?: number;
   resetTimeS?: number;
   task?: string;
   teleopTimeS?: number;
