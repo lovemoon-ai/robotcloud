@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { writePreparedDatasetUpload } from "@/desktop/preparedDatasetUpload";
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
+import { useAuthStore } from "@/store/useAuthStore";
 
 type CameraForm = {
   id: string;
@@ -584,6 +585,7 @@ function CheckButton({
 
 export function SO101Client() {
   const router = useRouter();
+  const token = useAuthStore((state) => state.token);
   const desktopBridgeAvailability = useDesktopBridgeAvailability();
   const [form, setForm] = useState<FormState>(initialForm);
   const [cameraCount, setCameraCount] = useState(DEFAULT_CAMERA_COUNT);
@@ -606,6 +608,12 @@ export function SO101Client() {
   const terminalPhase = terminalState.phase;
   const terminalError = terminalState.error;
   const bridgeReady = desktopBridgeAvailability === "available";
+
+  useEffect(() => {
+    if (!token) {
+      router.replace("/login?next=%2Fso101");
+    }
+  }, [router, token]);
 
   useEffect(() => {
     const syncTerminalState = () => setTerminalState(persistentTerminalSnapshot());
@@ -638,10 +646,10 @@ export function SO101Client() {
   }, [cameraCount, connectionLoaded, form]);
 
   useEffect(() => {
-    if (desktopBridgeAvailability === "unavailable") {
+    if (token && desktopBridgeAvailability === "unavailable") {
       router.replace("/");
     }
-  }, [desktopBridgeAvailability, router]);
+  }, [desktopBridgeAvailability, router, token]);
 
   const updateField = <K extends keyof Omit<FormState, "cameras">>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -727,12 +735,12 @@ export function SO101Client() {
   }, []);
 
   useEffect(() => {
-    if (!bridgeReady) return;
+    if (!token || !bridgeReady) return;
     refreshStatus().catch((error) => setPersistentTerminalError(String(error)));
-  }, [bridgeReady, refreshStatus]);
+  }, [bridgeReady, refreshStatus, token]);
 
   useEffect(() => {
-    if (!bridgeReady || !window.robotcloudDesktop || !terminalContainerEl) return;
+    if (!token || !bridgeReady || !window.robotcloudDesktop || !terminalContainerEl) return;
     ensurePersistentTerminal(window.robotcloudDesktop, terminalContainerEl);
     return () => {
       if (persistentTerminalStore.host === terminalContainerEl) {
@@ -740,7 +748,7 @@ export function SO101Client() {
       }
       disconnectPersistentTerminalResize();
     };
-  }, [bridgeReady, terminalContainerEl]);
+  }, [bridgeReady, terminalContainerEl, token]);
 
   const writeTerminalCommand = async (command: string) => {
     const sessionId = persistentTerminalStore.sessionId;
@@ -855,6 +863,17 @@ export function SO101Client() {
     ],
     [status]
   );
+
+  if (!token) {
+    return (
+      <main className="flex min-h-[calc(100vh-10rem)] items-center justify-center">
+        <section className="w-full max-w-md rounded-lg border border-theme bg-card p-5 text-center">
+          <p className="text-sm font-semibold accent-text">Login required</p>
+          <p className="mt-2 text-xs text-muted">Redirecting to login before starting SO101 Desktop.</p>
+        </section>
+      </main>
+    );
+  }
 
   if (!bridgeReady) {
     return (
