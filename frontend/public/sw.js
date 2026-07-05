@@ -54,11 +54,6 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (url.pathname.startsWith("/api/")) {
-    event.respondWith(networkOnly(request));
-    return;
-  }
-
   if (url.pathname.startsWith("/_next/")) {
     event.respondWith(networkOnly(request));
     return;
