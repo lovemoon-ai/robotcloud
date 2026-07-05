@@ -755,7 +755,7 @@ export function SO101Client() {
     if (!sessionId || !window.robotcloudDesktop) {
       throw new Error("Terminal is not ready.");
     }
-    await window.robotcloudDesktop.terminal.write(sessionId, `${command}\r`);
+    await window.robotcloudDesktop.terminal.write(sessionId, command);
     persistentTerminalStore.term?.focus();
   };
 
@@ -951,15 +951,6 @@ export function SO101Client() {
         <section className="rounded-lg border border-theme bg-card p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-xl font-semibold accent-text">Connection</h2>
-              <button
-                type="button"
-                onClick={addCamera}
-                disabled={cameraCount >= MAX_CAMERAS}
-                aria-label="Add camera"
-                className="flex h-8 w-8 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                +
-              </button>
             </div>
             <div className="mt-4 grid gap-4">
               {([
@@ -1073,6 +1064,17 @@ export function SO101Client() {
                   {cameraChecks[index].message ? <p className="mt-2 text-xs text-muted">{cameraChecks[index].message}</p> : null}
                 </div>
               ))}
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={addCamera}
+                  disabled={cameraCount >= MAX_CAMERAS}
+                  aria-label="Add camera"
+                  className="flex h-8 w-8 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  +
+                </button>
+              </div>
             </div>
           </section>
 

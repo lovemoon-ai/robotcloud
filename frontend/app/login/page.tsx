@@ -4,9 +4,9 @@ import { useForm } from "react-hook-form";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { robotCloudApi } from "@/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useLocaleStore } from "@/store/useLocaleStore";
+import { Logo } from "@/components/Logo";
 
 type LoginFormValues = {
   phone: string;
@@ -38,8 +38,8 @@ export default function LoginPage() {
     () =>
       isZh
         ? {
-            title: "手机号登录",
-            subtitle: "使用短信验证码快速登录或注册",
+            title: "RobotCloud",
+            subtitle: "使用短信验证码登录或注册",
             phoneLabel: "手机号",
             phonePlaceholder: "例如：13800001234",
             phoneRequired: "请输入手机号",
@@ -55,12 +55,10 @@ export default function LoginPage() {
             loginSuccess: (phone: string) => `欢迎，${phone}！`,
             codeSentSuccess: "验证码已发送",
             devCodeHint: (code: string) => `开发模式验证码：${code}`,
-            genericError: "登录失败",
-            footerPrompt: "还没有账号？",
-            footerLink: "了解平台功能"
+            genericError: "登录失败"
           }
         : {
-            title: "Phone Login",
+            title: "RobotCloud",
             subtitle: "Login or register with SMS verification code",
             phoneLabel: "Phone Number",
             phonePlaceholder: "e.g. 13800001234",
@@ -77,9 +75,7 @@ export default function LoginPage() {
             loginSuccess: (phone: string) => `Welcome, ${phone}!`,
             codeSentSuccess: "Verification code sent",
             devCodeHint: (code: string) => `Dev mode code: ${code}`,
-            genericError: "Login failed",
-            footerPrompt: "Don't have an account?",
-            footerLink: "Explore the platform"
+            genericError: "Login failed"
           },
     [isZh]
   );
@@ -135,74 +131,65 @@ export default function LoginPage() {
   });
 
   return (
-    <main className="mx-auto max-w-xl space-y-6">
-      <header className="space-y-2 text-center">
-        <h1 className="text-3xl font-bold text-body">{copy.title}</h1>
-        <p className="text-sm text-muted">{copy.subtitle}</p>
-      </header>
-      <form 
-        onSubmit={onSubmit} 
-        className="space-y-4 rounded-xl border border-theme p-6"
-        style={{ backgroundColor: 'var(--color-card)' }}
-      >
-        <label className="block space-y-1 text-sm">
-          <span className="text-muted">{copy.phoneLabel}</span>
-          <input
-            {...form.register("phone", {
-              required: copy.phoneRequired,
-              pattern: {
-                value: /^1\d{10}$/,
-                message: copy.phoneInvalid
-              }
-            })}
-            className="w-full rounded-md border border-theme p-2 bg-surface text-body"
-            placeholder={copy.phonePlaceholder}
-          />
-          {form.formState.errors.phone ? (
-            <span className="text-xs text-red-500">{form.formState.errors.phone.message}</span>
-          ) : null}
-        </label>
-        <label className="block space-y-1 text-sm">
-          <span className="text-muted">{copy.codeLabel}</span>
-          <div className="flex gap-2">
+    <main className="flex min-h-screen items-center justify-center bg-surface px-4 py-10 text-body">
+      <section className="flex w-full max-w-sm flex-col items-center gap-5 text-center">
+        <Logo className="h-11 w-11 text-body" />
+        <header className="space-y-1">
+          <h1 className="text-2xl font-semibold text-body">{copy.title}</h1>
+          <p className="text-sm text-muted">{copy.subtitle}</p>
+        </header>
+        <form onSubmit={onSubmit} className="w-full space-y-4 rounded-lg border border-theme bg-card p-5 text-left">
+          <label className="block space-y-1 text-sm">
+            <span className="text-muted">{copy.phoneLabel}</span>
             <input
-              {...form.register("code", { required: copy.codeRequired })}
-              className="flex-1 rounded-md border border-theme p-2 bg-surface text-body"
-              placeholder={copy.codePlaceholder}
-              maxLength={6}
+              {...form.register("phone", {
+                required: copy.phoneRequired,
+                pattern: {
+                  value: /^1\d{10}$/,
+                  message: copy.phoneInvalid
+                }
+              })}
+              className="w-full rounded-md border border-theme bg-surface p-2 text-body"
+              placeholder={copy.phonePlaceholder}
             />
-            <button
-              type="button"
-              onClick={handleSendCode}
-              disabled={countdown > 0}
-              className="rounded-md border border-primary px-4 py-2 text-sm font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {countdown > 0 ? copy.resendCode(countdown) : copy.sendCode}
-            </button>
-          </div>
-          {form.formState.errors.code ? (
-            <span className="text-xs text-red-500">{form.formState.errors.code.message}</span>
-          ) : null}
-          {devCode ? (
-            <span className="text-xs accent-text">{copy.devCodeHint(devCode)}</span>
-          ) : null}
-        </label>
-        <button
-          type="submit"
-          className="w-full rounded-md py-2 font-semibold text-white transition hover:opacity-90 gradient-primary"
-          disabled={form.formState.isSubmitting}
-        >
-          {form.formState.isSubmitting ? copy.submittingLogin : copy.submitLogin}
-        </button>
-        {message ? <p className="text-sm accent-text">{message}</p> : null}
-        {error ? <p className="text-sm text-red-500">{error}</p> : null}
-      </form>
-      <footer className="text-center text-xs text-muted">
-        {copy.footerPrompt}{" "}
-        <Link href="/" className="accent-text hover:opacity-80">
-          {copy.footerLink}
-        </Link>
-      </footer>
+            {form.formState.errors.phone ? (
+              <span className="text-xs text-red-500">{form.formState.errors.phone.message}</span>
+            ) : null}
+          </label>
+          <label className="block space-y-1 text-sm">
+            <span className="text-muted">{copy.codeLabel}</span>
+            <div className="flex gap-2">
+              <input
+                {...form.register("code", { required: copy.codeRequired })}
+                className="min-w-0 flex-1 rounded-md border border-theme bg-surface p-2 text-body"
+                placeholder={copy.codePlaceholder}
+                maxLength={6}
+              />
+              <button
+                type="button"
+                onClick={handleSendCode}
+                disabled={countdown > 0}
+                className="shrink-0 rounded-md border border-primary px-3 py-2 text-sm font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {countdown > 0 ? copy.resendCode(countdown) : copy.sendCode}
+              </button>
+            </div>
+            {form.formState.errors.code ? (
+              <span className="text-xs text-red-500">{form.formState.errors.code.message}</span>
+            ) : null}
+            {devCode ? <span className="text-xs accent-text">{copy.devCodeHint(devCode)}</span> : null}
+          </label>
+          <button
+            type="submit"
+            className="w-full rounded-md py-2 font-semibold text-white transition hover:opacity-90 gradient-primary"
+            disabled={form.formState.isSubmitting}
+          >
+            {form.formState.isSubmitting ? copy.submittingLogin : copy.submitLogin}
+          </button>
+          {message ? <p className="text-sm accent-text">{message}</p> : null}
+          {error ? <p className="text-sm text-red-500">{error}</p> : null}
+        </form>
+      </section>
     </main>
   );
 }

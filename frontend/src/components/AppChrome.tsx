@@ -2,13 +2,12 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ComponentType, Fragment, ReactNode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ComponentType, Fragment, ReactNode, useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useAuthStore } from "@/store/useAuthStore";
 import { Logo } from "@/components/Logo";
 import { getSections } from "@/components/shell/sections";
 import { useDesktopBridgeAvailable } from "@/hooks/useDesktopBridgeAvailable";
 import { useLocaleStore } from "@/store/useLocaleStore";
-import { useThemeStore } from "@/store/useThemeStore";
 
 interface AppChromeProps {
   children: ReactNode;
@@ -23,51 +22,6 @@ const SIDEBAR_COLLAPSED_STORAGE_KEY = "robotcloud-sidebar-collapsed";
 const subscribeToHydration = () => () => {};
 const getSidebarCollapsedSnapshot = () =>
   typeof window !== "undefined" && window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
-
-function ChevronDownIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path
-        d="M2.5 4.5L6 8L9.5 4.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function SunIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="5" />
-      <line x1="12" y1="1" x2="12" y2="3" />
-      <line x1="12" y1="21" x2="12" y2="23" />
-      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-      <line x1="1" y1="12" x2="3" y2="12" />
-      <line x1="21" y1="12" x2="23" y2="12" />
-      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-    </svg>
-  );
-}
-
-function MoonIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-    </svg>
-  );
-}
 
 function SidebarToggleIcon({ className }: { className?: string }) {
   return (
@@ -284,43 +238,20 @@ export function AppChrome({ children }: AppChromeProps) {
   const pathname = usePathname();
   const storedSidebarCollapsed = useSyncExternalStore(subscribeToHydration, getSidebarCollapsedSnapshot, () => false);
   const [sidebarCollapsedOverride, setSidebarCollapsedOverride] = useState<boolean | null>(null);
-  const [isOpen, setIsOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
   const isSidebarCollapsed = sidebarCollapsedOverride ?? storedSidebarCollapsed;
   const iconRailClassName = "flex h-10 w-[52px] shrink-0 items-center justify-center";
 
-  const { locale, toggleLocale } = useLocaleStore((state) => ({
-    locale: state.locale,
-    toggleLocale: state.toggleLocale
-  }));
-
-  const { theme, toggleTheme } = useThemeStore((state) => ({
-    theme: state.theme,
-    toggleTheme: state.toggleTheme
-  }));
-
-  const { phone, reset } = useAuthStore((state) => ({
-    phone: state.phone,
-    reset: state.reset
-  }));
+  const locale = useLocaleStore((state) => state.locale);
+  const token = useAuthStore((state) => state.token);
 
   const isZh = locale === "zh";
-  const isDark = theme === "dark";
-  const initials = phone ? phone.slice(-2) : "";
+  const isLoginRoute = pathname === "/login";
   const isDesktopBridgeAvailable = useDesktopBridgeAvailable();
   const navItems = getSections(locale, { includeDesktopOnly: isDesktopBridgeAvailable });
   const mobileNavItems = getMobileNavEntries(navItems, pathname);
-  const activeSection = navItems.find((item) => isActiveNavItem(pathname, item));
 
   const copy = {
     homeAria: isZh ? "RobotCloud 控制面板" : "RobotCloud workspace",
-    login: isZh ? "登录" : "Log in",
-    logout: isZh ? "退出登录" : "Log out",
-    settings: isZh ? "设置" : "Settings",
-    account: isZh ? "账号" : "Account",
-    workspace: isZh ? "工作区" : "Workspace",
-    lightMode: isZh ? "浅色" : "Light",
-    darkMode: isZh ? "深色" : "Dark",
     copyright: isZh
       ? "© 2025-2026 LoveMoon Ltd. 保留所有权利。"
       : "© 2025-2026 LoveMoon Ltd. All rights reserved.",
@@ -342,20 +273,11 @@ export function AppChrome({ children }: AppChromeProps) {
   }, [locale]);
 
   useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
+    if (!token && !isLoginRoute) {
+      const next = pathname && pathname !== "/" ? `?next=${encodeURIComponent(pathname)}` : "";
+      router.replace(`/login${next}`);
     }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  const handleLogout = () => {
-    reset();
-    setIsOpen(false);
-    router.push("/login");
-  };
+  }, [isLoginRoute, pathname, router, token]);
 
   const toggleSidebarCollapsed = useCallback(() => {
     const next = !isSidebarCollapsed;
@@ -364,6 +286,14 @@ export function AppChrome({ children }: AppChromeProps) {
       window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, next ? "1" : "0");
     }
   }, [isSidebarCollapsed]);
+
+  if (isLoginRoute) {
+    return <div className="min-h-screen bg-surface text-body">{children}</div>;
+  }
+
+  if (!token) {
+    return <div className="min-h-screen bg-surface text-body" aria-hidden="true" />;
+  }
 
   return (
     <div className="min-h-screen bg-surface text-body">
@@ -479,96 +409,6 @@ export function AppChrome({ children }: AppChromeProps) {
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-40 border-b border-theme bg-header backdrop-blur">
-            <div className="flex h-16 items-center gap-4 px-4 md:px-6">
-              <Link href="/dashboard" className="flex items-center gap-2 transition hover:opacity-80 md:hidden" aria-label={copy.homeAria}>
-                <Logo className="h-8 w-8" />
-                <span className="text-base font-semibold text-body">RobotCloud</span>
-              </Link>
-
-              <div className="hidden min-w-0 md:block">
-                <p className="text-xs uppercase tracking-[0.16em] text-muted">{copy.workspace}</p>
-                <p className="truncate text-lg font-semibold text-body">{activeSection?.title ?? "RobotCloud"}</p>
-              </div>
-
-              <div className="ml-auto flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={toggleLocale}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-theme bg-card text-xs font-semibold text-body transition hover:border-primary hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
-                  aria-label={isZh ? "Switch to English" : "切换到中文"}
-                  title={isZh ? "English" : "中文"}
-                >
-                  {isZh ? "EN" : "中"}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={toggleTheme}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-theme bg-card text-body transition hover:border-primary hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
-                  aria-label={isDark ? copy.lightMode : copy.darkMode}
-                  title={isDark ? copy.lightMode : copy.darkMode}
-                >
-                  {isDark ? <SunIcon className="h-[18px] w-[18px]" /> : <MoonIcon className="h-[18px] w-[18px]" />}
-                </button>
-
-                <div className="relative" ref={dropdownRef}>
-                  {phone ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => setIsOpen(!isOpen)}
-                        className="flex items-center gap-2 rounded-full border border-theme bg-card px-2 py-1 transition hover:border-primary hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
-                        aria-expanded={isOpen}
-                        aria-haspopup="true"
-                      >
-                        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-secondary text-sm font-semibold text-body">
-                          {initials}
-                        </span>
-                        <ChevronDownIcon
-                          className={`hidden text-muted transition-transform duration-200 sm:block ${isOpen ? "rotate-180" : ""}`}
-                        />
-                      </button>
-
-                      {isOpen && (
-                        <div className="absolute right-0 top-full mt-2 w-56 rounded-lg border border-theme bg-card py-2 shadow-xl">
-                          <div className="border-b border-theme px-4 py-3">
-                            <p className="text-xs text-muted">{copy.account}</p>
-                            <p className="mt-1 text-sm text-body">{phone}</p>
-                          </div>
-
-                          <div className="px-2 pt-2">
-                            <Link
-                              href="/settings"
-                              onClick={() => setIsOpen(false)}
-                              className="block w-full rounded-md px-3 py-2 text-left text-sm text-body transition hover:bg-surface-secondary"
-                            >
-                              {copy.settings}
-                            </Link>
-                            <button
-                              type="button"
-                              onClick={handleLogout}
-                              className="w-full rounded-md px-3 py-2 text-left text-sm text-muted transition hover:bg-surface-secondary hover:text-body"
-                            >
-                              {copy.logout}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <Link
-                      href="/login"
-                      className="flex h-9 items-center justify-center rounded-full border border-theme bg-card px-4 text-sm font-medium text-body transition hover:border-primary hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
-                    >
-                      {copy.login}
-                    </Link>
-                  )}
-                </div>
-              </div>
-            </div>
-          </header>
-
           <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 pb-[calc(5.75rem+env(safe-area-inset-bottom))] md:px-8 md:pb-8">
             {children}
           </main>

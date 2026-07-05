@@ -1,4 +1,4 @@
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { SO101Client, so101TestExports } from "../app/so101/SO101Client";
 import { useAuthStore } from "@/store/useAuthStore";
 
@@ -166,6 +166,7 @@ describe("SO101 terminal session", () => {
     let outputCallback: ((event: TerminalOutputEvent) => void) | null = null;
     let exitCallback: ((event: TerminalExitEvent) => void) | null = null;
     const terminalStart = jest.fn().mockResolvedValue({ sessionId: "session-1", shell: "/bin/zsh" });
+    const terminalWrite = jest.fn().mockResolvedValue({ ok: true });
     const terminalStop = jest.fn().mockResolvedValue({ stopped: true });
     const bridge: DesktopBridge = {
       isDesktop: true,
@@ -181,7 +182,7 @@ describe("SO101 terminal session", () => {
       },
       terminal: {
         start: terminalStart,
-        write: jest.fn().mockResolvedValue({ ok: true }),
+        write: terminalWrite,
         resize: jest.fn().mockResolvedValue({ ok: true }),
         stop: terminalStop,
         onOutput: jest.fn((callback) => {
@@ -197,6 +198,7 @@ describe("SO101 terminal session", () => {
     window.robotcloudDesktop = bridge;
     return {
       terminalStart,
+      terminalWrite,
       terminalStop,
       emitOutput: (data: string) => outputCallback?.({ sessionId: "session-1", data }),
       emitExit: () => exitCallback?.({ sessionId: "session-1", code: 0, signal: null })
@@ -240,6 +242,42 @@ describe("SO101 terminal session", () => {
     expect(secondRender.getByTestId("mock-xterm")).toHaveTextContent("first output");
     expect(terminalStart).toHaveBeenCalledTimes(1);
     expect(terminalStop).not.toHaveBeenCalled();
+  });
+
+  it("inserts action commands without submitting them", async () => {
+    const { terminalWrite } = installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
+    fireEvent.click(view.getByRole("button", { name: "Info" }));
+
+    await waitFor(() => {
+      expect(terminalWrite).toHaveBeenCalledWith("session-1", "lerobot-info");
+    });
+    expect(terminalWrite).not.toHaveBeenCalledWith("session-1", "lerobot-info\r");
+  });
+
+  it("places the add camera control after the camera cards", async () => {
+    installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    const connectionSection = view.getByText("Connection").closest("section");
+    expect(connectionSection).not.toBeNull();
+
+    const cameraLabel = within(connectionSection as HTMLElement).getByText("Camera 0");
+    const addCameraButton = within(connectionSection as HTMLElement).getByRole("button", { name: "Add camera" });
+
+    expect(cameraLabel.compareDocumentPosition(addCameraButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("can start a new terminal after the previous session exits", async () => {

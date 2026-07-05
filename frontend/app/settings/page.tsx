@@ -2,24 +2,51 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
+import { useThemeStore } from "@/store/useThemeStore";
 
 export default function SettingsPage() {
-  const locale = useLocaleStore((state) => state.locale);
-  const token = useAuthStore((state) => state.token);
+  const { locale, setLocale } = useLocaleStore((state) => ({
+    locale: state.locale,
+    setLocale: state.setLocale
+  }));
+  const { theme, setTheme } = useThemeStore((state) => ({
+    theme: state.theme,
+    setTheme: state.setTheme
+  }));
+  const { token, phone, role, reset } = useAuthStore((state) => ({
+    token: state.token,
+    phone: state.phone,
+    role: state.role,
+    reset: state.reset
+  }));
   const client = useQueryClient();
+  const router = useRouter();
   const [message, setMessage] = useState<string | null>(null);
   const isZh = locale === "zh";
   const copy = isZh
     ? {
         title: "设置",
-        subtitle: "管理默认 GPU Agent，数据集上传会直传到选中的节点。",
-        loginPrompt: "登录后可配置默认 GPU Agent。",
-        loginLink: "前往登录",
+        subtitle: "管理账号、界面偏好与默认 GPU Agent。",
+        accountTitle: "账号",
+        accountDescription: "当前登录账号与会话控制。",
+        phoneLabel: "手机号",
+        roleLabel: "权限",
+        logout: "退出登录",
+        appearanceTitle: "界面",
+        languageTitle: "语言",
+        languageDescription: "切换控制台显示语言。",
+        chinese: "中文",
+        english: "English",
+        themeTitle: "主题",
+        themeDescription: "切换浅色或深色模式。",
+        light: "浅色",
+        dark: "深色",
         configTitle: "配置项",
         plans: {
           title: "套餐购买",
@@ -41,9 +68,21 @@ export default function SettingsPage() {
       }
     : {
         title: "Settings",
-        subtitle: "Manage the default GPU Agent. Dataset uploads go directly to the selected node.",
-        loginPrompt: "Log in to configure the default GPU Agent.",
-        loginLink: "Go to login",
+        subtitle: "Manage account, interface preferences, and the default GPU Agent.",
+        accountTitle: "Account",
+        accountDescription: "Current account and session controls.",
+        phoneLabel: "Phone",
+        roleLabel: "Role",
+        logout: "Log out",
+        appearanceTitle: "Interface",
+        languageTitle: "Language",
+        languageDescription: "Change the console display language.",
+        chinese: "中文",
+        english: "English",
+        themeTitle: "Theme",
+        themeDescription: "Switch between light and dark mode.",
+        light: "Light",
+        dark: "Dark",
         configTitle: "Configuration",
         plans: {
           title: "Plans",
@@ -87,6 +126,14 @@ export default function SettingsPage() {
   });
 
   const defaultNode = settingsQuery.data?.defaultAgentNode || agentsQuery.data?.defaultAgentNode || "";
+  const handleLogout = () => {
+    reset();
+    router.replace("/login");
+  };
+
+  if (!token) {
+    return null;
+  }
 
   return (
     <main className="space-y-6">
@@ -94,14 +141,92 @@ export default function SettingsPage() {
         <h1 className="text-3xl font-bold">{copy.title}</h1>
         <p className="text-sm text-muted">{copy.subtitle}</p>
       </header>
-      {!token ? (
-        <p className="rounded-md border border-primary/30 accent-bg p-3 text-sm text-primary-light">
-          {copy.loginPrompt}
-          <Link href="/login" className="ml-1 text-primary-lighter link">
-            {copy.loginLink}
-          </Link>
-        </p>
-      ) : null}
+      <section className="grid gap-4 lg:grid-cols-[0.95fr_1.05fr]">
+        <div className="rounded-lg border border-theme bg-card p-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-base font-semibold text-body">{copy.accountTitle}</h2>
+              <p className="mt-1 text-sm text-muted">{copy.accountDescription}</p>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-md border border-theme px-3 py-2 text-sm font-semibold text-body transition hover:border-primary hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              {copy.logout}
+            </button>
+          </div>
+          <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+            <div className="rounded-md border border-theme bg-surface p-3">
+              <dt className="text-xs text-muted">{copy.phoneLabel}</dt>
+              <dd className="mt-1 truncate font-medium text-body">{phone}</dd>
+            </div>
+            <div className="rounded-md border border-theme bg-surface p-3">
+              <dt className="text-xs text-muted">{copy.roleLabel}</dt>
+              <dd className="mt-1 font-medium uppercase text-body">{role ?? "free"}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div className="rounded-lg border border-theme bg-card p-5">
+          <h2 className="text-base font-semibold text-body">{copy.appearanceTitle}</h2>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <div>
+                <h3 className="text-sm font-semibold text-body">{copy.languageTitle}</h3>
+                <p className="mt-1 text-xs text-muted">{copy.languageDescription}</p>
+              </div>
+              <div className="grid grid-cols-2 overflow-hidden rounded-md border border-theme">
+                <button
+                  type="button"
+                  onClick={() => setLocale("zh")}
+                  className={`px-3 py-2 text-sm font-semibold transition ${
+                    locale === "zh" ? "bg-theme-primary text-on-primary" : "text-muted hover:bg-surface-secondary hover:text-body"
+                  }`}
+                >
+                  {copy.chinese}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLocale("en")}
+                  className={`border-l border-theme px-3 py-2 text-sm font-semibold transition ${
+                    locale === "en" ? "bg-theme-primary text-on-primary" : "text-muted hover:bg-surface-secondary hover:text-body"
+                  }`}
+                >
+                  {copy.english}
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div>
+                <h3 className="text-sm font-semibold text-body">{copy.themeTitle}</h3>
+                <p className="mt-1 text-xs text-muted">{copy.themeDescription}</p>
+              </div>
+              <div className="grid grid-cols-2 overflow-hidden rounded-md border border-theme">
+                <button
+                  type="button"
+                  onClick={() => setTheme("light")}
+                  className={`px-3 py-2 text-sm font-semibold transition ${
+                    theme === "light" ? "bg-theme-primary text-on-primary" : "text-muted hover:bg-surface-secondary hover:text-body"
+                  }`}
+                >
+                  {copy.light}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTheme("dark")}
+                  className={`border-l border-theme px-3 py-2 text-sm font-semibold transition ${
+                    theme === "dark" ? "bg-theme-primary text-on-primary" : "text-muted hover:bg-surface-secondary hover:text-body"
+                  }`}
+                >
+                  {copy.dark}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
       <section aria-label={copy.configTitle} className="grid gap-3 md:grid-cols-2">
         <Link
           href="/plans"

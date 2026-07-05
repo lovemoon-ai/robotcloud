@@ -4,12 +4,14 @@ import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
 
 let mockPathname = "/dashboard";
+const pushMock = jest.fn();
+const replaceMock = jest.fn();
 
 jest.mock("next/navigation", () => ({
   usePathname: () => mockPathname,
   useRouter: () => ({
-    push: jest.fn(),
-    replace: jest.fn(),
+    push: pushMock,
+    replace: replaceMock,
     prefetch: jest.fn()
   })
 }));
@@ -30,9 +32,17 @@ function getDesktopNav(container: HTMLElement) {
   return nav as HTMLElement;
 }
 
-describe("AppChrome language toggle", () => {
+describe("AppChrome shell", () => {
   beforeEach(() => {
+    jest.clearAllMocks();
     useAuthStore.getState().reset();
+    useAuthStore.getState().setAuth({
+      token: "token",
+      userId: 1,
+      phone: "13800000001",
+      role: "free",
+      expireAt: null
+    });
     useLocaleStore.getState().reset();
     mockPathname = "/dashboard";
     delete window.robotcloudDesktop;
@@ -40,20 +50,36 @@ describe("AppChrome language toggle", () => {
     document.documentElement.lang = "en";
   });
 
-  it("switches login text when toggling languages", () => {
-    render(
+  it("redirects unauthenticated protected routes without rendering shell content", async () => {
+    useAuthStore.getState().reset();
+
+    const { container } = render(
       <AppChrome>
         <div>placeholder</div>
       </AppChrome>
     );
 
-    expect(screen.getByRole("link", { name: "Log in" })).toBeInTheDocument();
+    expect(screen.queryByText("placeholder")).not.toBeInTheDocument();
+    expect(container.querySelector("#robotcloud-sidebar-primary-nav")).toBeNull();
 
-    const toggle = screen.getByRole("button", { name: "切换到中文" });
-    fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(replaceMock).toHaveBeenCalledWith("/login?next=%2Fdashboard");
+    });
+  });
 
-    expect(screen.getByRole("link", { name: "登录" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Switch to English" })).toBeInTheDocument();
+  it("renders the login route without app navigation", () => {
+    useAuthStore.getState().reset();
+    mockPathname = "/login";
+
+    const { container } = render(
+      <AppChrome>
+        <div>login page</div>
+      </AppChrome>
+    );
+
+    expect(screen.getByText("login page")).toBeInTheDocument();
+    expect(container.querySelector("#robotcloud-sidebar-primary-nav")).toBeNull();
+    expect(container.querySelector("nav.fixed")).toBeNull();
   });
 
   it("collapses and expands the desktop sidebar from the app logo rail", () => {
