@@ -189,6 +189,7 @@ struct So101RunConfig {
     follower_port: Option<String>,
     leader_port: Option<String>,
     camera_id: Option<String>,
+    camera_config: Option<String>,
     camera_index: Option<u32>,
     width: Option<u32>,
     height: Option<u32>,
@@ -199,6 +200,8 @@ struct So101RunConfig {
     dataset_root: Option<String>,
     episodes: Option<u32>,
     episode_time_s: Option<f64>,
+    min_episode_time_s: Option<f64>,
+    max_episode_time_s: Option<f64>,
     reset_time_s: Option<f64>,
     task: Option<String>,
     teleop_time_s: Option<f64>,
@@ -944,12 +947,15 @@ fn allowed_action(action: &str) -> bool {
         action,
         "info"
             | "ports"
+            | "find-port"
             | "cameras"
             | "setup-follower"
             | "setup-leader"
             | "calibrate-follower"
             | "calibrate-leader"
             | "teleop"
+            | "record-reset-pose"
+            | "record-auto"
             | "record"
     )
 }
@@ -991,6 +997,11 @@ fn so101_command_args(
                 push_arg(&mut args, "-CameraId", camera_id);
             }
         }
+        if let Some(camera_config) = &config.camera_config {
+            if !camera_config.trim().is_empty() {
+                push_arg(&mut args, "-CameraConfigOverride", camera_config);
+            }
+        }
         push_arg(&mut args, "-CameraIndex", config.camera_index.unwrap_or(0));
         push_arg(&mut args, "-Width", config.width.unwrap_or(640));
         push_arg(&mut args, "-Height", config.height.unwrap_or(480));
@@ -1029,6 +1040,16 @@ fn so101_command_args(
             &mut args,
             "-EpisodeTimeS",
             config.episode_time_s.unwrap_or(10.0),
+        );
+        push_arg(
+            &mut args,
+            "-MinEpisodeTimeS",
+            config.min_episode_time_s.unwrap_or(2.0),
+        );
+        push_arg(
+            &mut args,
+            "-MaxEpisodeTimeS",
+            config.max_episode_time_s.unwrap_or(60.0),
         );
         push_arg(&mut args, "-ResetTimeS", config.reset_time_s.unwrap_or(2.0));
         push_arg(
@@ -1069,6 +1090,11 @@ fn so101_command_args(
         if let Some(camera_id) = &config.camera_id {
             if !camera_id.trim().is_empty() {
                 push_arg(&mut args, "--camera-id", camera_id);
+            }
+        }
+        if let Some(camera_config) = &config.camera_config {
+            if !camera_config.trim().is_empty() {
+                push_arg(&mut args, "--camera-config", camera_config);
             }
         }
         push_arg(
@@ -1113,6 +1139,16 @@ fn so101_command_args(
             &mut args,
             "--episode-time-s",
             config.episode_time_s.unwrap_or(10.0),
+        );
+        push_arg(
+            &mut args,
+            "--min-episode-time-s",
+            config.min_episode_time_s.unwrap_or(2.0),
+        );
+        push_arg(
+            &mut args,
+            "--max-episode-time-s",
+            config.max_episode_time_s.unwrap_or(60.0),
         );
         push_arg(
             &mut args,
@@ -2131,12 +2167,15 @@ mod tests {
         for action in [
             "info",
             "ports",
+            "find-port",
             "cameras",
             "setup-follower",
             "setup-leader",
             "calibrate-follower",
             "calibrate-leader",
             "teleop",
+            "record-reset-pose",
+            "record-auto",
             "record",
         ] {
             assert!(allowed_action(action), "{action} should be allowed");

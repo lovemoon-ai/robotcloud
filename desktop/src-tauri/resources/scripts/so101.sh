@@ -5,6 +5,7 @@ ACTION="info"
 FOLLOWER_PORT=""
 LEADER_PORT=""
 CAMERA_ID=""
+CAMERA_CONFIG_OVERRIDE=""
 CAMERA_INDEX="0"
 WIDTH="640"
 HEIGHT="480"
@@ -15,6 +16,8 @@ DATASET_REPO_ID="local/so101_desktop"
 DATASET_ROOT=""
 EPISODES="1"
 EPISODE_TIME_S="10"
+MIN_EPISODE_TIME_S="2"
+MAX_EPISODE_TIME_S="60"
 RESET_TIME_S="2"
 TASK="SO-101 desktop teleoperation"
 TELEOP_TIME_S="5"
@@ -27,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --follower-port) FOLLOWER_PORT="$2"; shift 2 ;;
     --leader-port) LEADER_PORT="$2"; shift 2 ;;
     --camera-id) CAMERA_ID="$2"; shift 2 ;;
+    --camera-config) CAMERA_CONFIG_OVERRIDE="$2"; shift 2 ;;
     --camera-index) CAMERA_INDEX="$2"; shift 2 ;;
     --width) WIDTH="$2"; shift 2 ;;
     --height) HEIGHT="$2"; shift 2 ;;
@@ -37,6 +41,8 @@ while [[ $# -gt 0 ]]; do
     --dataset-root) DATASET_ROOT="$2"; shift 2 ;;
     --episodes) EPISODES="$2"; shift 2 ;;
     --episode-time-s) EPISODE_TIME_S="$2"; shift 2 ;;
+    --min-episode-time-s) MIN_EPISODE_TIME_S="$2"; shift 2 ;;
+    --max-episode-time-s) MAX_EPISODE_TIME_S="$2"; shift 2 ;;
     --reset-time-s) RESET_TIME_S="$2"; shift 2 ;;
     --task) TASK="$2"; shift 2 ;;
     --teleop-time-s) TELEOP_TIME_S="$2"; shift 2 ;;
@@ -86,6 +92,13 @@ run_lerobot() {
   shift
   echo "> ${tool} $*"
   "${BIN}/${tool}" "$@"
+}
+
+run_robotcloud_python() {
+  local script="$1"
+  shift
+  echo "> ${PYTHON} ${SCRIPT_DIR}/${script} $*"
+  "${PYTHON}" "${SCRIPT_DIR}/${script}" "$@"
 }
 
 json_detect_ports() {
@@ -163,12 +176,15 @@ camera_ref_for_config() {
 }
 
 CAMERA_CONFIG="{ front: {type: opencv, index_or_path: $(camera_ref_for_config), width: ${WIDTH}, height: ${HEIGHT}, fps: ${FPS}}}"
+if [[ -n "${CAMERA_CONFIG_OVERRIDE}" ]]; then
+  CAMERA_CONFIG="${CAMERA_CONFIG_OVERRIDE}"
+fi
 
 case "${ACTION}" in
   info)
     run_lerobot lerobot-info
     ;;
-  ports)
+  ports|find-port)
     json_detect_ports
     ;;
   cameras)
@@ -204,6 +220,44 @@ case "${ACTION}" in
       --teleop.id="${TELEOP_ID}" \
       --fps="${FPS}" \
       --teleop_time_s="${TELEOP_TIME_S}" \
+      --display_data="${DISPLAY_DATA}"
+    ;;
+  record-reset-pose)
+    require_port "${FOLLOWER_PORT}" "follower port"
+    require_port "${LEADER_PORT}" "leader port"
+    run_robotcloud_python robotcloud_reset_pose.py \
+      --robot.type=so101_follower \
+      --robot.port="${FOLLOWER_PORT}" \
+      --robot.id="${ROBOT_ID}" \
+      --robot.max_relative_target="${MAX_RELATIVE_TARGET}" \
+      --teleop.type=so101_leader \
+      --teleop.port="${LEADER_PORT}" \
+      --teleop.id="${TELEOP_ID}" \
+      --fps="${FPS}"
+    ;;
+  record-auto)
+    require_port "${FOLLOWER_PORT}" "follower port"
+    require_port "${LEADER_PORT}" "leader port"
+    mkdir -p "$(dirname "${DATASET_ROOT}")"
+    run_robotcloud_python robotcloud_auto_record.py \
+      --robot.type=so101_follower \
+      --robot.port="${FOLLOWER_PORT}" \
+      --robot.cameras="${CAMERA_CONFIG}" \
+      --robot.id="${ROBOT_ID}" \
+      --robot.max_relative_target="${MAX_RELATIVE_TARGET}" \
+      --teleop.type=so101_leader \
+      --teleop.port="${LEADER_PORT}" \
+      --teleop.id="${TELEOP_ID}" \
+      --dataset.repo_id="${DATASET_REPO_ID}" \
+      --dataset.root="${DATASET_ROOT}" \
+      --dataset.num_episodes="${EPISODES}" \
+      --dataset.single_task="${TASK}" \
+      --dataset.push_to_hub=false \
+      --dataset.streaming_encoding=true \
+      --dataset.encoder_threads=2 \
+      --dataset.vcodec=h264 \
+      --min_episode_time_s="${MIN_EPISODE_TIME_S}" \
+      --max_episode_time_s="${MAX_EPISODE_TIME_S}" \
       --display_data="${DISPLAY_DATA}"
     ;;
   record)

@@ -1,10 +1,11 @@
 param(
-    [ValidateSet("info", "ports", "cameras", "setup-follower", "setup-leader", "calibrate-follower", "calibrate-leader", "teleop", "record")]
+    [ValidateSet("info", "ports", "find-port", "cameras", "setup-follower", "setup-leader", "calibrate-follower", "calibrate-leader", "teleop", "record-reset-pose", "record-auto", "record")]
     [string] $Action = "info",
 
     [string] $FollowerPort = "",
     [string] $LeaderPort = "",
     [string] $CameraId = "",
+    [string] $CameraConfigOverride = "",
     [int] $CameraIndex = 0,
     [int] $Width = 640,
     [int] $Height = 480,
@@ -15,6 +16,8 @@ param(
     [string] $DatasetRoot = "",
     [int] $Episodes = 1,
     [double] $EpisodeTimeS = 10,
+    [double] $MinEpisodeTimeS = 2,
+    [double] $MaxEpisodeTimeS = 60,
     [double] $ResetTimeS = 2,
     [string] $Task = "SO-101 desktop teleoperation",
     [double] $TeleopTimeS = 5,
@@ -71,6 +74,23 @@ function Invoke-LeRobot {
 
     Write-Host "> $Tool $($Args -join ' ')"
     & $Exe @Args
+}
+
+function Invoke-RobotCloudPython {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $ScriptName,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]] $Args
+    )
+
+    $ScriptPath = Join-Path $ScriptRoot $ScriptName
+    if (-not (Test-Path $ScriptPath)) {
+        throw "Could not find $ScriptPath"
+    }
+
+    Write-Host "> $Python $ScriptPath $($Args -join ' ')"
+    & $Python $ScriptPath @Args
 }
 
 function Require-Port {
@@ -160,6 +180,9 @@ if ($CameraId -match '^\d+$') {
 }
 
 $CameraConfig = "{ front: {type: opencv, index_or_path: $CameraRef, width: $Width, height: $Height, fps: $Fps}}"
+if (-not [string]::IsNullOrWhiteSpace($CameraConfigOverride)) {
+    $CameraConfig = $CameraConfigOverride
+}
 $Display = $DisplayData.IsPresent.ToString().ToLowerInvariant()
 
 switch ($Action) {
@@ -167,6 +190,9 @@ switch ($Action) {
         Invoke-LeRobot "lerobot-info"
     }
     "ports" {
+        Show-Ports
+    }
+    "find-port" {
         Show-Ports
     }
     "cameras" {
@@ -202,6 +228,47 @@ switch ($Action) {
             "--teleop.id=$TeleopId" `
             "--fps=$Fps" `
             "--teleop_time_s=$TeleopTimeS" `
+            "--display_data=$Display"
+    }
+    "record-reset-pose" {
+        Require-Port $FollowerPort "FollowerPort"
+        Require-Port $LeaderPort "LeaderPort"
+        Invoke-RobotCloudPython "robotcloud_reset_pose.py" `
+            "--robot.type=so101_follower" `
+            "--robot.port=$FollowerPort" `
+            "--robot.id=$RobotId" `
+            "--robot.max_relative_target=$MaxRelativeTarget" `
+            "--teleop.type=so101_leader" `
+            "--teleop.port=$LeaderPort" `
+            "--teleop.id=$TeleopId" `
+            "--fps=$Fps"
+    }
+    "record-auto" {
+        Require-Port $FollowerPort "FollowerPort"
+        Require-Port $LeaderPort "LeaderPort"
+        $DatasetParent = Split-Path -Parent $DatasetRoot
+        if (-not [string]::IsNullOrWhiteSpace($DatasetParent)) {
+            New-Item -ItemType Directory -Force -Path $DatasetParent | Out-Null
+        }
+        Invoke-RobotCloudPython "robotcloud_auto_record.py" `
+            "--robot.type=so101_follower" `
+            "--robot.port=$FollowerPort" `
+            "--robot.cameras=$CameraConfig" `
+            "--robot.id=$RobotId" `
+            "--robot.max_relative_target=$MaxRelativeTarget" `
+            "--teleop.type=so101_leader" `
+            "--teleop.port=$LeaderPort" `
+            "--teleop.id=$TeleopId" `
+            "--dataset.repo_id=$DatasetRepoId" `
+            "--dataset.root=$DatasetRoot" `
+            "--dataset.num_episodes=$Episodes" `
+            "--dataset.single_task=$Task" `
+            "--dataset.push_to_hub=false" `
+            "--dataset.streaming_encoding=true" `
+            "--dataset.encoder_threads=2" `
+            "--dataset.vcodec=h264" `
+            "--min_episode_time_s=$MinEpisodeTimeS" `
+            "--max_episode_time_s=$MaxEpisodeTimeS" `
             "--display_data=$Display"
     }
     "record" {
