@@ -20,6 +20,12 @@ export default function SettingsPage() {
         subtitle: "管理默认 GPU Agent，数据集上传会直传到选中的节点。",
         loginPrompt: "登录后可配置默认 GPU Agent。",
         loginLink: "前往登录",
+        configTitle: "配置项",
+        plans: {
+          title: "套餐购买",
+          description: "查看当前套餐并升级 Plus，获取更高算力与云端推理能力。",
+          action: "打开"
+        },
         loading: "加载中...",
         empty: "当前没有在线 GPU Agent。",
         saved: "默认 GPU Agent 已更新",
@@ -38,6 +44,12 @@ export default function SettingsPage() {
         subtitle: "Manage the default GPU Agent. Dataset uploads go directly to the selected node.",
         loginPrompt: "Log in to configure the default GPU Agent.",
         loginLink: "Go to login",
+        configTitle: "Configuration",
+        plans: {
+          title: "Plans",
+          description: "Review your current plan and upgrade to Plus for more compute and remote inference.",
+          action: "Open"
+        },
         loading: "Loading...",
         empty: "No GPU Agent is online.",
         saved: "Default GPU Agent updated",
@@ -90,6 +102,22 @@ export default function SettingsPage() {
           </Link>
         </p>
       ) : null}
+      <section aria-label={copy.configTitle} className="grid gap-3 md:grid-cols-2">
+        <Link
+          href="/plans"
+          className="group block rounded-lg border border-theme bg-card p-4 transition hover:border-primary hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
+        >
+          <span className="flex items-center justify-between gap-3">
+            <span className="min-w-0">
+              <span className="block text-base font-semibold accent-text">{copy.plans.title}</span>
+              <span className="mt-1 block text-sm text-muted">{copy.plans.description}</span>
+            </span>
+            <span className="shrink-0 rounded-md border border-theme px-3 py-1 text-sm font-medium text-body transition group-hover:border-primary">
+              {copy.plans.action}
+            </span>
+          </span>
+        </Link>
+      </section>
       {token && agentsQuery.isLoading ? <p className="text-sm text-muted">{copy.loading}</p> : null}
       {token && message ? <p className="text-sm accent-text">{message}</p> : null}
       {token ? (

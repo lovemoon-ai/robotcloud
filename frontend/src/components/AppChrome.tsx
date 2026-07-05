@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ComponentType, ReactNode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ComponentType, Fragment, ReactNode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useAuthStore } from "@/store/useAuthStore";
 import { Logo } from "@/components/Logo";
 import { getSections } from "@/components/shell/sections";
@@ -175,6 +175,110 @@ function isActiveRoute(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
+type NavItem = ReturnType<typeof getSections>[number];
+
+function isActiveNavItem(pathname: string, item: NavItem) {
+  return isActiveRoute(pathname, item.href) || Boolean(item.children?.some((child) => isActiveRoute(pathname, child.href)));
+}
+
+const mobileNavPairs = [
+  { primaryHref: "/datasets", secondaryHref: "/models" },
+  { primaryHref: "/train", secondaryHref: "/inference" }
+] as const;
+
+type MobileNavEntry = {
+  active: boolean;
+  backItem?: NavItem;
+  displayItem: NavItem;
+  flipped: boolean;
+  frontItem: NavItem;
+  href: string;
+  key: string;
+  targetItem: NavItem;
+};
+
+function getMobileNavEntries(navItems: readonly NavItem[], pathname: string): MobileNavEntry[] {
+  const itemByHref = new Map(navItems.map((item) => [item.href, item]));
+
+  return navItems.flatMap((item): MobileNavEntry[] => {
+    const primaryPair = mobileNavPairs.find((pair) => pair.primaryHref === item.href);
+    if (primaryPair) {
+      const secondaryItem = itemByHref.get(primaryPair.secondaryHref);
+      if (!secondaryItem) {
+        const active = isActiveNavItem(pathname, item);
+        return [
+          {
+            active,
+            displayItem: item,
+            flipped: false,
+            frontItem: item,
+            href: item.href,
+            key: item.href,
+            targetItem: item
+          }
+        ];
+      }
+
+      const primaryActive = isActiveNavItem(pathname, item);
+      const secondaryActive = isActiveNavItem(pathname, secondaryItem);
+      const flipped = secondaryActive;
+      const href = primaryActive ? secondaryItem.href : item.href;
+      const targetItem = primaryActive ? secondaryItem : item;
+
+      return [
+        {
+          active: primaryActive || secondaryActive,
+          backItem: secondaryItem,
+          displayItem: flipped ? secondaryItem : item,
+          flipped,
+          frontItem: item,
+          href,
+          key: `${item.href}:${secondaryItem.href}`,
+          targetItem
+        }
+      ];
+    }
+
+    if (mobileNavPairs.some((pair) => pair.secondaryHref === item.href)) {
+      return [];
+    }
+
+    const active = isActiveNavItem(pathname, item);
+    return [
+      {
+        active,
+        displayItem: item,
+        flipped: false,
+        frontItem: item,
+        href: item.href,
+        key: item.href,
+        targetItem: item
+      }
+    ];
+  });
+}
+
+function MobileNavFace({
+  active,
+  ariaHidden,
+  item
+}: {
+  active: boolean;
+  ariaHidden?: boolean;
+  item: NavItem;
+}) {
+  const Icon = iconByHref[item.href] ?? DashboardIcon;
+
+  return (
+    <span aria-hidden={ariaHidden || undefined} className="flex h-full w-full flex-col items-center gap-1">
+      <span className={`flex h-8 w-8 items-center justify-center rounded-full transition ${active ? "bg-surface-secondary" : ""}`}>
+        <Icon active={active} className={`h-5 w-5 transition-transform duration-200 ${active ? "scale-110" : "group-hover/nav:scale-105"}`} />
+      </span>
+      <span className={`max-w-full truncate leading-none ${active ? "font-semibold" : "font-medium"}`}>{item.title}</span>
+    </span>
+  );
+}
+
 export function AppChrome({ children }: AppChromeProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -205,7 +309,8 @@ export function AppChrome({ children }: AppChromeProps) {
   const initials = phone ? phone.slice(-2) : "";
   const isDesktopBridgeAvailable = useDesktopBridgeAvailable();
   const navItems = getSections(locale, { includeDesktopOnly: isDesktopBridgeAvailable });
-  const activeSection = navItems.find((item) => isActiveRoute(pathname, item.href));
+  const mobileNavItems = getMobileNavEntries(navItems, pathname);
+  const activeSection = navItems.find((item) => isActiveNavItem(pathname, item));
 
   const copy = {
     homeAria: isZh ? "RobotCloud 控制面板" : "RobotCloud workspace",
@@ -218,7 +323,8 @@ export function AppChrome({ children }: AppChromeProps) {
     darkMode: isZh ? "深色" : "Dark",
     copyright: isZh
       ? "© 2025-2026 LoveMoon Ltd. 保留所有权利。"
-      : "© 2025-2026 LoveMoon Ltd. All rights reserved."
+      : "© 2025-2026 LoveMoon Ltd. All rights reserved.",
+    switchTo: isZh ? "切换到" : "Switch to"
   };
 
   const sidebarToggleCopy = isZh
@@ -314,34 +420,54 @@ export function AppChrome({ children }: AppChromeProps) {
           <nav id="robotcloud-sidebar-primary-nav" aria-label="Primary navigation" className="flex-1 overflow-y-auto px-2 py-4">
             <div className="space-y-1">
               {navItems.map((item) => {
-                const active = isActiveRoute(pathname, item.href);
+                const current = isActiveRoute(pathname, item.href);
+                const active = isActiveNavItem(pathname, item);
                 const Icon = iconByHref[item.href] ?? DashboardIcon;
 
                 return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    aria-label={item.title}
-                    aria-current={active ? "page" : undefined}
-                    title={isSidebarCollapsed ? item.title : item.description}
-                    className={`group/nav relative flex min-h-11 items-center rounded-lg text-sm transition focus:outline-none focus:ring-2 focus:ring-primary/30 ${
-                      active
-                        ? "bg-surface-secondary text-body"
-                        : "text-muted hover:bg-surface-secondary hover:text-body"
-                    } ${isSidebarCollapsed ? "justify-center" : "gap-3 px-3 py-2"}`}
-                  >
-                    <span className={`${isSidebarCollapsed ? iconRailClassName : "flex h-8 w-8 shrink-0 items-center justify-center"} rounded-md border border-theme bg-card transition group-hover/nav:scale-105 group-hover/nav:border-primary`}>
-                      <Icon active={active} className={`h-5 w-5 transition-transform ${active ? "scale-110" : ""}`} />
-                    </span>
-                    {!isSidebarCollapsed ? (
-                      <>
+                  <Fragment key={item.href}>
+                    <Link
+                      href={item.href}
+                      aria-label={item.title}
+                      aria-current={current ? "page" : undefined}
+                      title={isSidebarCollapsed ? item.title : item.description}
+                      className={`group/nav relative flex min-h-11 items-center rounded-lg text-sm transition focus:outline-none focus:ring-2 focus:ring-primary/30 ${
+                        active
+                          ? "bg-surface-secondary text-body"
+                          : "text-muted hover:bg-surface-secondary hover:text-body"
+                      } ${isSidebarCollapsed ? "justify-center" : "gap-3 px-3 py-2"}`}
+                    >
+                      <span className={`${isSidebarCollapsed ? iconRailClassName : "flex h-8 w-8 shrink-0 items-center justify-center"} rounded-md border border-theme bg-card transition group-hover/nav:scale-105 group-hover/nav:border-primary`}>
+                        <Icon active={active} className={`h-5 w-5 transition-transform ${active ? "scale-110" : ""}`} />
+                      </span>
+                      {!isSidebarCollapsed ? (
                         <span className={`min-w-0 flex-1 truncate ${active ? "font-semibold" : "font-medium"}`}>{item.title}</span>
-                        {active ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-theme-primary" aria-hidden /> : null}
-                      </>
-                    ) : active ? (
-                      <span className="absolute right-2 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-theme-primary" aria-hidden />
+                      ) : null}
+                    </Link>
+
+                    {!isSidebarCollapsed && item.children?.length && active ? (
+                      <div className="ml-11 mt-1 space-y-1 border-l border-theme pl-3">
+                        {item.children.map((child) => {
+                          const childActive = isActiveRoute(pathname, child.href);
+                          return (
+                            <Link
+                              key={child.href}
+                              href={child.href}
+                              aria-current={childActive ? "page" : undefined}
+                              title={child.description}
+                              className={`block rounded-md px-3 py-2 text-sm transition focus:outline-none focus:ring-2 focus:ring-primary/30 ${
+                                childActive
+                                  ? "bg-surface-secondary font-semibold text-body"
+                                  : "text-muted hover:bg-surface-secondary hover:text-body"
+                              }`}
+                            >
+                              {child.title}
+                            </Link>
+                          );
+                        })}
+                      </div>
                     ) : null}
-                  </Link>
+                  </Fragment>
                 );
               })}
             </div>
@@ -452,24 +578,40 @@ export function AppChrome({ children }: AppChromeProps) {
 
       <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-theme bg-header backdrop-blur md:hidden" aria-label="Primary navigation">
         <div className="flex h-[calc(4.5rem+env(safe-area-inset-bottom))] items-start gap-1 overflow-x-auto px-2 pb-[env(safe-area-inset-bottom)] pt-2">
-          {navItems.map((item) => {
-            const active = isActiveRoute(pathname, item.href);
-            const Icon = iconByHref[item.href] ?? DashboardIcon;
+          {mobileNavItems.map((item) => {
+            const targetIsCurrent = isActiveRoute(pathname, item.href);
+            const isToggleLink = item.href !== item.displayItem.href;
+            const linkLabel = isToggleLink ? `${copy.switchTo} ${item.targetItem.title}` : item.displayItem.title;
+            const linkTitle = isToggleLink ? linkLabel : item.displayItem.description;
 
             return (
               <Link
-                key={item.href}
+                key={item.key}
                 href={item.href}
-                aria-current={active ? "page" : undefined}
+                aria-label={linkLabel}
+                aria-current={targetIsCurrent ? "page" : undefined}
+                data-flipped={item.flipped ? "true" : "false"}
+                title={linkTitle}
                 className={`group/nav relative flex min-w-[4.75rem] flex-1 flex-col items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition focus:outline-none focus:ring-2 focus:ring-primary/30 ${
-                  active ? "text-body" : "text-muted hover:text-body"
+                  item.active ? "text-body" : "text-muted hover:text-body"
                 }`}
               >
-                <span className={`flex h-8 w-8 items-center justify-center rounded-full transition group-hover/nav:bg-surface-secondary ${active ? "bg-surface-secondary" : ""}`}>
-                  <Icon active={active} className={`h-5 w-5 transition-transform duration-200 ${active ? "scale-110" : "group-hover/nav:scale-105"}`} />
+                <span className="relative flex h-12 w-full items-center justify-center [perspective:700px]">
+                  <span
+                    className={`relative h-full w-full transition-transform duration-300 [transform-style:preserve-3d] motion-reduce:transition-none ${
+                      item.flipped ? "[transform:rotateY(180deg)]" : ""
+                    }`}
+                  >
+                    <span className="absolute inset-0 [backface-visibility:hidden]">
+                      <MobileNavFace active={item.active && !item.flipped} ariaHidden={item.flipped} item={item.frontItem} />
+                    </span>
+                    {item.backItem ? (
+                      <span className="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)]">
+                        <MobileNavFace active={item.active && item.flipped} ariaHidden={!item.flipped} item={item.backItem} />
+                      </span>
+                    ) : null}
+                  </span>
                 </span>
-                <span className={`max-w-full truncate leading-none ${active ? "font-semibold" : "font-medium"}`}>{item.title}</span>
-                {active ? <span className="absolute bottom-0 h-1 w-1 rounded-full bg-theme-primary" aria-hidden /> : null}
               </Link>
             );
           })}

@@ -5,6 +5,13 @@ type ShellSection = {
   description: string;
   href: string;
   desktopOnly?: boolean;
+  children?: readonly ShellSubsection[];
+};
+
+type ShellSubsection = {
+  title: string;
+  description: string;
+  href: string;
 };
 
 type GetSectionsOptions = {
@@ -47,12 +54,14 @@ const sectionsByLocale = {
     {
       title: "设置",
       description: "查看在线 GPU Agent，并选择默认上传节点。",
-      href: "/settings"
-    },
-    {
-      title: "套餐购买",
-      description: "选择 Free / Plus 套餐，获取更高算力与并发。",
-      href: "/plans"
+      href: "/settings",
+      children: [
+        {
+          title: "套餐购买",
+          description: "选择 Free / Plus 套餐，获取更高算力与并发。",
+          href: "/plans"
+        }
+      ]
     }
   ],
   en: [
@@ -90,12 +99,14 @@ const sectionsByLocale = {
     {
       title: "Settings",
       description: "View online GPU Agents and choose the default upload node.",
-      href: "/settings"
-    },
-    {
-      title: "Plans",
-      description: "Pick the Free, Plus plan to unlock more compute and concurrency.",
-      href: "/plans"
+      href: "/settings",
+      children: [
+        {
+          title: "Plans",
+          description: "Pick the Free, Plus plan to unlock more compute and concurrency.",
+          href: "/plans"
+        }
+      ]
     }
   ]
 } as const satisfies Record<Locale, readonly ShellSection[]>;
