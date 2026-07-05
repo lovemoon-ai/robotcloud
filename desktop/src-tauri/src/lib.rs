@@ -284,7 +284,7 @@ fn runtime_path(app: &AppHandle) -> PathBuf {
         return PathBuf::from(path);
     }
     if let Some(path) = extracted_runtime_path(app) {
-        if python_path(&path).exists() {
+        if runtime_is_ready(&path) {
             return path;
         }
     }
@@ -293,7 +293,7 @@ fn runtime_path(app: &AppHandle) -> PathBuf {
             .join("runtime")
             .join(platform_key())
             .join("lerobot-env");
-        if python_path(&candidate).exists() {
+        if runtime_is_ready(&candidate) {
             return candidate;
         }
     }
@@ -436,14 +436,14 @@ fn extract_runtime_archive(archive_path: &Path, target: &Path) -> Result<(), Str
 fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(path) = env::var("ROBOTCLOUD_LEROBOT_ENV") {
         let runtime = PathBuf::from(path);
-        if python_path(&runtime).exists() {
+        if runtime_is_ready(&runtime) {
             return Ok(runtime);
         }
-        return Err(format!("LeRobot runtime not found: {}", runtime.display()));
+        return Err(runtime_not_ready_message(&runtime));
     }
 
     let runtime = runtime_path(app);
-    if python_path(&runtime).exists() {
+    if runtime_is_ready(&runtime) {
         return Ok(runtime);
     }
 
@@ -453,14 +453,14 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())?;
 
     let runtime = runtime_path(app);
-    if python_path(&runtime).exists() {
+    if runtime_is_ready(&runtime) {
         return Ok(runtime);
     }
 
     let Some(target) = extracted_runtime_path(app) else {
         return Err("Could not resolve RobotCloud app data directory".to_string());
     };
-    if python_path(&target).exists() {
+    if runtime_is_ready(&target) {
         return Ok(target);
     }
 
@@ -471,13 +471,10 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
         ));
     };
     extract_runtime_archive(&archive, &target)?;
-    if python_path(&target).exists() {
+    if runtime_is_ready(&target) {
         Ok(target)
     } else {
-        Err(format!(
-            "LeRobot runtime extraction did not create {}",
-            python_path(&target).display()
-        ))
+        Err(runtime_not_ready_message(&target))
     }
 }
 
@@ -501,6 +498,59 @@ fn python_path(runtime: &PathBuf) -> PathBuf {
         runtime.join("python.exe")
     } else {
         runtime.join("bin").join("python")
+    }
+}
+
+fn runtime_is_ready(runtime: &PathBuf) -> bool {
+    runtime_validation_error(runtime).is_none()
+}
+
+fn runtime_not_ready_message(runtime: &PathBuf) -> String {
+    runtime_validation_error(runtime).unwrap_or_else(|| {
+        format!(
+            "LeRobot runtime is not ready: {}",
+            runtime.to_string_lossy()
+        )
+    })
+}
+
+fn runtime_validation_error(runtime: &PathBuf) -> Option<String> {
+    let python = python_path(runtime);
+    if !python.exists() {
+        return Some(format!("LeRobot runtime not found: {}", runtime.display()));
+    }
+
+    let output = Command::new(&python)
+        .arg("-c")
+        .arg("import lerobot, serial, scservo_sdk")
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => None,
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("python exited with {}", output.status)
+            };
+            Some(format!(
+                "LeRobot runtime is missing required Python modules at {}: {}",
+                runtime.display(),
+                detail
+            ))
+        }
+        Err(error) => Some(format!(
+            "LeRobot runtime Python failed at {}: {}",
+            python.display(),
+            error
+        )),
     }
 }
 
@@ -1484,12 +1534,15 @@ fn dataset_read_prepared_upload(app: AppHandle, file_path: String) -> Result<Res
 fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
     let runtime = runtime_path(&app);
     let archive = runtime_archive_path(&app);
-    let runtime_ready = python_path(&runtime).exists();
+    let runtime_error = runtime_validation_error(&runtime);
+    let runtime_ready = runtime_error.is_none();
     let runtime_archive_ready = archive.as_ref().is_some_and(|path| path.exists());
-    let runtime_error = if runtime_ready || runtime_archive_ready {
+    let runtime_error = if runtime_ready {
         None
+    } else if runtime_archive_ready {
+        runtime_error
     } else {
-        Some(format!("LeRobot runtime not found: {}", runtime.display()))
+        Some(runtime_not_ready_message(&runtime))
     };
     let script = script_path(&app);
     let data = data_dir(&app)?;
