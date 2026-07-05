@@ -43,6 +43,16 @@ type DatasetPrepareUploadConfig = {
   task?: string;
 };
 
+type DatasetUploadInspection = {
+  datasetRoot: string;
+  fileCount: number;
+  totalBytes: number;
+  episodeCount: number;
+  totalFrames?: number | null;
+  fps?: number | null;
+  durationSeconds?: number | null;
+};
+
 type PreparedDatasetUpload = {
   filePath: string;
   fileName: string;
@@ -52,6 +62,7 @@ type PreparedDatasetUpload = {
   description: string;
   visibility: "public" | "private";
   createdAt: string;
+  stats?: DatasetUploadInspection;
 };
 
 type ProcessOutputEvent = {
@@ -105,6 +116,7 @@ type DesktopBridge = {
     onExit: (callback: (event: ProcessExitEvent) => void) => () => void;
   };
   dataset: {
+    inspectUpload?: (config: DatasetPrepareUploadConfig) => Promise<DatasetUploadInspection>;
     prepareUpload: (config: DatasetPrepareUploadConfig) => Promise<PreparedDatasetUpload>;
     readPreparedUpload: (filePath: string) => Promise<ArrayBuffer>;
   };

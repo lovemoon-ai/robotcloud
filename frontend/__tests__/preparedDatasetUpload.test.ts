@@ -12,14 +12,27 @@ describe("prepared dataset upload state", () => {
           name: "local/so101",
           description: "SO101 Desktop recording",
           visibility: "private",
-          createdAt: "1760000000000"
+          createdAt: "1760000000000",
+          stats: {
+            datasetRoot: "/tmp/robotcloud/datasets/local/so101",
+            fileCount: 4,
+            totalBytes: 2048,
+            episodeCount: 1,
+            totalFrames: 300,
+            fps: 30,
+            durationSeconds: 10
+          }
         })
       )
     ).toMatchObject({
       fileName: "local_so101.zip",
       fileSize: 1024,
       name: "local/so101",
-      visibility: "private"
+      visibility: "private",
+      stats: {
+        episodeCount: 1,
+        durationSeconds: 10
+      }
     });
   });
 

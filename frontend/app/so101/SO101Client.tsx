@@ -72,6 +72,12 @@ type TerminalHandle = {
   element?: HTMLElement;
 };
 type TerminalStoreSnapshot = { phase: TerminalPhase; error: string | null };
+type UploadReview = {
+  datasetRepoId: string;
+  datasetRoot: string;
+  stats: DatasetUploadInspection;
+  issues: string[];
+};
 type ActionId =
   | "info"
   | "setup-follower"
@@ -86,6 +92,8 @@ type ShellDialect = "posix" | "powershell";
 const CONNECTION_STORAGE_KEY = "robotcloud-so101-connection";
 const DEFAULT_CAMERA_COUNT = 1;
 const MAX_CAMERAS = 3;
+const MIN_UPLOAD_EPISODES = 1;
+const MIN_UPLOAD_DURATION_SECONDS = 1;
 const cameraKeys = ["front", "side", "wrist"] as const;
 const cameraLabels = ["Camera 0", "Camera 1", "Camera 2"] as const;
 
@@ -297,6 +305,46 @@ export function resolvedDatasetRoot(form: FormState, status: DesktopStatus | nul
   return joinDesktopPath(status, status.dataDir, "datasets", form.datasetRepoId);
 }
 
+function finiteNumber(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let cursor = value;
+  let unitIndex = 0;
+  while (cursor >= 1024 && unitIndex < units.length - 1) {
+    cursor /= 1024;
+    unitIndex += 1;
+  }
+  return `${cursor >= 10 || unitIndex === 0 ? cursor.toFixed(0) : cursor.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function formatDuration(seconds: number | null | undefined) {
+  if (!finiteNumber(seconds)) return "Unknown";
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${remainingSeconds}`;
+}
+
+export function datasetUploadValidationIssues(stats: DatasetUploadInspection) {
+  const issues: string[] = [];
+  if (stats.fileCount < 1) {
+    issues.push("No recorded files were found.");
+  }
+  if (stats.episodeCount < MIN_UPLOAD_EPISODES) {
+    issues.push(`At least ${MIN_UPLOAD_EPISODES} recorded episode is required.`);
+  }
+  if (!finiteNumber(stats.durationSeconds)) {
+    issues.push("Recording duration could not be read from meta/info.json.");
+  } else if (stats.durationSeconds < MIN_UPLOAD_DURATION_SECONDS) {
+    issues.push(`Recording duration must be at least ${MIN_UPLOAD_DURATION_SECONDS}s.`);
+  }
+  return issues;
+}
+
 function clampCameraCount(value: unknown) {
   const numeric = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numeric)) return DEFAULT_CAMERA_COUNT;
@@ -494,6 +542,7 @@ export const so101TestExports = {
   removeCameraAtIndex,
   resolvedDatasetRoot,
   buildActionCommand,
+  datasetUploadValidationIssues,
   shellArg,
   resetPersistentTerminalForTest
 };
@@ -744,6 +793,7 @@ export function SO101Client() {
   const [uploadPreparing, setUploadPreparing] = useState(false);
   const [actionConfigError, setActionConfigError] = useState<ActionConfigError | null>(null);
   const [highlightedField, setHighlightedField] = useState<ConfigFieldId | null>(null);
+  const [uploadReview, setUploadReview] = useState<UploadReview | null>(null);
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [terminalState, setTerminalState] = useState<TerminalStoreSnapshot>(() => persistentTerminalSnapshot());
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
@@ -997,19 +1047,48 @@ export function SO101Client() {
     }
   };
 
-  const prepareDatasetUpload = async () => {
+  const requestDatasetUploadReview = async () => {
     try {
       if (!window.robotcloudDesktop?.dataset) {
         throw new Error("Desktop dataset bridge is not ready.");
+      }
+      const inspectUpload = window.robotcloudDesktop.dataset.inspectUpload;
+      if (!inspectUpload) {
+        throw new Error("Desktop app needs to be updated before upload validation is available.");
       }
       const datasetRepoId = requireValue(form.datasetRepoId, "Dataset repo id");
       const datasetRoot = requireValue(resolvedDatasetRoot(form, status), "Dataset root");
       setUploadPreparing(true);
       setActionConfigError(null);
       setPersistentTerminalError(null);
-      const prepared = await window.robotcloudDesktop.dataset.prepareUpload({
+      const stats = await inspectUpload({
         datasetRoot,
+        datasetRepoId
+      });
+      setUploadReview({
         datasetRepoId,
+        datasetRoot: stats.datasetRoot || datasetRoot,
+        stats,
+        issues: datasetUploadValidationIssues(stats)
+      });
+    } catch (error) {
+      setPersistentTerminalError(String(error));
+    } finally {
+      setUploadPreparing(false);
+    }
+  };
+
+  const prepareDatasetUpload = async () => {
+    if (!uploadReview || uploadReview.issues.length > 0) return;
+    try {
+      if (!window.robotcloudDesktop?.dataset) {
+        throw new Error("Desktop dataset bridge is not ready.");
+      }
+      setUploadPreparing(true);
+      setPersistentTerminalError(null);
+      const prepared = await window.robotcloudDesktop.dataset.prepareUpload({
+        datasetRoot: uploadReview.datasetRoot,
+        datasetRepoId: uploadReview.datasetRepoId,
         task: form.task
       });
       writePreparedDatasetUpload(prepared);
@@ -1456,15 +1535,99 @@ export function SO101Client() {
             <div className="mt-4 flex justify-end">
               <button
                 type="button"
-                onClick={prepareDatasetUpload}
+                onClick={requestDatasetUploadReview}
                 disabled={uploadPreparing}
+                className="rounded-md gradient-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {uploadPreparing ? "Checking..." : "Upload"}
+              </button>
+            </div>
+          </section>
+      </section>
+
+      {uploadReview ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="upload-review-title"
+            className="w-full max-w-lg rounded-lg border border-theme bg-card p-5 shadow-xl"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 id="upload-review-title" className="text-lg font-semibold accent-text">Recording upload review</h2>
+                <p className="mt-1 break-all text-xs text-muted">{uploadReview.datasetRoot}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUploadReview(null)}
+                aria-label="Close upload review"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg"
+              >
+                ×
+              </button>
+            </div>
+
+            <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-md border border-theme bg-surface p-3">
+                <dt className="text-xs uppercase tracking-wide text-muted">Episodes</dt>
+                <dd className="mt-1 text-xl font-semibold text-body">{uploadReview.stats.episodeCount}</dd>
+              </div>
+              <div className="rounded-md border border-theme bg-surface p-3">
+                <dt className="text-xs uppercase tracking-wide text-muted">Duration</dt>
+                <dd className="mt-1 text-xl font-semibold text-body">{formatDuration(uploadReview.stats.durationSeconds)}</dd>
+              </div>
+              <div className="rounded-md border border-theme bg-surface p-3">
+                <dt className="text-xs uppercase tracking-wide text-muted">Files</dt>
+                <dd className="mt-1 text-xl font-semibold text-body">{uploadReview.stats.fileCount}</dd>
+              </div>
+              <div className="rounded-md border border-theme bg-surface p-3">
+                <dt className="text-xs uppercase tracking-wide text-muted">Size</dt>
+                <dd className="mt-1 text-xl font-semibold text-body">{formatBytes(uploadReview.stats.totalBytes)}</dd>
+              </div>
+              <div className="rounded-md border border-theme bg-surface p-3">
+                <dt className="text-xs uppercase tracking-wide text-muted">Frames</dt>
+                <dd className="mt-1 text-xl font-semibold text-body">{finiteNumber(uploadReview.stats.totalFrames) ? uploadReview.stats.totalFrames : "Unknown"}</dd>
+              </div>
+              <div className="rounded-md border border-theme bg-surface p-3">
+                <dt className="text-xs uppercase tracking-wide text-muted">FPS</dt>
+                <dd className="mt-1 text-xl font-semibold text-body">{finiteNumber(uploadReview.stats.fps) ? uploadReview.stats.fps : "Unknown"}</dd>
+              </div>
+            </dl>
+
+            {uploadReview.issues.length ? (
+              <div className="mt-4 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
+                <p className="font-semibold">Upload blocked</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  {uploadReview.issues.map((issue) => (
+                    <li key={issue}>{issue}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="mt-4 rounded-md border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-300">Ready to upload.</p>
+            )}
+
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setUploadReview(null)}
+                className="rounded-md border border-theme px-4 py-2 text-sm font-semibold accent-text transition hover:accent-bg"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={prepareDatasetUpload}
+                disabled={uploadPreparing || uploadReview.issues.length > 0}
                 className="rounded-md gradient-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {uploadPreparing ? "Packaging..." : "Upload"}
               </button>
             </div>
           </section>
-      </section>
+        </div>
+      ) : null}
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {statusCards.map((card) => (

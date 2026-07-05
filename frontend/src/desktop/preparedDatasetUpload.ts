@@ -9,10 +9,57 @@ export type PreparedDatasetUploadState = {
   description: string;
   visibility: "public" | "private";
   createdAt: string;
+  stats?: DatasetUploadInspectionState;
+};
+
+export type DatasetUploadInspectionState = {
+  datasetRoot: string;
+  fileCount: number;
+  totalBytes: number;
+  episodeCount: number;
+  totalFrames?: number | null;
+  fps?: number | null;
+  durationSeconds?: number | null;
 };
 
 function isVisibility(value: unknown): value is "public" | "private" {
   return value === "public" || value === "private";
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function optionalFiniteNumber(value: unknown): number | null | undefined {
+  if (value == null) return value;
+  return isFiniteNumber(value) ? value : undefined;
+}
+
+function parseDatasetUploadInspection(value: unknown): DatasetUploadInspectionState | undefined {
+  const parsed = value && typeof value === "object" ? (value as Partial<DatasetUploadInspectionState>) : null;
+  if (
+    !parsed ||
+    typeof parsed.datasetRoot !== "string" ||
+    !isFiniteNumber(parsed.fileCount) ||
+    !isFiniteNumber(parsed.totalBytes) ||
+    !isFiniteNumber(parsed.episodeCount)
+  ) {
+    return undefined;
+  }
+
+  const totalFrames = optionalFiniteNumber(parsed.totalFrames);
+  const fps = optionalFiniteNumber(parsed.fps);
+  const durationSeconds = optionalFiniteNumber(parsed.durationSeconds);
+
+  return {
+    datasetRoot: parsed.datasetRoot,
+    fileCount: parsed.fileCount,
+    totalBytes: parsed.totalBytes,
+    episodeCount: parsed.episodeCount,
+    ...(totalFrames !== undefined ? { totalFrames } : {}),
+    ...(fps !== undefined ? { fps } : {}),
+    ...(durationSeconds !== undefined ? { durationSeconds } : {})
+  };
 }
 
 export function parsePreparedDatasetUpload(raw: string | null): PreparedDatasetUploadState | null {
@@ -32,6 +79,7 @@ export function parsePreparedDatasetUpload(raw: string | null): PreparedDatasetU
     ) {
       return null;
     }
+    const stats = parseDatasetUploadInspection(parsed.stats);
     return {
       filePath: parsed.filePath,
       fileName: parsed.fileName,
@@ -40,7 +88,8 @@ export function parsePreparedDatasetUpload(raw: string | null): PreparedDatasetU
       name: parsed.name,
       description: parsed.description,
       visibility: parsed.visibility,
-      createdAt: parsed.createdAt
+      createdAt: parsed.createdAt,
+      ...(stats ? { stats } : {})
     };
   } catch {
     return null;
