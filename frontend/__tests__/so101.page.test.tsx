@@ -168,6 +168,7 @@ describe("SO101 terminal session", () => {
     const terminalStart = jest.fn().mockResolvedValue({ sessionId: "session-1", shell: "/bin/zsh" });
     const terminalWrite = jest.fn().mockResolvedValue({ ok: true });
     const terminalStop = jest.fn().mockResolvedValue({ stopped: true });
+    const validateCamera = jest.fn();
     const bridge: DesktopBridge = {
       isDesktop: true,
       status: jest.fn().mockResolvedValue(desktopStatus),
@@ -175,7 +176,7 @@ describe("SO101 terminal session", () => {
         run: jest.fn(),
         stop: jest.fn(),
         validatePort: jest.fn(),
-        validateCamera: jest.fn(),
+        validateCamera,
         previewCamera: jest.fn(),
         onOutput: jest.fn(() => jest.fn()),
         onExit: jest.fn(() => jest.fn())
@@ -200,6 +201,7 @@ describe("SO101 terminal session", () => {
       terminalStart,
       terminalWrite,
       terminalStop,
+      validateCamera,
       emitOutput: (data: string) => outputCallback?.({ sessionId: "session-1", data }),
       emitExit: () => exitCallback?.({ sessionId: "session-1", code: 0, signal: null })
     };
@@ -300,6 +302,36 @@ describe("SO101 terminal session", () => {
       expect(terminalStart).toHaveBeenCalledTimes(2);
     });
     expect(terminalStop).not.toHaveBeenCalled();
+  });
+
+  it("fills camera width, height, and fps from a successful camera check", async () => {
+    const { validateCamera } = installDesktopBridge();
+    validateCamera.mockResolvedValue({
+      ok: true,
+      message: "Camera is available: 0 (1280x720 @ 60 fps)",
+      width: 1280,
+      height: 720,
+      fps: 60
+    });
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    const checkButton = view
+      .getAllByRole("button", { name: "Check" })
+      .find((button) => !button.hasAttribute("disabled"));
+    expect(checkButton).toBeDefined();
+    fireEvent.click(checkButton as HTMLElement);
+
+    await waitFor(() => {
+      expect(validateCamera).toHaveBeenCalledWith("0", 0, 0);
+    });
+    expect(view.getByLabelText("Width")).toHaveValue(1280);
+    expect(view.getByLabelText("Height")).toHaveValue(720);
+    expect(view.getByLabelText("FPS")).toHaveValue(60);
   });
 });
 

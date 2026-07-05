@@ -185,6 +185,12 @@ function toNumber(value: unknown, fallback: number) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
 }
 
+function toPositiveInteger(value: unknown) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return Math.round(numeric);
+}
+
 function normalizeCamera(value: unknown, index: number): CameraForm {
   const source = value && typeof value === "object" ? (value as Partial<CameraForm>) : {};
   const fallback = defaultCamera(index);
@@ -193,6 +199,19 @@ function normalizeCamera(value: unknown, index: number): CameraForm {
     width: toNumber(source.width, fallback.width),
     height: toNumber(source.height, fallback.height),
     fps: toNumber(source.fps, fallback.fps)
+  };
+}
+
+function applyDetectedCameraProfile(camera: CameraForm, result: ValidationResult): CameraForm {
+  const width = toPositiveInteger(result.width);
+  const height = toPositiveInteger(result.height);
+  const fps = toPositiveInteger(result.fps);
+
+  return {
+    ...camera,
+    width: width ?? camera.width,
+    height: height ?? camera.height,
+    fps: fps ?? camera.fps
   };
 }
 
@@ -811,13 +830,22 @@ export function SO101Client() {
   const checkCamera = async (index: number) => {
     if (!window.robotcloudDesktop) return;
     const camera = form.cameras[index];
+    const requestedCameraId = camera.id;
     setCameraChecks((current) => {
       const next = [...current] as [CheckState, CheckState, CheckState];
       next[index] = { phase: "checking", message: "" };
       return next;
     });
     try {
-      const result = await window.robotcloudDesktop.so101.validateCamera(camera.id, camera.width, camera.height);
+      const result = await window.robotcloudDesktop.so101.validateCamera(camera.id, 0, 0);
+      if (result.ok) {
+        setForm((current) => {
+          if (current.cameras[index].id !== requestedCameraId) return current;
+          const cameras = [...current.cameras] as [CameraForm, CameraForm, CameraForm];
+          cameras[index] = applyDetectedCameraProfile(cameras[index], result);
+          return { ...current, cameras };
+        });
+      }
       setCameraChecks((current) => {
         const next = [...current] as [CheckState, CheckState, CheckState];
         next[index] = { phase: result.ok ? "valid" : "invalid", message: result.message };

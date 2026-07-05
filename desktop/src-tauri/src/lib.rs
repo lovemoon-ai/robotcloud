@@ -156,6 +156,21 @@ struct TerminalExitEvent {
 struct ValidationResult {
     ok: bool,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fps: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CameraValidationProfile {
+    message: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1145,6 +1160,8 @@ fn kill_all_terminals(terminals: &Arc<Mutex<HashMap<String, TerminalSession>>>) 
 }
 
 const CAMERA_VALIDATE_SCRIPT: &str = r#"
+import json
+import math
 import sys
 
 raw = sys.argv[1].strip()
@@ -1168,11 +1185,38 @@ if not cap.isOpened():
     raise SystemExit(f"Camera is not available: {raw}")
 
 ok, frame = cap.read()
-cap.release()
 if not ok or frame is None:
+    cap.release()
     raise SystemExit(f"Camera opened but did not return a frame: {raw}")
 
-print(f"Camera is available: {raw}")
+prop_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+prop_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+prop_fps = cap.get(cv2.CAP_PROP_FPS)
+frame_height, frame_width = frame.shape[:2]
+cap.release()
+
+def positive_int(value):
+    try:
+        value = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return int(round(value))
+
+actual_width = positive_int(prop_width) or int(frame_width)
+actual_height = positive_int(prop_height) or int(frame_height)
+actual_fps = positive_int(prop_fps)
+if actual_fps:
+    message = f"Camera is available: {raw} ({actual_width}x{actual_height} @ {actual_fps} fps)"
+else:
+    message = f"Camera is available: {raw} ({actual_width}x{actual_height})"
+print(json.dumps({
+    "message": message,
+    "width": actual_width,
+    "height": actual_height,
+    "fps": actual_fps,
+}))
 "#;
 
 const CAMERA_PREVIEW_SCRIPT: &str = r#"
@@ -1227,6 +1271,9 @@ fn ok_validation(message: impl Into<String>) -> ValidationResult {
     ValidationResult {
         ok: true,
         message: message.into(),
+        width: None,
+        height: None,
+        fps: None,
     }
 }
 
@@ -1234,6 +1281,24 @@ fn failed_validation(message: impl Into<String>) -> ValidationResult {
     ValidationResult {
         ok: false,
         message: message.into(),
+        width: None,
+        height: None,
+        fps: None,
+    }
+}
+
+fn ok_camera_validation(
+    message: impl Into<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<u32>,
+) -> ValidationResult {
+    ValidationResult {
+        ok: true,
+        message: message.into(),
+        width,
+        height,
+        fps,
     }
 }
 
@@ -1265,11 +1330,22 @@ fn camera_source_is_readable(
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if output.status.success() {
-        Ok(ok_validation(if stdout.is_empty() {
-            format!("Camera is available: {camera_id}")
+        if let Ok(profile) = serde_json::from_str::<CameraValidationProfile>(&stdout) {
+            Ok(ok_camera_validation(
+                profile
+                    .message
+                    .unwrap_or_else(|| format!("Camera is available: {camera_id}")),
+                profile.width,
+                profile.height,
+                profile.fps,
+            ))
         } else {
-            stdout
-        }))
+            Ok(ok_validation(if stdout.is_empty() {
+                format!("Camera is available: {camera_id}")
+            } else {
+                stdout
+            }))
+        }
     } else {
         Ok(failed_validation(if stderr.is_empty() {
             format!("Camera validation failed: {camera_id}")

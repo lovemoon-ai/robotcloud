@@ -71,6 +71,9 @@ type ProcessExitEvent = {
 type ValidationResult = {
   ok: boolean;
   message: string;
+  width?: number | null;
+  height?: number | null;
+  fps?: number | null;
 };
 
 type TerminalStarted = {
