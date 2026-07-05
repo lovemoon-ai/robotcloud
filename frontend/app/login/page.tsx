@@ -13,6 +13,13 @@ type LoginFormValues = {
   code: string;
 };
 
+function safeLoginRedirectTarget(value: string | null) {
+  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) {
+    return "/";
+  }
+  return value;
+}
+
 export default function LoginPage() {
   const locale = useLocaleStore((state) => state.locale);
   const form = useForm<LoginFormValues>({
@@ -115,7 +122,8 @@ export default function LoginPage() {
       });
       setAuth(session);
       setMessage(copy.loginSuccess(session.phone));
-      router.replace("/");
+      const next = new URLSearchParams(window.location.search).get("next");
+      router.replace(safeLoginRedirectTarget(next));
     } catch (err) {
       const failure = err instanceof Error ? err.message : copy.genericError;
       if (failure === "Invalid phone number") {

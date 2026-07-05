@@ -1,5 +1,6 @@
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { SO101Client, so101TestExports } from "../app/so101/SO101Client";
+import { useAuthStore } from "@/store/useAuthStore";
 
 const mockReplace = jest.fn();
 
@@ -38,12 +39,25 @@ jest.mock("next/navigation", () => ({
 
 afterEach(() => {
   so101TestExports.resetPersistentTerminalForTest();
+  useAuthStore.getState().reset();
+  window.localStorage.clear();
 });
+
+function authenticate() {
+  useAuthStore.getState().setAuth({
+    token: "token",
+    userId: 1,
+    phone: "13800000000",
+    role: "free",
+    expireAt: null
+  });
+}
 
 describe("SO101 page environment guard", () => {
   beforeEach(() => {
     jest.useFakeTimers();
     mockReplace.mockClear();
+    useAuthStore.getState().reset();
     delete window.robotcloudDesktop;
   });
 
@@ -51,7 +65,71 @@ describe("SO101 page environment guard", () => {
     jest.useRealTimers();
   });
 
+  it("redirects unauthenticated users to login before starting SO101 Desktop", async () => {
+    const { container } = render(<SO101Client />);
+
+    expect(container).toHaveTextContent("Login required");
+
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith("/login?next=%2Fso101");
+    });
+  });
+
+  it("does not start a local terminal for unauthenticated Desktop users", async () => {
+    const status = jest.fn().mockResolvedValue({
+      isDesktop: true,
+      platform: "macos",
+      appVersion: "test",
+      apiBaseUrl: "http://127.0.0.1:8000/api/v1",
+      webUrl: "http://127.0.0.1:3000/so101/",
+      runtimePath: "/runtime",
+      runtimeReady: true,
+      runtimeArchivePath: null,
+      runtimeArchiveReady: false,
+      runtimeError: null,
+      scriptPath: "/script",
+      scriptReady: true,
+      dataDir: "/tmp/robotcloud data"
+    });
+    const terminalStart = jest.fn().mockResolvedValue({ sessionId: "session-1", shell: "/bin/zsh" });
+    window.robotcloudDesktop = {
+      isDesktop: true,
+      status,
+      so101: {
+        run: jest.fn(),
+        stop: jest.fn(),
+        validatePort: jest.fn(),
+        validateCamera: jest.fn(),
+        previewCamera: jest.fn(),
+        onOutput: jest.fn(() => jest.fn()),
+        onExit: jest.fn(() => jest.fn())
+      },
+      dataset: {
+        prepareUpload: jest.fn(),
+        readPreparedUpload: jest.fn()
+      },
+      terminal: {
+        start: terminalStart,
+        write: jest.fn(),
+        resize: jest.fn(),
+        stop: jest.fn(),
+        onOutput: jest.fn(() => jest.fn()),
+        onExit: jest.fn(() => jest.fn())
+      }
+    };
+
+    const { container } = render(<SO101Client />);
+
+    expect(container).toHaveTextContent("Login required");
+    await waitFor(() => {
+      expect(status).toHaveBeenCalled();
+    });
+    expect(mockReplace).toHaveBeenCalledWith("/login?next=%2Fso101");
+    expect(terminalStart).not.toHaveBeenCalled();
+  });
+
   it("shows startup state and redirects away in a browser", async () => {
+    authenticate();
     const { container } = render(<SO101Client />);
 
     expect(container).toHaveTextContent("Starting RobotCloud Desktop");
@@ -127,6 +205,7 @@ describe("SO101 terminal session", () => {
 
   beforeEach(() => {
     mockReplace.mockClear();
+    authenticate();
     delete window.robotcloudDesktop;
   });
 
