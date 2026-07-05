@@ -264,6 +264,61 @@ describe("SO101 terminal session", () => {
     expect(terminalWrite).not.toHaveBeenCalledWith("session-1", "lerobot-info\r");
   });
 
+  it("shows and focuses missing configuration before running an action", async () => {
+    const { terminalWrite } = installDesktopBridge();
+    const scrollIntoView = jest.fn();
+    const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    jest.useFakeTimers();
+    Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView
+    });
+    window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    }) as typeof window.requestAnimationFrame;
+    try {
+      fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
+      fireEvent.click(view.getByRole("button", { name: "Setup follower" }));
+
+      const input = view.getByLabelText("Follower port");
+
+      expect(view.getByRole("alert")).toHaveTextContent("先配置 Follower port");
+      expect(input).toHaveFocus();
+      expect(input).toHaveClass("border-red-500");
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", inline: "nearest" });
+      expect(terminalWrite).not.toHaveBeenCalled();
+
+      act(() => {
+        jest.advanceTimersByTime(3000);
+      });
+
+      expect(input).not.toHaveClass("border-red-500");
+
+      fireEvent.change(input, { target: { value: "/dev/cu.usbmodem-follower" } });
+      expect(view.queryByRole("alert")).not.toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+      if (originalScrollIntoView) {
+        Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+          configurable: true,
+          value: originalScrollIntoView
+        });
+      } else {
+        Reflect.deleteProperty(window.HTMLElement.prototype, "scrollIntoView");
+      }
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+    }
+  });
+
   it("places the add camera control after the camera cards", async () => {
     installDesktopBridge();
 
