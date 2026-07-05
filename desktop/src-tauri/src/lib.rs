@@ -19,6 +19,8 @@ use uuid::Uuid;
 
 const RELEASE_WEB_URL: &str = "https://robotcloud.conductor-ai.top/so101/";
 const DEBUG_WEB_URL: &str = "http://127.0.0.1:6151/so101/";
+const MIN_DATASET_UPLOAD_EPISODES: u64 = 1;
+const MIN_DATASET_UPLOAD_DURATION_SECONDS: f64 = 1.0;
 
 const BRIDGE_SCRIPT: &str = r#"
 (function () {
@@ -55,6 +57,7 @@ const BRIDGE_SCRIPT: &str = r#"
         onExit: function (callback) { return listen("so101-exit", callback); }
       },
       dataset: {
+        inspectUpload: function (config) { return core.invoke("dataset_inspect_upload", { config: config }); },
         prepareUpload: function (config) { return core.invoke("dataset_prepare_upload", { config: config }); },
         readPreparedUpload: function (filePath) { return core.invoke("dataset_read_prepared_upload", { filePath: filePath }); }
       },
@@ -222,6 +225,29 @@ struct PreparedDatasetUpload {
     description: String,
     visibility: String,
     created_at: String,
+    stats: DatasetUploadInspection,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DatasetUploadInspection {
+    dataset_root: String,
+    file_count: u64,
+    total_bytes: u64,
+    episode_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_frames: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_seconds: Option<f64>,
+}
+
+#[derive(Debug, Default)]
+struct DatasetDirectoryStats {
+    file_count: u64,
+    total_bytes: u64,
+    episode_data_files: u64,
 }
 
 fn default_web_url() -> &'static str {
@@ -660,6 +686,141 @@ fn zip_directory<W: Write + Seek>(
         }
     }
     Ok(file_count)
+}
+
+fn is_episode_data_file(entry_name: &str) -> bool {
+    let file_name = entry_name.rsplit('/').next().unwrap_or(entry_name);
+    file_name.starts_with("episode_") && file_name.ends_with(".parquet")
+}
+
+fn collect_dataset_directory_stats(
+    source_root: &Path,
+    current: &Path,
+    stats: &mut DatasetDirectoryStats,
+) -> Result<(), String> {
+    for entry in fs::read_dir(current).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let resolved_path = path.canonicalize().map_err(|error| error.to_string())?;
+        if !resolved_path.starts_with(source_root) {
+            return Err(format!(
+                "Refusing to inspect path outside dataset root: {}",
+                path.display()
+            ));
+        }
+        if file_type.is_dir() {
+            collect_dataset_directory_stats(source_root, &path, stats)?;
+        } else if file_type.is_file() {
+            let entry_name = zip_entry_name(source_root, &path)?;
+            let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+            stats.file_count += 1;
+            stats.total_bytes = stats.total_bytes.saturating_add(metadata.len());
+            if is_episode_data_file(&entry_name) {
+                stats.episode_data_files += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
+    match value.get(key)? {
+        serde_json::Value::Number(number) => number.as_u64().or_else(|| {
+            number.as_f64().and_then(|value| {
+                if value.is_finite() && value >= 0.0 {
+                    Some(value.round() as u64)
+                } else {
+                    None
+                }
+            })
+        }),
+        serde_json::Value::String(value) => value.parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+fn json_f64(value: &serde_json::Value, key: &str) -> Option<f64> {
+    match value.get(key)? {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(value) => value.parse::<f64>().ok(),
+        _ => None,
+    }
+    .filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn read_dataset_info(source: &Path) -> (Option<u64>, Option<u64>, Option<f64>, Option<f64>) {
+    let Ok(raw) = fs::read_to_string(source.join("meta").join("info.json")) else {
+        return (None, None, None, None);
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return (None, None, None, None);
+    };
+    let episode_count = json_u64(&value, "total_episodes");
+    let total_frames = json_u64(&value, "total_frames");
+    let fps = json_f64(&value, "fps").filter(|value| *value > 0.0);
+    let duration_seconds = ["total_duration_s", "duration_s", "duration_seconds"]
+        .iter()
+        .find_map(|key| json_f64(&value, key));
+    (episode_count, total_frames, fps, duration_seconds)
+}
+
+fn inspect_dataset_upload_source(source: &Path) -> Result<DatasetUploadInspection, String> {
+    let source = source.canonicalize().map_err(|error| error.to_string())?;
+    let mut directory_stats = DatasetDirectoryStats::default();
+    collect_dataset_directory_stats(&source, &source, &mut directory_stats)?;
+    let (metadata_episodes, total_frames, fps, metadata_duration) = read_dataset_info(&source);
+    let duration_seconds = metadata_duration.or_else(|| {
+        total_frames.and_then(|frames| {
+            fps.and_then(|fps| {
+                if fps > 0.0 {
+                    Some(frames as f64 / fps)
+                } else {
+                    None
+                }
+            })
+        })
+    });
+
+    Ok(DatasetUploadInspection {
+        dataset_root: source.to_string_lossy().to_string(),
+        file_count: directory_stats.file_count,
+        total_bytes: directory_stats.total_bytes,
+        episode_count: metadata_episodes.unwrap_or(directory_stats.episode_data_files),
+        total_frames,
+        fps,
+        duration_seconds,
+    })
+}
+
+fn validate_dataset_upload_inspection(inspection: &DatasetUploadInspection) -> Result<(), String> {
+    let mut issues = Vec::new();
+    if inspection.file_count < 1 {
+        issues.push("No recorded files were found.".to_string());
+    }
+    if inspection.episode_count < MIN_DATASET_UPLOAD_EPISODES {
+        issues.push(format!(
+            "At least {MIN_DATASET_UPLOAD_EPISODES} recorded episode is required."
+        ));
+    }
+    match inspection.duration_seconds {
+        Some(duration) if duration >= MIN_DATASET_UPLOAD_DURATION_SECONDS => {}
+        Some(_) => issues.push(format!(
+            "Recording duration must be at least {MIN_DATASET_UPLOAD_DURATION_SECONDS:.0}s."
+        )),
+        None => {
+            issues.push("Recording duration could not be read from meta/info.json.".to_string())
+        }
+    }
+
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("Upload blocked: {}", issues.join(" ")))
+    }
 }
 
 fn build_command_path(
@@ -1405,11 +1566,10 @@ fn camera_source_is_readable(
     }
 }
 
-#[tauri::command]
-fn dataset_prepare_upload(
-    app: AppHandle,
-    config: DatasetPrepareUploadConfig,
-) -> Result<PreparedDatasetUpload, String> {
+fn resolve_dataset_upload_source(
+    app: &AppHandle,
+    config: &DatasetPrepareUploadConfig,
+) -> Result<PathBuf, String> {
     let dataset_root = config.dataset_root.trim();
     if dataset_root.is_empty() {
         return Err("Dataset root is required.".to_string());
@@ -1419,12 +1579,12 @@ fn dataset_prepare_upload(
         return Err("Dataset repo id is required.".to_string());
     }
 
-    let trusted_root = data_dir(&app)?.join("datasets");
+    let trusted_root = data_dir(app)?.join("datasets");
     fs::create_dir_all(&trusted_root).map_err(|error| error.to_string())?;
     let trusted_root = trusted_root
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    let expected_source = trusted_dataset_root(&app, dataset_repo_id)?
+    let expected_source = trusted_dataset_root(app, dataset_repo_id)?
         .canonicalize()
         .map_err(|error| {
             format!("Dataset root was not found for repo id {dataset_repo_id}: {error}")
@@ -1444,6 +1604,27 @@ fn dataset_prepare_upload(
             source.display()
         ));
     }
+    Ok(source)
+}
+
+#[tauri::command]
+fn dataset_inspect_upload(
+    app: AppHandle,
+    config: DatasetPrepareUploadConfig,
+) -> Result<DatasetUploadInspection, String> {
+    let source = resolve_dataset_upload_source(&app, &config)?;
+    inspect_dataset_upload_source(&source)
+}
+
+#[tauri::command]
+fn dataset_prepare_upload(
+    app: AppHandle,
+    config: DatasetPrepareUploadConfig,
+) -> Result<PreparedDatasetUpload, String> {
+    let dataset_repo_id = config.dataset_repo_id.trim();
+    let source = resolve_dataset_upload_source(&app, &config)?;
+    let inspection = inspect_dataset_upload_source(&source)?;
+    validate_dataset_upload_inspection(&inspection)?;
 
     let upload_dir = prepared_upload_dir(&app)?
         .canonicalize()
@@ -1472,7 +1653,7 @@ fn dataset_prepare_upload(
     let file_count = zip_directory(&mut zip, &source, &source, file_options, dir_options)?;
     zip.finish().map_err(|error| error.to_string())?;
 
-    if file_count == 0 {
+    if file_count == 0 || inspection.file_count == 0 {
         let _ = fs::remove_file(&temp_path);
         return Err(format!("Dataset root has no files: {}", source.display()));
     }
@@ -1505,6 +1686,7 @@ fn dataset_prepare_upload(
         description,
         visibility: "private".to_string(),
         created_at,
+        stats: inspection,
     })
 }
 
@@ -1873,6 +2055,7 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             desktop_status,
+            dataset_inspect_upload,
             dataset_prepare_upload,
             dataset_read_prepared_upload,
             so101_run,
@@ -1983,6 +2166,95 @@ mod tests {
             assert_eq!(args.first().map(String::as_str), Some("bash"));
             assert!(args.windows(2).any(|pair| pair == ["--action", "info"]));
         }
+    }
+
+    #[test]
+    fn inspects_lerobot_dataset_metadata() {
+        let base = env::temp_dir().join(format!("robotcloud-dataset-test-{}", Uuid::new_v4()));
+        let source = base.join("datasets").join("local").join("so101");
+        fs::create_dir_all(source.join("meta")).unwrap();
+        fs::create_dir_all(source.join("data").join("chunk-000")).unwrap();
+        fs::write(
+            source.join("meta").join("info.json"),
+            r#"{"total_episodes":1,"total_frames":300,"fps":30}"#,
+        )
+        .unwrap();
+        fs::write(
+            source
+                .join("data")
+                .join("chunk-000")
+                .join("episode_000000.parquet"),
+            b"episode",
+        )
+        .unwrap();
+
+        let inspection = inspect_dataset_upload_source(&source).unwrap();
+
+        assert_eq!(inspection.file_count, 2);
+        assert_eq!(inspection.episode_count, 1);
+        assert_eq!(inspection.total_frames, Some(300));
+        assert_eq!(inspection.fps, Some(30.0));
+        assert_eq!(inspection.duration_seconds, Some(10.0));
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn falls_back_to_episode_parquet_count_without_metadata() {
+        let base = env::temp_dir().join(format!("robotcloud-dataset-test-{}", Uuid::new_v4()));
+        let source = base.join("datasets").join("local").join("so101");
+        fs::create_dir_all(source.join("data").join("chunk-000")).unwrap();
+        fs::write(
+            source
+                .join("data")
+                .join("chunk-000")
+                .join("episode_000000.parquet"),
+            b"episode",
+        )
+        .unwrap();
+
+        let inspection = inspect_dataset_upload_source(&source).unwrap();
+
+        assert_eq!(inspection.file_count, 1);
+        assert_eq!(inspection.episode_count, 1);
+        assert_eq!(inspection.duration_seconds, None);
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_dataset_upload_inspection() {
+        let valid = DatasetUploadInspection {
+            dataset_root: "/tmp/dataset".to_string(),
+            file_count: 2,
+            total_bytes: 2048,
+            episode_count: 1,
+            total_frames: Some(30),
+            fps: Some(30.0),
+            duration_seconds: Some(1.0),
+        };
+        assert!(validate_dataset_upload_inspection(&valid).is_ok());
+
+        let no_episodes = DatasetUploadInspection {
+            episode_count: 0,
+            ..valid.clone()
+        };
+        let error = validate_dataset_upload_inspection(&no_episodes).unwrap_err();
+        assert!(error.contains("At least 1 recorded episode is required."));
+
+        let short_duration = DatasetUploadInspection {
+            duration_seconds: Some(0.5),
+            ..valid.clone()
+        };
+        let error = validate_dataset_upload_inspection(&short_duration).unwrap_err();
+        assert!(error.contains("Recording duration must be at least 1s."));
+
+        let unknown_duration = DatasetUploadInspection {
+            duration_seconds: None,
+            ..valid
+        };
+        let error = validate_dataset_upload_inspection(&unknown_duration).unwrap_err();
+        assert!(error.contains("Recording duration could not be read from meta/info.json."));
     }
 
     #[cfg(unix)]

@@ -120,6 +120,12 @@ and fill the OpenCV camera id plus default profile. Use each camera card's
 **Check** button to verify the selected camera and refresh the actual width,
 height, and fps before teleoperation or recording.
 
+Before a recorded dataset is packaged for upload, the workbench asks the desktop
+bridge to inspect the local LeRobot dataset. The review dialog shows file count,
+episode count, frames, FPS, size, and duration, and blocks upload when no
+episode is present or the recorded duration is below the minimum accepted
+length.
+
 Runtime zips are build artifacts and are intentionally ignored by Git because
 they exceed normal repository size limits. The Windows packaging script can
 build `lerobot-env-win.zip` with micromamba, or copy an existing archive from
@@ -161,6 +167,7 @@ Frontend bridge:
 window.robotcloudDesktop.status()
 window.robotcloudDesktop.so101.run({ action: "info" })
 window.robotcloudDesktop.so101.stop(runId)
+window.robotcloudDesktop.dataset.inspectUpload({ datasetRoot, datasetRepoId })
 window.robotcloudDesktop.terminal.start()
 window.robotcloudDesktop.terminal.write(sessionId, "lerobot-info\r\n")
 ```
