@@ -34,6 +34,19 @@ class User(models.Model):
         return f"{self.phone} ({self.role})"
 
 
+class AuthToken(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="auth_tokens")
+    token_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"AuthToken(user={self.user_id}, expires_at={self.expires_at.isoformat()})"
+
+
 class Dataset(models.Model):
     VISIBILITY_PRIVATE = "private"
     VISIBILITY_PUBLIC = "public"
