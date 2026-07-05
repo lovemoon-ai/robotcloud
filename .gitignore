@@ -19,6 +19,7 @@ frontend/out-desktop
 
 backend/build
 02_robocloud.sh
+task.sh
 backend/db.sqlite3
 scripts/lerobot/
 
@@ -28,5 +29,4 @@ scripts/lerobot/
 .conductor/state/
 conductor.log
 conductor-terminal.log
-
 Makefile
