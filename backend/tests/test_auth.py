@@ -1,4 +1,3 @@
-from django.core.cache import caches
 from rest_framework.test import APIClient
 
 
@@ -39,29 +38,6 @@ def test_auth_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
     payload = verify_resp.json()["data"]
     assert payload["user_id"] == user_id
     assert payload["role"] == "free"
-
-
-def test_auth_token_survives_token_cache_clear(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
-    send_resp = client.post("/api/v1/auth/send_code", {"phone": "13800000020"}, format="json")
-    assert send_resp.status_code == 200
-    code = sms_gateway.get_code("13800000020")
-
-    login_resp = client.post(
-        "/api/v1/auth/login_code",
-        {"phone": "13800000020", "code": code},
-        format="json",
-    )
-    assert login_resp.status_code == 200
-    token = login_resp.json()["data"]["token"]
-
-    caches["tokens"].clear()
-
-    verify_resp = client.get(
-        "/api/v1/auth/verify_token",
-        HTTP_AUTHORIZATION=f"Bearer {token}",
-    )
-    assert verify_resp.status_code == 200
-    assert verify_resp.json()["data"]["phone"] == "13800000020"
 
 
 def test_login_unknown_phone_triggers_error(client: APIClient) -> None:

@@ -14,13 +14,12 @@ import requests
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.cache import caches
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from .models import (
     AdminLog,
-    AuthToken,
     Dataset,
     Device,
     InferenceTask,
@@ -116,25 +115,6 @@ class RobotCloudService:
             candidate = secrets.token_hex(12)
             if not Payment.objects.filter(payment_id=candidate).exists():
                 return candidate
-
-    def _token_hash(self, token: str) -> str:
-        return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-    def _token_cache_timeout(self, expires_at) -> int:
-        remaining = int((expires_at - timezone.now()).total_seconds())
-        return max(remaining, 1)
-
-    def _issue_token(self, user: User) -> str:
-        expires_at = timezone.now() + timedelta(seconds=TOKEN_TIMEOUT_SECONDS)
-        while True:
-            token = secrets.token_urlsafe(16)
-            try:
-                AuthToken.objects.create(user=user, token_hash=self._token_hash(token), expires_at=expires_at)
-                break
-            except IntegrityError:
-                continue
-        self.token_cache.set(token, user.id, self._token_cache_timeout(expires_at))
-        return token
 
     def _normalize_gpu_payload(self, payload: Any) -> int:
         if isinstance(payload, int):
@@ -421,7 +401,8 @@ class RobotCloudService:
                 user = self._create_user_without_password(phone)
             self.verification_cache.delete(self._verification_key(phone))
 
-        token = self._issue_token(user)
+        token = secrets.token_urlsafe(16)
+        self.token_cache.set(token, user.id, TOKEN_TIMEOUT_SECONDS)
         return self._response(
             {
                 "token": token,
@@ -456,7 +437,8 @@ class RobotCloudService:
         user = self._get_user_by_phone(phone)
         if not self._verify_password(user, password):
             raise ValueError("Incorrect password")
-        token = self._issue_token(user)
+        token = secrets.token_urlsafe(16)
+        self.token_cache.set(token, user.id, TOKEN_TIMEOUT_SECONDS)
         return self._response(
             {
                 "token": token,
@@ -1710,14 +1692,7 @@ class RobotCloudService:
             raise ValueError("Token required")
         user_id = self.token_cache.get(token)
         if not user_id:
-            token_record = AuthToken.objects.select_related("user").filter(token_hash=self._token_hash(token)).first()
-            if not token_record:
-                raise ValueError("Invalid token")
-            if timezone.now() > token_record.expires_at:
-                token_record.delete()
-                raise ValueError("Invalid token")
-            user_id = token_record.user_id
-            self.token_cache.set(token, user_id, self._token_cache_timeout(token_record.expires_at))
+            raise ValueError("Invalid token")
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist as exc:
