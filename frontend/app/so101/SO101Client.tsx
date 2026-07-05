@@ -28,6 +28,7 @@ type FormState = {
   resetTimeS: number;
   teleopTimeS: number;
   maxRelativeTarget: number;
+  useLerobotRecordFlow: boolean;
   displayData: boolean;
   task: string;
 };
@@ -91,7 +92,6 @@ type ActionId =
   | "calibrate-leader"
   | "teleop"
   | "record-reset-pose"
-  | "record-auto"
   | "record";
 
 type ShellDialect = "posix" | "powershell";
@@ -137,6 +137,7 @@ const initialForm: FormState = {
   resetTimeS: 2,
   teleopTimeS: 5,
   maxRelativeTarget: 5,
+  useLerobotRecordFlow: false,
   displayData: true,
   task: ""
 };
@@ -152,7 +153,6 @@ const actions: Array<{ id: ActionId; label: string }> = [
   { id: "calibrate-leader", label: "Calibrate leader" },
   { id: "teleop", label: "Teleoperate" },
   { id: "record-reset-pose", label: "Save reset" },
-  { id: "record-auto", label: "Auto record" },
   { id: "record", label: "Record" }
 ];
 
@@ -603,9 +603,10 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
       ].join(" ");
     case "record-reset-pose":
       return buildScriptCommand("record-reset-pose", form, status, cameraCount);
-    case "record-auto":
-      return buildScriptCommand("record-auto", form, status, cameraCount);
     case "record": {
+      if (!form.useLerobotRecordFlow) {
+        return buildScriptCommand("record-auto", form, status, cameraCount);
+      }
       const repoId = requireValue(form.datasetRepoId, "Dataset repo id");
       const datasetRoot = resolvedDatasetRoot(form, status);
       const episodes = requireNumber(form.episodes, "Episodes", { integer: true, min: 1 });
@@ -1558,6 +1559,14 @@ export function SO101Client() {
                 />
                 {renderConfigFieldError("datasetRoot")}
               </label>
+              <label className="flex items-center gap-2 text-sm text-muted md:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={form.useLerobotRecordFlow}
+                  onChange={(event) => updateField("useLerobotRecordFlow", event.target.checked)}
+                />
+                Use LeRobot original collection flow
+              </label>
               <label className="text-sm">
                 <span className="text-muted">Episodes</span>
                 <input
@@ -1570,79 +1579,74 @@ export function SO101Client() {
                 />
                 {renderConfigFieldError("episodes")}
               </label>
-              <label className="text-sm">
-                <span className="text-muted">Episode seconds</span>
-                <input
-                  ref={registerConfigInput("episodeTimeS")}
-                  type="number"
-                  value={form.episodeTimeS}
-                  onChange={(event) => updateField("episodeTimeS", Number(event.target.value))}
-                  className={configInputClass("episodeTimeS")}
-                  {...configInputA11y("episodeTimeS")}
-                />
-                {renderConfigFieldError("episodeTimeS")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Reset seconds</span>
-                <input
-                  ref={registerConfigInput("resetTimeS")}
-                  type="number"
-                  value={form.resetTimeS}
-                  onChange={(event) => updateField("resetTimeS", Number(event.target.value))}
-                  className={configInputClass("resetTimeS")}
-                  {...configInputA11y("resetTimeS")}
-                />
-                {renderConfigFieldError("resetTimeS")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Min episode seconds</span>
-                <input
-                  ref={registerConfigInput("minEpisodeTimeS")}
-                  type="number"
-                  value={form.minEpisodeTimeS}
-                  onChange={(event) => updateField("minEpisodeTimeS", Number(event.target.value))}
-                  className={configInputClass("minEpisodeTimeS")}
-                  {...configInputA11y("minEpisodeTimeS")}
-                />
-                {renderConfigFieldError("minEpisodeTimeS")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Max episode seconds</span>
-                <input
-                  ref={registerConfigInput("maxEpisodeTimeS")}
-                  type="number"
-                  value={form.maxEpisodeTimeS}
-                  onChange={(event) => updateField("maxEpisodeTimeS", Number(event.target.value))}
-                  className={configInputClass("maxEpisodeTimeS")}
-                  {...configInputA11y("maxEpisodeTimeS")}
-                />
-                {renderConfigFieldError("maxEpisodeTimeS")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Teleop seconds</span>
-                <input
-                  ref={registerConfigInput("teleopTimeS")}
-                  type="number"
-                  value={form.teleopTimeS}
-                  onChange={(event) => updateField("teleopTimeS", Number(event.target.value))}
-                  className={configInputClass("teleopTimeS")}
-                  {...configInputA11y("teleopTimeS")}
-                />
-                {renderConfigFieldError("teleopTimeS")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Max relative target</span>
-                <input
-                  ref={registerConfigInput("maxRelativeTarget")}
-                  type="number"
-                  step="0.5"
-                  value={form.maxRelativeTarget}
-                  onChange={(event) => updateField("maxRelativeTarget", Number(event.target.value))}
-                  className={configInputClass("maxRelativeTarget")}
-                  {...configInputA11y("maxRelativeTarget")}
-                />
-                {renderConfigFieldError("maxRelativeTarget")}
-              </label>
+              {form.useLerobotRecordFlow ? (
+                <>
+                  <label className="text-sm">
+                    <span className="text-muted">Episode seconds</span>
+                    <input
+                      ref={registerConfigInput("episodeTimeS")}
+                      type="number"
+                      value={form.episodeTimeS}
+                      onChange={(event) => updateField("episodeTimeS", Number(event.target.value))}
+                      className={configInputClass("episodeTimeS")}
+                      {...configInputA11y("episodeTimeS")}
+                    />
+                    {renderConfigFieldError("episodeTimeS")}
+                  </label>
+                  <label className="text-sm">
+                    <span className="text-muted">Reset seconds</span>
+                    <input
+                      ref={registerConfigInput("resetTimeS")}
+                      type="number"
+                      value={form.resetTimeS}
+                      onChange={(event) => updateField("resetTimeS", Number(event.target.value))}
+                      className={configInputClass("resetTimeS")}
+                      {...configInputA11y("resetTimeS")}
+                    />
+                    {renderConfigFieldError("resetTimeS")}
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="text-sm">
+                    <span className="text-muted">Min episode seconds</span>
+                    <input
+                      ref={registerConfigInput("minEpisodeTimeS")}
+                      type="number"
+                      value={form.minEpisodeTimeS}
+                      onChange={(event) => updateField("minEpisodeTimeS", Number(event.target.value))}
+                      className={configInputClass("minEpisodeTimeS")}
+                      {...configInputA11y("minEpisodeTimeS")}
+                    />
+                    {renderConfigFieldError("minEpisodeTimeS")}
+                  </label>
+                  <label className="text-sm">
+                    <span className="text-muted">Max episode seconds</span>
+                    <input
+                      ref={registerConfigInput("maxEpisodeTimeS")}
+                      type="number"
+                      value={form.maxEpisodeTimeS}
+                      onChange={(event) => updateField("maxEpisodeTimeS", Number(event.target.value))}
+                      className={configInputClass("maxEpisodeTimeS")}
+                      {...configInputA11y("maxEpisodeTimeS")}
+                    />
+                    {renderConfigFieldError("maxEpisodeTimeS")}
+                  </label>
+                  <label className="text-sm">
+                    <span className="text-muted">Max relative target</span>
+                    <input
+                      ref={registerConfigInput("maxRelativeTarget")}
+                      type="number"
+                      step="0.5"
+                      value={form.maxRelativeTarget}
+                      onChange={(event) => updateField("maxRelativeTarget", Number(event.target.value))}
+                      className={configInputClass("maxRelativeTarget")}
+                      {...configInputA11y("maxRelativeTarget")}
+                    />
+                    {renderConfigFieldError("maxRelativeTarget")}
+                  </label>
+                </>
+              )}
               <label className="text-sm md:col-span-2">
                 <span className="text-muted">Task label</span>
                 <input

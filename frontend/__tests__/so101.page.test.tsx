@@ -367,6 +367,40 @@ describe("SO101 terminal session", () => {
     expect(cameraLabel.compareDocumentPosition(addCameraButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("selects record parameters from the collection flow toggle", async () => {
+    installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
+    expect(view.queryByRole("button", { name: "Auto record" })).not.toBeInTheDocument();
+
+    const recordSection = view.getByRole("heading", { name: "Record" }).closest("section");
+    expect(recordSection).not.toBeNull();
+    const recordControls = within(recordSection as HTMLElement);
+    const originalFlow = recordControls.getByLabelText("Use LeRobot original collection flow");
+
+    expect(originalFlow).not.toBeChecked();
+    expect(recordControls.getByLabelText("Min episode seconds")).toBeInTheDocument();
+    expect(recordControls.getByLabelText("Max episode seconds")).toBeInTheDocument();
+    expect(recordControls.getByLabelText("Max relative target")).toBeInTheDocument();
+    expect(recordControls.queryByLabelText("Episode seconds")).not.toBeInTheDocument();
+    expect(recordControls.queryByLabelText("Reset seconds")).not.toBeInTheDocument();
+
+    fireEvent.click(originalFlow);
+
+    expect(originalFlow).toBeChecked();
+    expect(recordControls.getByLabelText("Episode seconds")).toBeInTheDocument();
+    expect(recordControls.getByLabelText("Reset seconds")).toBeInTheDocument();
+    expect(recordControls.queryByLabelText("Min episode seconds")).not.toBeInTheDocument();
+    expect(recordControls.queryByLabelText("Max episode seconds")).not.toBeInTheDocument();
+    expect(recordControls.queryByLabelText("Max relative target")).not.toBeInTheDocument();
+  });
+
   it("can start a new terminal after the previous session exits", async () => {
     const { terminalStart, terminalStop, emitExit } = installDesktopBridge();
 
@@ -549,6 +583,7 @@ describe("SO101 command generation", () => {
         robotId: "robot'one",
         teleopId: "leader",
         datasetRepoId: "local/$(touch /tmp/repo)",
+        useLerobotRecordFlow: true,
         task: "Pick 'the' cube $(touch /tmp/task)"
       },
       desktopStatus,
@@ -562,9 +597,9 @@ describe("SO101 command generation", () => {
     expect(command).not.toContain('"local/$(touch /tmp/repo)"');
   });
 
-  it("builds auto record commands with min and max episode windows", () => {
+  it("builds default record commands with min and max episode windows", () => {
     const command = buildActionCommand(
-      "record-auto",
+      "record",
       {
         ...initialForm,
         followerPort: "/dev/cu.usbmodem-follower",
@@ -637,6 +672,7 @@ describe("SO101 command generation", () => {
           ...initialForm,
           followerPort: "/dev/cu.usbmodem-follower",
           leaderPort: "/dev/cu.usbmodem-leader",
+          useLerobotRecordFlow: true,
           episodeTimeS: Number.NaN
         },
         desktopStatus,
@@ -646,7 +682,7 @@ describe("SO101 command generation", () => {
 
     expect(() =>
       buildActionCommand(
-        "record-auto",
+        "record",
         {
           ...initialForm,
           followerPort: "/dev/cu.usbmodem-follower",
