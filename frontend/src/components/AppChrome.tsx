@@ -23,6 +23,11 @@ const subscribeToHydration = () => () => {};
 const getSidebarCollapsedSnapshot = () =>
   typeof window !== "undefined" && window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
 
+function normalizeAppPathname(pathname: string | null) {
+  if (!pathname) return "/";
+  return pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+}
+
 function SidebarToggleIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -245,7 +250,8 @@ export function AppChrome({ children }: AppChromeProps) {
   const token = useAuthStore((state) => state.token);
 
   const isZh = locale === "zh";
-  const isLoginRoute = pathname === "/login";
+  const normalizedPathname = normalizeAppPathname(pathname);
+  const isLoginRoute = normalizedPathname === "/login";
   const isDesktopBridgeAvailable = useDesktopBridgeAvailable();
   const navItems = getSections(locale, { includeDesktopOnly: isDesktopBridgeAvailable });
   const mobileNavItems = getMobileNavEntries(navItems, pathname);

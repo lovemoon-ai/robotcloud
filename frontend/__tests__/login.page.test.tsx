@@ -117,6 +117,29 @@ describe("/login page", () => {
     });
   });
 
+  it("falls back home when next points back to login", async () => {
+    mockedApi.requestOtp.mockResolvedValueOnce({ sent: true, code: "000000" });
+    mockedApi.loginWithCode.mockResolvedValueOnce({
+      token: "token",
+      userId: 9,
+      phone: "13800000001",
+      role: "free",
+      expireAt: null
+    });
+    window.history.pushState({}, "", "/login/?next=%2Flogin%2F");
+
+    await fillPhoneAndSendCode();
+    fireEvent.change(screen.getByPlaceholderText("Enter 6-digit code"), { target: { value: "000000" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Login / Register" }));
+    });
+
+    await waitFor(() => {
+      expect(replaceMock).toHaveBeenCalledWith("/");
+    });
+  });
+
   it("shows error for invalid phone number", async () => {
     render(<LoginPage />);
     fireEvent.change(screen.getByPlaceholderText("e.g. 13800001234"), { target: { value: "invalid" } });

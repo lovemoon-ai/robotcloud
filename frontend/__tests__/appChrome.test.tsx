@@ -82,6 +82,21 @@ describe("AppChrome shell", () => {
     expect(container.querySelector("nav.fixed")).toBeNull();
   });
 
+  it("renders the trailing-slash login route without app navigation", () => {
+    useAuthStore.getState().reset();
+    mockPathname = "/login/";
+
+    const { container } = render(
+      <AppChrome>
+        <div>login page</div>
+      </AppChrome>
+    );
+
+    expect(screen.getByText("login page")).toBeInTheDocument();
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(container.querySelector("#robotcloud-sidebar-primary-nav")).toBeNull();
+  });
+
   it("collapses and expands the desktop sidebar from the app logo rail", () => {
     const { container } = render(
       <AppChrome>
