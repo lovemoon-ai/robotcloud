@@ -1,4 +1,4 @@
-const CACHE_VERSION = "robotcloud-pwa-v1";
+const CACHE_VERSION = "robotcloud-pwa-v2";
 const APP_SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 
@@ -50,7 +50,12 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (request.mode === "navigate") {
-    event.respondWith(networkFirst(request, "/"));
+    event.respondWith(networkOnly(request));
+    return;
+  }
+
+  if (url.pathname.startsWith("/_next/")) {
+    event.respondWith(networkOnly(request));
     return;
   }
 
@@ -68,6 +73,10 @@ async function networkFirst(request, fallbackUrl) {
   } catch {
     return (await cache.match(request)) || caches.match(fallbackUrl);
   }
+}
+
+async function networkOnly(request) {
+  return fetch(request);
 }
 
 async function staleWhileRevalidate(request) {
