@@ -67,6 +67,77 @@ describe("AppChrome shell", () => {
     });
   });
 
+  it("waits for auth storage hydration before redirecting protected routes", async () => {
+    useAuthStore.getState().reset();
+    let hydrated = false;
+    const listeners = new Set<() => void>();
+    const originalHasHydrated = useAuthStore.persist.hasHydrated;
+    const originalOnHydrate = useAuthStore.persist.onHydrate;
+    const originalOnFinishHydration = useAuthStore.persist.onFinishHydration;
+
+    useAuthStore.persist.hasHydrated = jest.fn(() => hydrated);
+    useAuthStore.persist.onHydrate = jest.fn((listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    });
+    useAuthStore.persist.onFinishHydration = jest.fn((listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    });
+
+    try {
+      render(
+        <AppChrome>
+          <div>placeholder</div>
+        </AppChrome>
+      );
+
+      expect(screen.queryByText("placeholder")).not.toBeInTheDocument();
+      expect(replaceMock).not.toHaveBeenCalled();
+
+      act(() => {
+        hydrated = true;
+        listeners.forEach((listener) => listener());
+      });
+
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/login?next=%2Fdashboard");
+      });
+    } finally {
+      useAuthStore.persist.hasHydrated = originalHasHydrated;
+      useAuthStore.persist.onHydrate = originalOnHydrate;
+      useAuthStore.persist.onFinishHydration = originalOnFinishHydration;
+    }
+  });
+
+  it("restores persisted auth storage before redirecting protected routes", async () => {
+    useAuthStore.getState().reset();
+    window.localStorage.setItem(
+      "robotcloud-auth",
+      JSON.stringify({
+        state: {
+          token: "stored-token",
+          userId: 1,
+          phone: "13800000001",
+          role: "free",
+          expireAt: null
+        },
+        version: 0
+      })
+    );
+
+    render(
+      <AppChrome>
+        <div>placeholder</div>
+      </AppChrome>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("placeholder")).toBeInTheDocument();
+    });
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
   it("renders the login route without app navigation", () => {
     useAuthStore.getState().reset();
     mockPathname = "/login";

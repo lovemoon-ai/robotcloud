@@ -20,8 +20,17 @@ type NavIconProps = {
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "robotcloud-sidebar-collapsed";
 const subscribeToHydration = () => () => {};
+const subscribeToAuthHydration = (listener: () => void) => {
+  const unsubscribeHydrate = useAuthStore.persist.onHydrate(listener);
+  const unsubscribeFinishHydration = useAuthStore.persist.onFinishHydration(listener);
+  return () => {
+    unsubscribeHydrate();
+    unsubscribeFinishHydration();
+  };
+};
 const getSidebarCollapsedSnapshot = () =>
   typeof window !== "undefined" && window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
+const getAuthHydratedSnapshot = () => useAuthStore.persist.hasHydrated();
 
 function normalizeAppPathname(pathname: string | null) {
   if (!pathname) return "/";
@@ -242,16 +251,20 @@ export function AppChrome({ children }: AppChromeProps) {
   const router = useRouter();
   const pathname = usePathname();
   const storedSidebarCollapsed = useSyncExternalStore(subscribeToHydration, getSidebarCollapsedSnapshot, () => false);
+  const authHydrated = useSyncExternalStore(subscribeToAuthHydration, getAuthHydratedSnapshot, () => true);
+  const [authStorageChecked, setAuthStorageChecked] = useState(false);
   const [sidebarCollapsedOverride, setSidebarCollapsedOverride] = useState<boolean | null>(null);
   const isSidebarCollapsed = sidebarCollapsedOverride ?? storedSidebarCollapsed;
   const iconRailClassName = "flex h-10 w-[52px] shrink-0 items-center justify-center";
 
   const locale = useLocaleStore((state) => state.locale);
   const token = useAuthStore((state) => state.token);
+  const restoreAuthFromStorage = useAuthStore((state) => state.restoreFromStorage);
 
   const isZh = locale === "zh";
   const normalizedPathname = normalizeAppPathname(pathname);
   const isLoginRoute = normalizedPathname === "/login";
+  const authReady = authHydrated && authStorageChecked;
   const isDesktopBridgeAvailable = useDesktopBridgeAvailable();
   const navItems = getSections(locale, { includeDesktopOnly: isDesktopBridgeAvailable });
   const mobileNavItems = getMobileNavEntries(navItems, pathname);
@@ -279,11 +292,39 @@ export function AppChrome({ children }: AppChromeProps) {
   }, [locale]);
 
   useEffect(() => {
-    if (!token && !isLoginRoute) {
+    if (isLoginRoute || token) {
+      setAuthStorageChecked(true);
+      return;
+    }
+
+    let cancelled = false;
+    setAuthStorageChecked(false);
+    Promise.resolve(useAuthStore.persist.rehydrate())
+      .then(() => {
+        if (!useAuthStore.getState().token) {
+          restoreAuthFromStorage();
+        }
+      })
+      .catch(() => {
+        restoreAuthFromStorage();
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuthStorageChecked(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoginRoute, pathname, restoreAuthFromStorage, token]);
+
+  useEffect(() => {
+    if (authReady && !token && !isLoginRoute) {
       const next = pathname && pathname !== "/" ? `?next=${encodeURIComponent(pathname)}` : "";
       router.replace(`/login${next}`);
     }
-  }, [isLoginRoute, pathname, router, token]);
+  }, [authReady, isLoginRoute, pathname, router, token]);
 
   const toggleSidebarCollapsed = useCallback(() => {
     const next = !isSidebarCollapsed;
@@ -297,7 +338,7 @@ export function AppChrome({ children }: AppChromeProps) {
     return <div className="min-h-screen bg-surface text-body">{children}</div>;
   }
 
-  if (!token) {
+  if (!authReady || !token) {
     return <div className="min-h-screen bg-surface text-body" aria-hidden="true" />;
   }
 

@@ -1,4 +1,4 @@
-const CACHE_VERSION = "robotcloud-pwa-v2";
+const CACHE_VERSION = "robotcloud-pwa-v3";
 const APP_SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 
@@ -50,6 +50,11 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (request.mode === "navigate") {
+    event.respondWith(networkOnly(request));
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/")) {
     event.respondWith(networkOnly(request));
     return;
   }
