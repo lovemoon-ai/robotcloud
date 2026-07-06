@@ -289,7 +289,7 @@ describe("SO101 terminal session", () => {
     fireEvent.click(view.getByRole("button", { name: "Info" }));
 
     await waitFor(() => {
-      expect(terminalWrite).toHaveBeenCalledWith("session-1", "lerobot-info");
+      expect(terminalWrite).toHaveBeenCalledWith("session-1", `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}lerobot-info`);
     });
     expect(terminalWrite).not.toHaveBeenCalledWith("session-1", "lerobot-info\r");
   });
@@ -367,7 +367,7 @@ describe("SO101 terminal session", () => {
     expect(cameraLabel.compareDocumentPosition(addCameraButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("selects record parameters from the collection flow toggle", async () => {
+  it("shows direct lerobot-record parameters without an alternate script flow", async () => {
     installDesktopBridge();
 
     const view = render(<SO101Client />);
@@ -382,23 +382,13 @@ describe("SO101 terminal session", () => {
     const recordSection = view.getByRole("heading", { name: "Record" }).closest("section");
     expect(recordSection).not.toBeNull();
     const recordControls = within(recordSection as HTMLElement);
-    const originalFlow = recordControls.getByLabelText("Use LeRobot original collection flow");
 
-    expect(originalFlow).not.toBeChecked();
-    expect(recordControls.getByLabelText("Min episode seconds")).toBeInTheDocument();
-    expect(recordControls.getByLabelText("Max episode seconds")).toBeInTheDocument();
-    expect(recordControls.getByLabelText("Max relative target")).toBeInTheDocument();
-    expect(recordControls.queryByLabelText("Episode seconds")).not.toBeInTheDocument();
-    expect(recordControls.queryByLabelText("Reset seconds")).not.toBeInTheDocument();
-
-    fireEvent.click(originalFlow);
-
-    expect(originalFlow).toBeChecked();
+    expect(recordControls.queryByLabelText("Use LeRobot original collection flow")).not.toBeInTheDocument();
     expect(recordControls.getByLabelText("Episode seconds")).toBeInTheDocument();
     expect(recordControls.getByLabelText("Reset seconds")).toBeInTheDocument();
+    expect(recordControls.getByLabelText("Max relative target")).toBeInTheDocument();
     expect(recordControls.queryByLabelText("Min episode seconds")).not.toBeInTheDocument();
     expect(recordControls.queryByLabelText("Max episode seconds")).not.toBeInTheDocument();
-    expect(recordControls.queryByLabelText("Max relative target")).not.toBeInTheDocument();
   });
 
   it("can start a new terminal after the previous session exits", async () => {
@@ -583,7 +573,6 @@ describe("SO101 command generation", () => {
         robotId: "robot'one",
         teleopId: "leader",
         datasetRepoId: "local/$(touch /tmp/repo)",
-        useLerobotRecordFlow: true,
         task: "Pick 'the' cube $(touch /tmp/task)"
       },
       desktopStatus,
@@ -597,7 +586,7 @@ describe("SO101 command generation", () => {
     expect(command).not.toContain('"local/$(touch /tmp/repo)"');
   });
 
-  it("builds default record commands with min and max episode windows", () => {
+  it("builds default record commands with direct lerobot-record arguments", () => {
     const command = buildActionCommand(
       "record",
       {
@@ -607,47 +596,27 @@ describe("SO101 command generation", () => {
         robotId: "robot-one",
         teleopId: "leader-one",
         datasetRepoId: "local/auto_dataset",
-        minEpisodeTimeS: 3,
-        maxEpisodeTimeS: 45,
+        episodeTimeS: 12,
+        resetTimeS: 3,
         task: "Pick the cube"
       },
       desktopStatus,
       1
     );
 
-    expect(command).toContain("bash '/script'");
-    expect(command).toContain("--action 'record-auto'");
-    expect(command).toContain("--camera-config '{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30} }'");
-    expect(command).toContain("--min-episode-time-s '3'");
-    expect(command).toContain("--max-episode-time-s '45'");
-    expect(command).not.toContain("--dataset.episode_time_s");
-    expect(command).not.toContain("--dataset.reset_time_s");
+    expect(command).toContain("lerobot-record");
+    expect(command).not.toContain("bash '/script'");
+    expect(command).not.toContain("--action");
+    expect(command).toContain("--robot.cameras='{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30} }'");
+    expect(command).toContain("--dataset.episode_time_s=12");
+    expect(command).toContain("--dataset.reset_time_s=3");
+    expect(command).toContain("--dataset.streaming_encoding=true");
   });
 
-  it("builds find-port commands through the desktop script", () => {
+  it("builds find-port commands directly against the lerobot env", () => {
     const command = buildActionCommand("find-port", initialForm, desktopStatus, 1);
 
-    expect(command).toBe("bash '/script' --action 'find-port'");
-  });
-
-  it("builds reset pose commands through the desktop script", () => {
-    const command = buildActionCommand(
-      "record-reset-pose",
-      {
-        ...initialForm,
-        followerPort: "/dev/cu.usbmodem-follower",
-        leaderPort: "/dev/cu.usbmodem-leader",
-        robotId: "robot-one",
-        teleopId: "leader-one"
-      },
-      desktopStatus,
-      1
-    );
-
-    expect(command).toContain("bash '/script'");
-    expect(command).toContain("--action 'record-reset-pose'");
-    expect(command).toContain("--follower-port '/dev/cu.usbmodem-follower'");
-    expect(command).toContain("--leader-port '/dev/cu.usbmodem-leader'");
+    expect(command).toBe("lerobot-find-port");
   });
 
   it("rejects invalid record numbers before writing a command", () => {
@@ -672,7 +641,6 @@ describe("SO101 command generation", () => {
           ...initialForm,
           followerPort: "/dev/cu.usbmodem-follower",
           leaderPort: "/dev/cu.usbmodem-leader",
-          useLerobotRecordFlow: true,
           episodeTimeS: Number.NaN
         },
         desktopStatus,
@@ -688,13 +656,12 @@ describe("SO101 command generation", () => {
           followerPort: "/dev/cu.usbmodem-follower",
           leaderPort: "/dev/cu.usbmodem-leader",
           task: "Pick",
-          minEpisodeTimeS: 5,
-          maxEpisodeTimeS: 4
+          resetTimeS: -1
         },
         desktopStatus,
         1
       )
-    ).toThrow("先配置 Max episode seconds");
+    ).toThrow("先配置 Reset seconds");
   });
 
   it("normalizes saved connection settings from local storage payloads", () => {

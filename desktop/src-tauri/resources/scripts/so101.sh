@@ -71,6 +71,7 @@ fi
 export PATH="${BIN}:${PATH}"
 export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
+export PYTHONNOUSERSITE=1
 
 DATA_DIR=${ROBOTCLOUD_DATA_DIR:-"${HOME}/.robotcloud/so101-data"}
 mkdir -p "${DATA_DIR}"

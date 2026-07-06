@@ -462,9 +462,87 @@ fn extract_runtime_archive(archive_path: &Path, target: &Path) -> Result<(), Str
     Ok(())
 }
 
+fn runtime_relocation_marker_path(runtime: &Path) -> PathBuf {
+    runtime.join(".robotcloud-runtime-relocated")
+}
+
+fn runtime_relocation_is_done(runtime: &Path) -> bool {
+    runtime_relocation_marker_path(runtime).exists()
+}
+
+fn run_runtime_relocation_fixups(runtime: &PathBuf) -> Result<(), String> {
+    if runtime_relocation_is_done(runtime) {
+        return Ok(());
+    }
+
+    let conda_unpack = if cfg!(target_os = "windows") {
+        runtime.join("Scripts").join("conda-unpack.exe")
+    } else {
+        runtime.join("bin").join("conda-unpack")
+    };
+    if !conda_unpack.exists() {
+        return Ok(());
+    }
+
+    let python = python_path(runtime);
+    if !python.exists() {
+        return Ok(());
+    }
+
+    let path_value = build_command_path(runtime, env::var_os("PATH"))?;
+    let mut command = if cfg!(target_os = "windows") {
+        Command::new(&conda_unpack)
+    } else {
+        let mut command = Command::new(&python);
+        command.arg(&conda_unpack);
+        command
+    };
+    let output = command
+        .env("PATH", path_value)
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH")
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            fs::write(runtime_relocation_marker_path(runtime), "done\n")
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("conda-unpack exited with {}", output.status)
+            };
+            Err(format!(
+                "LeRobot runtime relocation failed at {}: {}",
+                runtime.display(),
+                detail
+            ))
+        }
+        Err(error) => Err(format!(
+            "LeRobot runtime relocation failed at {}: {}",
+            runtime.display(),
+            error
+        )),
+    }
+}
+
 fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(path) = env::var("ROBOTCLOUD_LEROBOT_ENV") {
         let runtime = PathBuf::from(path);
+        if runtime_is_ready(&runtime) {
+            return Ok(runtime);
+        }
+        run_runtime_relocation_fixups(&runtime)?;
         if runtime_is_ready(&runtime) {
             return Ok(runtime);
         }
@@ -492,6 +570,12 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
     if runtime_is_ready(&target) {
         return Ok(target);
     }
+    if target.exists() {
+        run_runtime_relocation_fixups(&target)?;
+        if runtime_is_ready(&target) {
+            return Ok(target);
+        }
+    }
 
     let Some(archive) = runtime_archive_path(app) else {
         return Err(format!(
@@ -503,7 +587,12 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
     if runtime_is_ready(&target) {
         Ok(target)
     } else {
-        Err(runtime_not_ready_message(&target))
+        run_runtime_relocation_fixups(&target)?;
+        if runtime_is_ready(&target) {
+            Ok(target)
+        } else {
+            Err(runtime_not_ready_message(&target))
+        }
     }
 }
 
@@ -530,6 +619,65 @@ fn python_path(runtime: &PathBuf) -> PathBuf {
     }
 }
 
+fn lerobot_info_path(runtime: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        runtime.join("Scripts").join("lerobot-info.exe")
+    } else {
+        runtime.join("bin").join("lerobot-info")
+    }
+}
+
+#[cfg(unix)]
+fn lerobot_info_entrypoint_is_relocatable(content: &str) -> bool {
+    content.starts_with("#!/bin/sh\n")
+        && content.contains("$(dirname \"$0\")")
+        && content.contains("/python\" \"$0\" \"$@\"")
+}
+
+fn runtime_entrypoint_validation_error(runtime: &Path) -> Option<String> {
+    let lerobot_info = lerobot_info_path(runtime);
+    if !lerobot_info.exists() {
+        return Some(format!(
+            "LeRobot runtime is missing lerobot-info at {}",
+            lerobot_info.display()
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        let mut file = match File::open(&lerobot_info) {
+            Ok(file) => file,
+            Err(error) => {
+                return Some(format!(
+                    "LeRobot runtime entrypoint could not be read at {}: {}",
+                    lerobot_info.display(),
+                    error
+                ));
+            }
+        };
+        let mut buffer = [0_u8; 512];
+        let length = match file.read(&mut buffer) {
+            Ok(length) => length,
+            Err(error) => {
+                return Some(format!(
+                    "LeRobot runtime entrypoint could not be read at {}: {}",
+                    lerobot_info.display(),
+                    error
+                ));
+            }
+        };
+        let content = String::from_utf8_lossy(&buffer[..length]);
+        if !lerobot_info_entrypoint_is_relocatable(&content) {
+            return Some(format!(
+                "LeRobot runtime entrypoint is not relocatable at {}",
+                lerobot_info.display()
+            ));
+        }
+    }
+
+    None
+}
+
 fn runtime_is_ready(runtime: &PathBuf) -> bool {
     runtime_validation_error(runtime).is_none()
 }
@@ -547,6 +695,9 @@ fn runtime_validation_error(runtime: &PathBuf) -> Option<String> {
     let python = python_path(runtime);
     if !python.exists() {
         return Some(format!("LeRobot runtime not found: {}", runtime.display()));
+    }
+    if let Some(error) = runtime_entrypoint_validation_error(runtime) {
+        return Some(error);
     }
 
     let output = Command::new(&python)
@@ -854,6 +1005,7 @@ fn command_env(app: &AppHandle) -> Result<Vec<(String, String)>, String> {
         ("PATH".to_string(), path_value),
         ("PYTHONUTF8".to_string(), "1".to_string()),
         ("PYTHONIOENCODING".to_string(), "utf-8".to_string()),
+        ("PYTHONNOUSERSITE".to_string(), "1".to_string()),
         ("ROBOTCLOUD_API_BASE_URL".to_string(), api_base_url()),
         (
             "ROBOTCLOUD_LEROBOT_ENV".to_string(),
@@ -939,6 +1091,27 @@ fn terminal_command() -> (String, Vec<String>) {
 
         #[allow(unreachable_code)]
         ("/bin/sh".to_string(), vec!["-l".to_string()])
+    }
+}
+
+fn terminal_startup_script() -> &'static [u8] {
+    if cfg!(target_os = "windows") {
+        concat!(
+            "Remove-Item Env:PYTHONHOME,Env:PYTHONPATH -ErrorAction SilentlyContinue\r\n",
+            "$env:Path = \"$env:ROBOTCLOUD_LEROBOT_ENV\\Scripts;$env:ROBOTCLOUD_LEROBOT_ENV\\Library\\bin;$env:ROBOTCLOUD_LEROBOT_ENV;$env:Path\"\r\n",
+            "$env:PYTHONNOUSERSITE = \"1\"\r\n",
+            "Write-Host \"RobotCloud LeRobot runtime: $env:ROBOTCLOUD_LEROBOT_ENV\"\r\n",
+        )
+        .as_bytes()
+    } else {
+        concat!(
+            "unset PYTHONHOME PYTHONPATH\n",
+            "export PATH=\"$ROBOTCLOUD_LEROBOT_ENV/bin:$PATH\"\n",
+            "export PYTHONNOUSERSITE=1\n",
+            "hash -r 2>/dev/null || true\n",
+            "printf \"RobotCloud LeRobot runtime: %s\\n\" \"$ROBOTCLOUD_LEROBOT_ENV\"\n",
+        )
+        .as_bytes()
     }
 }
 
@@ -1988,15 +2161,7 @@ fn terminal_start(app: AppHandle, state: State<AppState>) -> Result<TerminalStar
         .spawn_command(command)
         .map_err(|error| format!("failed to start terminal: {error}"))?;
 
-    if cfg!(target_os = "windows") {
-        let _ = writer.write_all(
-            b"Write-Host \"RobotCloud LeRobot runtime: $env:ROBOTCLOUD_LEROBOT_ENV\"\r\n",
-        );
-    } else {
-        let _ = writer.write_all(
-            b"printf \"RobotCloud LeRobot runtime: %s\\n\" \"$ROBOTCLOUD_LEROBOT_ENV\"\n",
-        );
-    }
+    let _ = writer.write_all(terminal_startup_script());
     let _ = writer.flush();
 
     spawn_reader(
@@ -2311,6 +2476,56 @@ mod tests {
         assert!(Path::new(&program).is_absolute());
         assert!(!program.contains('\\'));
         assert_eq!(args, vec!["-l".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_startup_script_restores_runtime_path_after_login_shell() {
+        let script = std::str::from_utf8(terminal_startup_script()).unwrap();
+
+        assert!(script.contains("unset PYTHONHOME PYTHONPATH"));
+        assert!(script.contains("export PATH=\"$ROBOTCLOUD_LEROBOT_ENV/bin:$PATH\""));
+        assert!(script.contains("export PYTHONNOUSERSITE=1"));
+        assert!(script.contains("hash -r"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepts_relocatable_lerobot_info_entrypoint() {
+        let base = env::temp_dir().join(format!("robotcloud-runtime-test-{}", Uuid::new_v4()));
+        let runtime = base.join("lerobot-env");
+        fs::create_dir_all(runtime.join("bin")).unwrap();
+        fs::write(
+            runtime.join("bin").join("lerobot-info"),
+            br#"#!/bin/sh
+'''exec' "$(CDPATH= cd "$(dirname "$0")" && pwd)/python" "$0" "$@"
+' '''
+from lerobot.scripts.lerobot_info import main
+"#,
+        )
+        .unwrap();
+
+        assert!(runtime_entrypoint_validation_error(&runtime).is_none());
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_relocatable_lerobot_info_entrypoint() {
+        let base = env::temp_dir().join(format!("robotcloud-runtime-test-{}", Uuid::new_v4()));
+        let runtime = base.join("lerobot-env");
+        fs::create_dir_all(runtime.join("bin")).unwrap();
+        fs::write(
+            runtime.join("bin").join("lerobot-info"),
+            b"#!/usr/bin/env python\nfrom lerobot.scripts.lerobot_info import main\n",
+        )
+        .unwrap();
+
+        let error = runtime_entrypoint_validation_error(&runtime).unwrap();
+        assert!(error.contains("not relocatable"));
+
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[cfg(unix)]

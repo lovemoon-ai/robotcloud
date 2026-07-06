@@ -48,6 +48,7 @@ $env:PATH = $Scripts + ";" +
             $env:PATH
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONNOUSERSITE = "1"
 
 $DataDir = $env:ROBOTCLOUD_DATA_DIR
 if ([string]::IsNullOrWhiteSpace($DataDir)) {
