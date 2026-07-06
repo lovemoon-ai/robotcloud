@@ -50,7 +50,7 @@ function Invoke-Checked {
     param(
         [Parameter(Mandatory = $true)]
         [string] $FilePath,
-        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [string[]] $Arguments
     )
 
@@ -117,6 +117,7 @@ function New-RuntimeEnv {
     }
 
     New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+    Install-Micromamba
     Invoke-Checked $MicromambaExe @(
         "create",
         "-y",
@@ -151,24 +152,181 @@ function New-RuntimeEnv {
     Invoke-Checked $python $lerobotArgs
 }
 
+function Test-FileContainsText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+        [Parameter(Mandatory = $true)]
+        [string[]] $Needles
+    )
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $encoding = [System.Text.Encoding]::GetEncoding(28591)
+    $text = $encoding.GetString($bytes)
+    foreach ($needle in $Needles) {
+        if (-not [string]::IsNullOrEmpty($needle) -and $text.Contains($needle)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-RelativePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Base,
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $baseUri = [Uri](([System.IO.Path]::GetFullPath($Base).TrimEnd('\')) + '\')
+    $pathUri = [Uri]([System.IO.Path]::GetFullPath($Path))
+    [Uri]::UnescapeDataString($baseUri.MakeRelativeUri($pathUri).ToString()).Replace('/', '\')
+}
+
+function Get-ConsoleEntryPoints {
+    $sitePackages = Join-Path $EnvPath "Lib\site-packages"
+    if (-not (Test-Path -LiteralPath $sitePackages)) {
+        return @()
+    }
+
+    $entries = [ordered]@{}
+    Get-ChildItem -LiteralPath $sitePackages -Directory -Filter "*.dist-info" -ErrorAction SilentlyContinue | ForEach-Object {
+        $entryFile = Join-Path $_.FullName "entry_points.txt"
+        if (Test-Path -LiteralPath $entryFile) {
+            $section = ""
+            foreach ($rawLine in Get-Content -LiteralPath $entryFile) {
+                $line = $rawLine.Trim()
+                if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith("#") -or $line.StartsWith(";")) {
+                    continue
+                }
+                if ($line.StartsWith("[") -and $line.EndsWith("]")) {
+                    $section = $line.Substring(1, $line.Length - 2)
+                    continue
+                }
+                if ($section -ne "console_scripts") {
+                    continue
+                }
+
+                $parts = $line -split "\s*=\s*", 2
+                if ($parts.Count -ne 2) {
+                    continue
+                }
+                $name = $parts[0].Trim()
+                $target = ($parts[1] -replace "\s*\[.*\]\s*$", "").Trim()
+                $targetParts = $target -split ":", 2
+                if ($targetParts.Count -ne 2) {
+                    continue
+                }
+                $module = $targetParts[0].Trim()
+                $attribute = $targetParts[1].Trim()
+                if ($name -notmatch "^[A-Za-z0-9_.-]+$") {
+                    continue
+                }
+                if ($module -notmatch "^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$") {
+                    continue
+                }
+                if ($attribute -notmatch "^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$") {
+                    continue
+                }
+
+                $entries[$name] = [pscustomobject]@{
+                    Name = $name
+                    Module = $module
+                    Attribute = $attribute
+                }
+            }
+        }
+    }
+
+    @($entries.Values)
+}
+
+function Write-ConsoleShims {
+    $entries = @(Get-ConsoleEntryPoints)
+    if ($entries.Count -eq 0) {
+        throw "No Python console entry points found in runtime environment."
+    }
+
+    $shimDir = Join-Path $EnvPath "robotcloud-shims"
+    New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
+
+    foreach ($entry in $entries) {
+        $shimPath = Join-Path $shimDir "$($entry.Name).cmd"
+        $pythonSnippet = "import functools, importlib, re, sys; sys.argv[0]=re.sub(r'(-script\.pyw?|\.exe)?$', '', sys.argv[0]); module=importlib.import_module('$($entry.Module)'); sys.exit(functools.reduce(getattr, '$($entry.Attribute)'.split('.'), module)())"
+        $content = @"
+@echo off
+setlocal
+set "ROBOTCLOUD_LEROBOT_ENV=%~dp0.."
+"%ROBOTCLOUD_LEROBOT_ENV%\python.exe" -c "$pythonSnippet" %*
+exit /b %ERRORLEVEL%
+"@
+        [System.IO.File]::WriteAllText($shimPath, $content.Replace("`n", "`r`n"), [System.Text.Encoding]::ASCII)
+    }
+
+    Write-Host "Generated $($entries.Count) runtime-relative console shims: $shimDir"
+}
+
+function Remove-EmbeddedConsoleLaunchers {
+    $scripts = Join-Path $EnvPath "Scripts"
+    if (-not (Test-Path -LiteralPath $scripts)) {
+        return
+    }
+
+    $needles = @(
+        $EnvPath,
+        $EnvPath.Replace('\', '/'),
+        "C:\Users\"
+    )
+
+    $removed = 0
+    Get-ChildItem -LiteralPath $scripts -Force -File -Filter "*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
+        if (Test-FileContainsText -Path $_.FullName -Needles $needles) {
+            Remove-Item -LiteralPath $_.FullName -Force
+            $removed += 1
+        }
+    }
+
+    Get-ChildItem -LiteralPath $scripts -Force -File -ErrorAction SilentlyContinue | Where-Object {
+        $_.Extension -eq "" -and (Test-FileContainsText -Path $_.FullName -Needles $needles)
+    } | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force
+        $removed += 1
+    }
+
+    Write-Host "Removed $removed console launchers with embedded build prefixes."
+}
+
 function Remove-RuntimeBuildJunk {
     Write-Host "Cleaning Python caches from runtime environment"
     Get-ChildItem -LiteralPath $EnvPath -Recurse -Force -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Get-ChildItem -LiteralPath $EnvPath -Recurse -Force -File -Include "*.pyc", "*.pyo" -ErrorAction SilentlyContinue |
-        Remove-Item -Force -ErrorAction SilentlyContinue
+    foreach ($filter in @("*.pyc", "*.pyo")) {
+        Get-ChildItem -LiteralPath $EnvPath -Recurse -Force -File -Filter $filter -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
     Get-ChildItem -LiteralPath $EnvPath -Recurse -Force -Directory -Filter ".pytest_cache" -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+    $history = Join-Path $EnvPath "conda-meta\history"
+    if (Test-Path -LiteralPath $history) {
+        Remove-Item -LiteralPath $history -Force
+    }
+    Get-ChildItem -LiteralPath $EnvPath -Recurse -Force -File -Filter "loaders.cache" -ErrorAction SilentlyContinue | ForEach-Object {
+        if (Test-FileContainsText -Path $_.FullName -Needles @($EnvPath, $EnvPath.Replace('\', '/'), "C:\Users\")) {
+            Remove-Item -LiteralPath $_.FullName -Force
+        }
+    }
 }
 
 function Test-RuntimeEnv {
     $python = Join-Path $EnvPath "python.exe"
-    $lerobotInfo = Join-Path $EnvPath "Scripts\lerobot-info.exe"
+    $lerobotInfo = Join-Path $EnvPath "robotcloud-shims\lerobot-info.cmd"
     if (-not (Test-Path -LiteralPath $python)) {
         throw "Missing runtime Python: $python"
     }
     if (-not (Test-Path -LiteralPath $lerobotInfo)) {
-        throw "Missing lerobot-info entrypoint: $lerobotInfo"
+        throw "Missing lerobot-info runtime shim: $lerobotInfo"
     }
 
     if (-not $SkipSmokeTest) {
@@ -199,6 +357,78 @@ function Write-RuntimeManifest {
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 }
 
+function Assert-NoRuntimeAbsolutePaths {
+    function Should-ScanRuntimeFile {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string] $FullName
+        )
+
+        $relative = Get-RelativePath -Base $EnvPath -Path $FullName
+        if ($relative -like "Scripts\*" -or
+            $relative -like "robotcloud-shims\*" -or
+            $relative -like "conda-meta\*" -or
+            $relative -match "\\[^\\]+\.dist-info\\") {
+            return $true
+        }
+
+        return $relative -match "\.(bat|cmd|ps1|sh|py|pth|txt|json|cfg|ini|yaml|yml|toml|xml|cache|pc|cmake)$"
+    }
+
+    function Is-StrictPrefixFile {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string] $Relative
+        )
+
+        $Relative -like "Scripts\*" -or
+            $Relative -like "robotcloud-shims\*" -or
+            $Relative -like "conda-meta\*"
+    }
+
+    $generalForbiddenRegexes = @(
+        [regex]::Escape($EnvPath),
+        [regex]::Escape($EnvPath.Replace('\', '/')),
+        [regex]::Escape($WorkDir),
+        [regex]::Escape($WorkDir.Replace('\', '/')),
+        "Documents\\Codex",
+        "\.runtime-build"
+    )
+    $strictForbiddenRegexes = @("(?i)[A-Z]:\\Users\\") + $generalForbiddenRegexes
+    $encoding = [System.Text.Encoding]::GetEncoding(28591)
+    $hits = New-Object System.Collections.Generic.List[string]
+
+    foreach ($file in Get-ChildItem -LiteralPath $EnvPath -Recurse -Force -File -ErrorAction SilentlyContinue) {
+        if ($file.Length -gt 16MB) {
+            continue
+        }
+        if (-not (Should-ScanRuntimeFile -FullName $file.FullName)) {
+            continue
+        }
+
+        $relative = Get-RelativePath -Base $EnvPath -Path $file.FullName
+        $forbiddenRegexes = if (Is-StrictPrefixFile -Relative $relative) {
+            $strictForbiddenRegexes
+        } else {
+            $generalForbiddenRegexes
+        }
+        $text = $encoding.GetString([System.IO.File]::ReadAllBytes($file.FullName))
+        foreach ($pattern in $forbiddenRegexes) {
+            if ($text -match $pattern) {
+                $hits.Add($relative)
+                break
+            }
+        }
+        if ($hits.Count -ge 50) {
+            break
+        }
+    }
+
+    if ($hits.Count -gt 0) {
+        throw "Runtime still contains build-machine absolute paths:`n$($hits -join "`n")"
+    }
+}
+
 function New-ZipFromDirectoryContents {
     param(
         [Parameter(Mandatory = $true)]
@@ -207,6 +437,7 @@ function New-ZipFromDirectoryContents {
         [string] $ZipPath
     )
 
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
 
     $zipParent = Split-Path -Parent $ZipPath
@@ -251,11 +482,13 @@ if (-not $isWindowsPlatform) {
 }
 
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
-Install-Micromamba
 New-RuntimeEnv
+Write-ConsoleShims
+Remove-EmbeddedConsoleLaunchers
 Test-RuntimeEnv
 Write-RuntimeManifest
 Remove-RuntimeBuildJunk
+Assert-NoRuntimeAbsolutePaths
 New-ZipFromDirectoryContents -SourceDir $EnvPath -ZipPath $OutputZip
 
 Write-Host "Windows LeRobot runtime archive ready: $OutputZip"

@@ -14,6 +14,7 @@ TORCH_SPEC="torch==2.10.0"
 TORCHVISION_SPEC="torchvision==0.25.0"
 TORCH_INDEX_URL=""
 EXTRA_PIP_PACKAGES=("feetech-servo-sdk>=1.0.0,<2.0.0")
+CONDA_PACK_SPEC="conda-pack>=0.8.1,<1.0.0"
 FORCE=0
 SKIP_SMOKE_TEST=0
 
@@ -33,6 +34,7 @@ Options:
   --torchvision-spec SPEC     TorchVision pip requirement. Defaults to torchvision==0.25.0.
   --torch-index-url URL       Optional pip index URL for Torch/TorchVision. Defaults to PyPI on macOS.
   --extra-pip-package SPEC    Additional pip requirement. Can be repeated.
+  --conda-pack-spec SPEC      Conda-pack pip requirement. Defaults to conda-pack>=0.8.1,<1.0.0.
   --force                     Rebuild env and overwrite output zip.
   --skip-smoke-test           Skip import and lerobot-info checks.
   -h, --help                  Show this help.
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --torchvision-spec) TORCHVISION_SPEC="$2"; shift 2 ;;
     --torch-index-url) TORCH_INDEX_URL="$2"; shift 2 ;;
     --extra-pip-package) EXTRA_PIP_PACKAGES+=("$2"); shift 2 ;;
+    --conda-pack-spec) CONDA_PACK_SPEC="$2"; shift 2 ;;
     --force) FORCE=1; shift ;;
     --skip-smoke-test) SKIP_SMOKE_TEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -172,7 +175,8 @@ new_runtime_env() {
     exit 1
   fi
 
-  run_checked "${python}" -m pip install --upgrade pip setuptools wheel
+  run_checked "${python}" -m pip install --upgrade pip
+  run_checked "${python}" -m pip install --upgrade --force-reinstall setuptools wheel
 
   local torch_args=("-m" "pip" "install")
   if [[ -n "${TORCH_INDEX_URL}" ]]; then
@@ -186,6 +190,15 @@ new_runtime_env() {
     lerobot_args+=("${EXTRA_PIP_PACKAGES[@]}")
   fi
   run_checked "${python}" "${lerobot_args[@]}"
+}
+
+ensure_conda_pack() {
+  local python="${ENV_PATH}/bin/python"
+  if [[ ! -x "${python}" ]]; then
+    echo "Missing runtime Python: ${python}" >&2
+    exit 1
+  fi
+  run_checked "${python}" -m pip install "${CONDA_PACK_SPEC}"
 }
 
 normalize_entrypoint_shebangs() {
@@ -211,7 +224,9 @@ normalize_entrypoint_shebangs() {
     mode=$(stat -f '%Lp' "${file}")
     temp="${file}.tmp"
     {
-      printf '#!/usr/bin/env python\n'
+      printf '#!/bin/sh\n'
+      printf "'''exec' \"\$(CDPATH= cd \"\$(dirname \"\$0\")\" && pwd)/python\" \"\$0\" \"\$@\"\n"
+      printf "' '''\n"
       tail -n +2 "${file}"
     } > "${temp}"
     chmod "${mode}" "${temp}"
@@ -221,6 +236,7 @@ normalize_entrypoint_shebangs() {
 
 remove_runtime_build_junk() {
   echo "Cleaning Python caches from runtime environment"
+  rm -f "${ENV_PATH}/conda-meta/history"
   find "${ENV_PATH}" -type d -name "__pycache__" -prune -exec rm -rf {} +
   find "${ENV_PATH}" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
   find "${ENV_PATH}" -type d -name ".pytest_cache" -prune -exec rm -rf {} +
@@ -240,7 +256,7 @@ test_runtime_env() {
 
   if [[ "${SKIP_SMOKE_TEST}" -ne 1 ]]; then
     run_checked "${python}" -c "import lerobot, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')"
-    PATH="${ENV_PATH}/bin:${PATH}" run_checked "${lerobot_info}"
+    PATH="/usr/bin:/bin" run_checked "${lerobot_info}"
   fi
 }
 
@@ -281,14 +297,103 @@ with open(os.environ["MANIFEST_PATH"], "w", encoding="utf-8") as handle:
 PY
 }
 
-new_zip_from_directory_contents() {
-  local source_dir="$1"
-  local zip_path="$2"
+assert_archive_has_no_build_prefixes() {
+  local zip_path="$1"
+  "${ENV_PATH}/bin/python" - "${zip_path}" "${ENV_PATH}" "${WORK_DIR}" <<'PY'
+import sys
+import zipfile
+
+zip_path = sys.argv[1]
+prefixes = [value.encode() for value in sys.argv[2:] if value]
+bad = []
+with zipfile.ZipFile(zip_path) as archive:
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        data = archive.read(info)
+        if any(prefix in data for prefix in prefixes):
+            bad.append(info.filename)
+            if len(bad) >= 20:
+                break
+
+if bad:
+    print("Runtime archive contains build-machine absolute paths:", file=sys.stderr)
+    for name in bad:
+        print(f"  {name}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+strip_non_relocatable_archive_entries() {
+  local zip_path="$1"
+  "${ENV_PATH}/bin/python" - "${zip_path}" <<'PY'
+import os
+import sys
+import zipfile
+
+zip_path = sys.argv[1]
+filtered_path = f"{zip_path}.filtered"
+
+def should_skip(name):
+    return (
+        name == "bin/conda-unpack"
+        or name.endswith(".pyc")
+        or "/__pycache__/" in name
+    )
+
+with zipfile.ZipFile(zip_path, "r") as source, zipfile.ZipFile(filtered_path, "w", allowZip64=True) as target:
+    for info in source.infolist():
+        if should_skip(info.filename):
+            continue
+        target.writestr(info, source.read(info.filename))
+
+os.replace(filtered_path, zip_path)
+PY
+}
+
+run_conda_unpack() {
+  local runtime="$1"
+  local python="${runtime}/bin/python"
+  local conda_unpack="${runtime}/bin/conda-unpack"
+  if [[ ! -x "${python}" || ! -f "${conda_unpack}" ]]; then
+    return
+  fi
+  PATH="${runtime}/bin:/usr/bin:/bin" run_checked "${python}" "${conda_unpack}"
+}
+
+runtime_smoke_test() {
+  local runtime="$1"
+  PATH="/usr/bin:/bin" "${runtime}/bin/python" -c "import lerobot, torch, torchvision, serial, scservo_sdk; print('relocated runtime imports ok')" &&
+    PATH="/usr/bin:/bin" "${runtime}/bin/lerobot-info"
+}
+
+test_relocated_runtime_archive() {
+  local zip_path="$1"
+  local smoke_dir="${WORK_DIR}/relocation-smoke"
+  local runtime="${smoke_dir}/lerobot-env"
+
+  if [[ "${SKIP_SMOKE_TEST}" -eq 1 ]]; then
+    return
+  fi
+
+  rm -rf "${smoke_dir}"
+  mkdir -p "${runtime}"
+  run_checked unzip -q "${zip_path}" -d "${runtime}"
+  if ! runtime_smoke_test "${runtime}"; then
+    run_conda_unpack "${runtime}"
+    runtime_smoke_test "${runtime}"
+  fi
+  rm -rf "${smoke_dir}"
+}
+
+new_relocatable_runtime_archive() {
+  local zip_path="$1"
+  local conda_pack="${ENV_PATH}/bin/conda-pack"
   local zip_parent
   local temp_zip
 
-  if ! command -v zip >/dev/null 2>&1; then
-    echo "zip is required to create ${zip_path}" >&2
+  if [[ ! -x "${conda_pack}" ]]; then
+    echo "Missing conda-pack entrypoint: ${conda_pack}" >&2
     exit 1
   fi
 
@@ -304,21 +409,32 @@ new_zip_from_directory_contents() {
     rm -f "${zip_path}"
   fi
 
-  echo "Creating runtime archive: ${zip_path}"
-  (
-    cd "${source_dir}"
-    zip -qry -y "${temp_zip}" .
-  )
+  echo "Creating relocatable runtime archive: ${zip_path}"
+  run_checked "${conda_pack}" \
+    --prefix "${ENV_PATH}" \
+    --output "${temp_zip}" \
+    --format zip \
+    --arcroot "" \
+    --zip-symlinks \
+    --ignore-missing-files \
+    --exclude "*.pyc" \
+    --exclude "*/__pycache__/*" \
+    --exclude "bin/conda-unpack" \
+    --force
+  strip_non_relocatable_archive_entries "${temp_zip}"
+  assert_archive_has_no_build_prefixes "${temp_zip}"
   mv "${temp_zip}" "${zip_path}"
+  test_relocated_runtime_archive "${zip_path}"
 }
 
 mkdir -p "${WORK_DIR}"
 install_micromamba
 new_runtime_env
+ensure_conda_pack
 normalize_entrypoint_shebangs
 test_runtime_env
 write_runtime_manifest
 remove_runtime_build_junk
-new_zip_from_directory_contents "${ENV_PATH}" "${OUTPUT_ZIP}"
+new_relocatable_runtime_archive "${OUTPUT_ZIP}"
 
 echo "macOS LeRobot runtime archive ready: ${OUTPUT_ZIP}"

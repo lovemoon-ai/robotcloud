@@ -23,12 +23,9 @@ type FormState = {
   datasetRoot: string;
   episodes: number;
   episodeTimeS: number;
-  minEpisodeTimeS: number;
-  maxEpisodeTimeS: number;
   resetTimeS: number;
   teleopTimeS: number;
   maxRelativeTarget: number;
-  useLerobotRecordFlow: boolean;
   displayData: boolean;
   task: string;
 };
@@ -58,8 +55,6 @@ type ConfigFieldId =
   | "datasetRoot"
   | "episodes"
   | "episodeTimeS"
-  | "minEpisodeTimeS"
-  | "maxEpisodeTimeS"
   | "resetTimeS"
   | "teleopTimeS"
   | "maxRelativeTarget"
@@ -91,7 +86,6 @@ type ActionId =
   | "calibrate-follower"
   | "calibrate-leader"
   | "teleop"
-  | "record-reset-pose"
   | "record";
 
 type ShellDialect = "posix" | "powershell";
@@ -101,6 +95,7 @@ const DEFAULT_CAMERA_COUNT = 1;
 const MAX_CAMERAS = 3;
 const MIN_UPLOAD_EPISODES = 1;
 const MIN_UPLOAD_DURATION_SECONDS = 1;
+const CLEAR_CURRENT_TERMINAL_INPUT = "\x01\x0b";
 const cameraKeys = ["front", "side", "wrist"] as const;
 const cameraLabels = ["Camera 0", "Camera 1", "Camera 2"] as const;
 
@@ -132,12 +127,9 @@ const initialForm: FormState = {
   datasetRoot: "",
   episodes: 1,
   episodeTimeS: 10,
-  minEpisodeTimeS: 2,
-  maxEpisodeTimeS: 60,
   resetTimeS: 2,
   teleopTimeS: 5,
   maxRelativeTarget: 5,
-  useLerobotRecordFlow: false,
   displayData: true,
   task: ""
 };
@@ -152,7 +144,6 @@ const actions: Array<{ id: ActionId; label: string }> = [
   { id: "calibrate-follower", label: "Calibrate follower" },
   { id: "calibrate-leader", label: "Calibrate leader" },
   { id: "teleop", label: "Teleoperate" },
-  { id: "record-reset-pose", label: "Save reset" },
   { id: "record", label: "Record" }
 ];
 
@@ -165,8 +156,6 @@ const configFieldIds = new Set<string>([
   "datasetRoot",
   "episodes",
   "episodeTimeS",
-  "minEpisodeTimeS",
-  "maxEpisodeTimeS",
   "resetTimeS",
   "teleopTimeS",
   "maxRelativeTarget",
@@ -194,8 +183,6 @@ const configFieldByLabel: Record<string, ConfigFieldId> = {
   "Dataset root": "datasetRoot",
   "Episodes": "episodes",
   "Episode seconds": "episodeTimeS",
-  "Min episode seconds": "minEpisodeTimeS",
-  "Max episode seconds": "maxEpisodeTimeS",
   "Reset seconds": "resetTimeS",
   "Teleop seconds": "teleopTimeS",
   "Max relative target": "maxRelativeTarget",
@@ -361,10 +348,6 @@ export function datasetUploadValidationIssues(stats: DatasetUploadInspection) {
   return issues;
 }
 
-function requiredScriptPath(status: DesktopStatus | null) {
-  return requireValue(status?.scriptPath ?? "", "SO101 script");
-}
-
 function clampCameraCount(value: unknown) {
   const numeric = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numeric)) return DEFAULT_CAMERA_COUNT;
@@ -477,84 +460,9 @@ function cameraConfigArg(form: FormState, cameraCount: number, quote: (value: st
   return `--robot.cameras=${quote(value)}`;
 }
 
-function buildFindPortCommand(status: DesktopStatus | null) {
-  const dialect = shellDialect(status);
-  const quote = (value: string) => shellArg(value, dialect);
-  const script = requiredScriptPath(status);
-
-  if (dialect === "powershell") {
-    return `& ${quote(script)} -Action ${quote("find-port")}`;
-  }
-  return `bash ${quote(script)} --action ${quote("find-port")}`;
-}
-
-function buildScriptCommand(
-  action: "record-reset-pose" | "record-auto",
-  form: FormState,
-  status: DesktopStatus | null,
-  cameraCount: number
-) {
-  const dialect = shellDialect(status);
-  const quote = (value: string) => shellArg(value, dialect);
-  const script = requiredScriptPath(status);
-  const followerPort = requireValue(form.followerPort, "Follower port");
-  const leaderPort = requireValue(form.leaderPort, "Leader port");
-  const robotId = requireValue(form.robotId, "Robot ID");
-  const teleopId = requireValue(form.teleopId, "Teleop ID");
-  const args: Array<{ posix: string; powershell: string; value: string } | string> = [];
-
-  const push = (posixKey: string, powershellKey: string, value: string | number) => {
-    args.push({ posix: posixKey, powershell: powershellKey, value: `${value}` });
-  };
-
-  push("--action", "-Action", action);
-  push("--follower-port", "-FollowerPort", followerPort);
-  push("--leader-port", "-LeaderPort", leaderPort);
-  push("--robot-id", "-RobotId", robotId);
-  push("--teleop-id", "-TeleopId", teleopId);
-  push("--fps", "-Fps", form.cameras[0]?.fps || 30);
-  push("--max-relative-target", "-MaxRelativeTarget", form.maxRelativeTarget);
-
-  if (action === "record-auto") {
-    const repoId = requireValue(form.datasetRepoId, "Dataset repo id");
-    const datasetRoot = resolvedDatasetRoot(form, status);
-    const episodes = requireNumber(form.episodes, "Episodes", { integer: true, min: 1 });
-    const minEpisodeTimeS = requireNumber(form.minEpisodeTimeS, "Min episode seconds", { min: 0 });
-    const maxEpisodeTimeS = requireNumber(form.maxEpisodeTimeS, "Max episode seconds", { min: Number.MIN_VALUE });
-    if (maxEpisodeTimeS < minEpisodeTimeS) throw new ConfigValidationError("Max episode seconds", "maxEpisodeTimeS");
-    const cameraConfig = cameraConfigValue(form, cameraCount, true);
-    if (!cameraConfig) throw new Error("先配置 Camera 0");
-    push("--camera-id", "-CameraId", form.cameras[0].id);
-    push("--camera-config", "-CameraConfigOverride", cameraConfig);
-    push("--width", "-Width", form.cameras[0].width);
-    push("--height", "-Height", form.cameras[0].height);
-    push("--dataset-repo-id", "-DatasetRepoId", repoId);
-    if (datasetRoot) push("--dataset-root", "-DatasetRoot", datasetRoot);
-    push("--episodes", "-Episodes", episodes);
-    push("--min-episode-time-s", "-MinEpisodeTimeS", minEpisodeTimeS);
-    push("--max-episode-time-s", "-MaxEpisodeTimeS", maxEpisodeTimeS);
-    push("--task", "-Task", requireValue(form.task, "Task label"));
-  }
-
-  if (form.displayData) args.push(dialect === "powershell" ? "-DisplayData" : "--display-data");
-
-  if (dialect === "powershell") {
-    const rendered = args.map((arg) => {
-      if (typeof arg === "string") return arg;
-      return `${arg.powershell} ${quote(arg.value)}`;
-    });
-    return `& ${quote(script)} ${rendered.join(" ")}`;
-  }
-
-  const rendered = args.map((arg) => {
-    if (typeof arg === "string") return arg;
-    return `${arg.posix} ${quote(arg.value)}`;
-  });
-  return `bash ${quote(script)} ${rendered.join(" ")}`;
-}
-
 export function buildActionCommand(action: ActionId, form: FormState, status: DesktopStatus | null, cameraCount: number) {
-  const quote = (value: string) => shellArg(value, shellDialect(status));
+  const dialect = shellDialect(status);
+  const quote = (value: string) => shellArg(value, dialect);
   const followerPort = () => requireValue(form.followerPort, "Follower port");
   const leaderPort = () => requireValue(form.leaderPort, "Leader port");
   const robotId = () => requireValue(form.robotId, "Robot ID");
@@ -564,18 +472,20 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
     case "info":
       return "lerobot-info";
     case "find-port":
-      return buildFindPortCommand(status);
+      return "lerobot-find-port";
     case "setup-follower":
       return [
         "lerobot-setup-motors",
         "--robot.type=so101_follower",
-        `--robot.port=${quote(followerPort())}`
+        `--robot.port=${quote(followerPort())}`,
+        `--robot.id=${quote(robotId())}`
       ].join(" ");
     case "setup-leader":
       return [
         "lerobot-setup-motors",
         "--teleop.type=so101_leader",
-        `--teleop.port=${quote(leaderPort())}`
+        `--teleop.port=${quote(leaderPort())}`,
+        `--teleop.id=${quote(teleopId())}`
       ].join(" ");
     case "calibrate-follower":
       return [
@@ -591,22 +501,23 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         `--teleop.port=${quote(leaderPort())}`,
         `--teleop.id=${quote(teleopId())}`
       ].join(" ");
-    case "teleop":
-      return [
+    case "teleop": {
+      const teleopParts = [
         "lerobot-teleoperate",
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
+        `--robot.cameras=${quote(cameraConfigValue(form, cameraCount) ?? "{}")}`,
         `--robot.id=${quote(robotId())}`,
+        `--robot.max_relative_target=${requireNumber(form.maxRelativeTarget, "Max relative target", { min: 0 })}`,
         "--teleop.type=so101_leader",
         `--teleop.port=${quote(leaderPort())}`,
-        `--teleop.id=${quote(teleopId())}`
-      ].join(" ");
-    case "record-reset-pose":
-      return buildScriptCommand("record-reset-pose", form, status, cameraCount);
+        `--teleop.id=${quote(teleopId())}`,
+        `--fps=${requireNumber(form.cameras[0]?.fps ?? Number.NaN, "Camera 0 fps", { min: Number.MIN_VALUE })}`,
+        `--display_data=${form.displayData ? "true" : "false"}`
+      ];
+      return teleopParts.join(" ");
+    }
     case "record": {
-      if (!form.useLerobotRecordFlow) {
-        return buildScriptCommand("record-auto", form, status, cameraCount);
-      }
       const repoId = requireValue(form.datasetRepoId, "Dataset repo id");
       const datasetRoot = resolvedDatasetRoot(form, status);
       const episodes = requireNumber(form.episodes, "Episodes", { integer: true, min: 1 });
@@ -619,6 +530,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
         `--robot.id=${quote(robotId())}`,
+        `--robot.max_relative_target=${requireNumber(form.maxRelativeTarget, "Max relative target", { min: 0 })}`,
         cameraArg,
         "--teleop.type=so101_leader",
         `--teleop.port=${quote(leaderPort())}`,
@@ -628,14 +540,14 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         `--dataset.num_episodes=${episodes}`,
         `--dataset.single_task=${quote(requireValue(form.task, "Task label"))}`,
         "--dataset.push_to_hub=false",
+        "--dataset.streaming_encoding=true",
+        "--dataset.encoder_threads=2",
+        "--dataset.vcodec=h264",
         `--dataset.episode_time_s=${episodeTimeS}`,
         `--dataset.reset_time_s=${resetTimeS}`,
       ];
       if (datasetRoot) parts.splice(10, 0, `--dataset.root=${quote(datasetRoot)}`);
-      if (shellDialect(status) === "powershell") {
-        return `Remove-Item -Recurse -Force ~/.cache/huggingface/lerobot/${quote(repoId)} -ErrorAction SilentlyContinue; ${parts.join(" ")}`;
-      }
-      return `rm -rf ~/.cache/huggingface/lerobot/${quote(repoId)} && ${parts.join(" ")}`;
+      return parts.join(" ");
     }
   }
 }
@@ -647,6 +559,7 @@ export const so101TestExports = {
   removeCameraAtIndex,
   resolvedDatasetRoot,
   buildActionCommand,
+  CLEAR_CURRENT_TERMINAL_INPUT,
   datasetUploadValidationIssues,
   shellArg,
   resetPersistentTerminalForTest
@@ -895,6 +808,7 @@ export function SO101Client() {
   const [cameraCount, setCameraCount] = useState(DEFAULT_CAMERA_COUNT);
   const [connectionLoaded, setConnectionLoaded] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [selectedAction, setSelectedAction] = useState<ActionId | null>(null);
   const [uploadPreparing, setUploadPreparing] = useState(false);
   const [actionConfigError, setActionConfigError] = useState<ActionConfigError | null>(null);
   const [highlightedField, setHighlightedField] = useState<ConfigFieldId | null>(null);
@@ -914,6 +828,7 @@ export function SO101Client() {
     idleCheck
   ]);
   const [previewingCamera, setPreviewingCamera] = useState<number | null>(null);
+  const lastWrittenActionCommandRef = useRef<string | null>(null);
   const terminalPhase = terminalState.phase;
   const terminalError = terminalState.error;
   const bridgeReady = desktopBridgeAvailability === "available";
@@ -1132,25 +1047,52 @@ export function SO101Client() {
     };
   }, [bridgeReady, terminalContainerEl, token]);
 
-  const writeTerminalCommand = async (command: string) => {
+  const writeTerminalCommand = useCallback(async (command: string) => {
     const sessionId = persistentTerminalStore.sessionId;
     if (!sessionId || !window.robotcloudDesktop) {
       throw new Error("Terminal is not ready.");
     }
-    await window.robotcloudDesktop.terminal.write(sessionId, command);
+    await window.robotcloudDesktop.terminal.write(sessionId, `${CLEAR_CURRENT_TERMINAL_INPUT}${command}`);
     persistentTerminalStore.term?.focus();
-  };
+  }, []);
+
+  const writeActionCommand = useCallback(async (action: ActionId, options: { force?: boolean } = {}) => {
+    const command = buildActionCommand(action, form, status, cameraCount);
+    if (!options.force && command === lastWrittenActionCommandRef.current) return;
+    lastWrittenActionCommandRef.current = command;
+    try {
+      await writeTerminalCommand(command);
+    } catch (error) {
+      if (lastWrittenActionCommandRef.current === command) {
+        lastWrittenActionCommandRef.current = null;
+      }
+      throw error;
+    }
+  }, [cameraCount, form, status, writeTerminalCommand]);
 
   const runAction = async (action: ActionId) => {
+    setSelectedAction(action);
     try {
       setPersistentTerminalError(null);
       setActionConfigError(null);
-      await writeTerminalCommand(buildActionCommand(action, form, status, cameraCount));
+      await writeActionCommand(action, { force: true });
     } catch (error) {
       if (handleConfigValidationError(error)) return;
       setPersistentTerminalError(String(error));
     }
   };
+
+  useEffect(() => {
+    if (!selectedAction || terminalPhase !== "ready") return;
+    let cancelled = false;
+    writeActionCommand(selectedAction).catch((error) => {
+      if (cancelled || configValidationErrorFrom(error)) return;
+      setPersistentTerminalError(String(error));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAction, terminalPhase, writeActionCommand]);
 
   const requestDatasetUploadReview = async () => {
     try {
@@ -1281,7 +1223,7 @@ export function SO101Client() {
   const statusCards = useMemo(
     () => [
       { label: "Runtime", value: status?.runtimeReady ? "ready" : "missing", detail: status?.runtimeError ?? status?.runtimePath ?? "not found" },
-      { label: "SO101 script", value: status?.scriptReady ? "ready" : "missing", detail: status?.scriptPath ?? "not found" },
+      { label: "Action commands", value: status?.runtimeReady ? "direct" : "pending", detail: status?.runtimeReady ? "lerobot-* / python" : "waiting for runtime" },
       { label: "Data folder", value: "local", detail: status?.dataDir || "pending" },
       { label: "Cloud API", value: "online", detail: status?.apiBaseUrl ?? "https://robotcloud.conductor-ai.top/api/v1" }
     ],
@@ -1559,14 +1501,6 @@ export function SO101Client() {
                 />
                 {renderConfigFieldError("datasetRoot")}
               </label>
-              <label className="flex items-center gap-2 text-sm text-muted md:col-span-2">
-                <input
-                  type="checkbox"
-                  checked={form.useLerobotRecordFlow}
-                  onChange={(event) => updateField("useLerobotRecordFlow", event.target.checked)}
-                />
-                Use LeRobot original collection flow
-              </label>
               <label className="text-sm">
                 <span className="text-muted">Episodes</span>
                 <input
@@ -1579,74 +1513,43 @@ export function SO101Client() {
                 />
                 {renderConfigFieldError("episodes")}
               </label>
-              {form.useLerobotRecordFlow ? (
-                <>
-                  <label className="text-sm">
-                    <span className="text-muted">Episode seconds</span>
-                    <input
-                      ref={registerConfigInput("episodeTimeS")}
-                      type="number"
-                      value={form.episodeTimeS}
-                      onChange={(event) => updateField("episodeTimeS", Number(event.target.value))}
-                      className={configInputClass("episodeTimeS")}
-                      {...configInputA11y("episodeTimeS")}
-                    />
-                    {renderConfigFieldError("episodeTimeS")}
-                  </label>
-                  <label className="text-sm">
-                    <span className="text-muted">Reset seconds</span>
-                    <input
-                      ref={registerConfigInput("resetTimeS")}
-                      type="number"
-                      value={form.resetTimeS}
-                      onChange={(event) => updateField("resetTimeS", Number(event.target.value))}
-                      className={configInputClass("resetTimeS")}
-                      {...configInputA11y("resetTimeS")}
-                    />
-                    {renderConfigFieldError("resetTimeS")}
-                  </label>
-                </>
-              ) : (
-                <>
-                  <label className="text-sm">
-                    <span className="text-muted">Min episode seconds</span>
-                    <input
-                      ref={registerConfigInput("minEpisodeTimeS")}
-                      type="number"
-                      value={form.minEpisodeTimeS}
-                      onChange={(event) => updateField("minEpisodeTimeS", Number(event.target.value))}
-                      className={configInputClass("minEpisodeTimeS")}
-                      {...configInputA11y("minEpisodeTimeS")}
-                    />
-                    {renderConfigFieldError("minEpisodeTimeS")}
-                  </label>
-                  <label className="text-sm">
-                    <span className="text-muted">Max episode seconds</span>
-                    <input
-                      ref={registerConfigInput("maxEpisodeTimeS")}
-                      type="number"
-                      value={form.maxEpisodeTimeS}
-                      onChange={(event) => updateField("maxEpisodeTimeS", Number(event.target.value))}
-                      className={configInputClass("maxEpisodeTimeS")}
-                      {...configInputA11y("maxEpisodeTimeS")}
-                    />
-                    {renderConfigFieldError("maxEpisodeTimeS")}
-                  </label>
-                  <label className="text-sm">
-                    <span className="text-muted">Max relative target</span>
-                    <input
-                      ref={registerConfigInput("maxRelativeTarget")}
-                      type="number"
-                      step="0.5"
-                      value={form.maxRelativeTarget}
-                      onChange={(event) => updateField("maxRelativeTarget", Number(event.target.value))}
-                      className={configInputClass("maxRelativeTarget")}
-                      {...configInputA11y("maxRelativeTarget")}
-                    />
-                    {renderConfigFieldError("maxRelativeTarget")}
-                  </label>
-                </>
-              )}
+              <label className="text-sm">
+                <span className="text-muted">Episode seconds</span>
+                <input
+                  ref={registerConfigInput("episodeTimeS")}
+                  type="number"
+                  value={form.episodeTimeS}
+                  onChange={(event) => updateField("episodeTimeS", Number(event.target.value))}
+                  className={configInputClass("episodeTimeS")}
+                  {...configInputA11y("episodeTimeS")}
+                />
+                {renderConfigFieldError("episodeTimeS")}
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">Reset seconds</span>
+                <input
+                  ref={registerConfigInput("resetTimeS")}
+                  type="number"
+                  value={form.resetTimeS}
+                  onChange={(event) => updateField("resetTimeS", Number(event.target.value))}
+                  className={configInputClass("resetTimeS")}
+                  {...configInputA11y("resetTimeS")}
+                />
+                {renderConfigFieldError("resetTimeS")}
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">Max relative target</span>
+                <input
+                  ref={registerConfigInput("maxRelativeTarget")}
+                  type="number"
+                  step="0.5"
+                  value={form.maxRelativeTarget}
+                  onChange={(event) => updateField("maxRelativeTarget", Number(event.target.value))}
+                  className={configInputClass("maxRelativeTarget")}
+                  {...configInputA11y("maxRelativeTarget")}
+                />
+                {renderConfigFieldError("maxRelativeTarget")}
+              </label>
               <label className="text-sm md:col-span-2">
                 <span className="text-muted">Task label</span>
                 <input

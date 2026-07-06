@@ -104,6 +104,11 @@ WebView2 offline installer. The app extracts the runtime into its app data
 directory on first SO101 or terminal use, so installation itself does not need
 network access.
 
+The Windows runtime must remain relocatable. The builder strips console
+launchers with embedded build-machine paths and generates runtime-relative
+`robotcloud-shims/*.cmd` entries; the desktop app also regenerates those shims
+after extraction before exposing `lerobot-*` commands in the embedded terminal.
+
 Runtime lookup order:
 
 ```text

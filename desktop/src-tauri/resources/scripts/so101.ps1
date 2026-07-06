@@ -35,6 +35,7 @@ $EnvPath = $env:ROBOTCLOUD_LEROBOT_ENV
 if ([string]::IsNullOrWhiteSpace($EnvPath)) {
     $EnvPath = Join-Path $ResourceRoot "runtime\win\lerobot-env"
 }
+$Shims = Join-Path $EnvPath "robotcloud-shims"
 $Scripts = Join-Path $EnvPath "Scripts"
 $Python = Join-Path $EnvPath "python.exe"
 
@@ -42,12 +43,14 @@ if (-not (Test-Path $Python)) {
     throw "LeRobot environment was not found at $EnvPath"
 }
 
-$env:PATH = $Scripts + ";" +
+$env:PATH = $Shims + ";" +
+            $Scripts + ";" +
             (Join-Path $EnvPath "Library\bin") + ";" +
             $EnvPath + ";" +
             $env:PATH
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONNOUSERSITE = "1"
 
 $DataDir = $env:ROBOTCLOUD_DATA_DIR
 if ([string]::IsNullOrWhiteSpace($DataDir)) {
@@ -67,13 +70,16 @@ function Invoke-LeRobot {
         [string[]] $Args
     )
 
-    $Exe = Join-Path $Scripts "$Tool.exe"
-    if (-not (Test-Path $Exe)) {
-        throw "Could not find $Exe"
+    $Command = Join-Path $Shims "$Tool.cmd"
+    if (-not (Test-Path $Command)) {
+        $Command = Join-Path $Scripts "$Tool.exe"
+    }
+    if (-not (Test-Path $Command)) {
+        throw "Could not find $Command"
     }
 
     Write-Host "> $Tool $($Args -join ' ')"
-    & $Exe @Args
+    & $Command @Args
 }
 
 function Invoke-RobotCloudPython {

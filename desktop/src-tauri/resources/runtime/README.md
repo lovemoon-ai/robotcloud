@@ -24,3 +24,6 @@ desktop/scripts/build-lerobot-runtime-mac.sh
 ```
 
 The desktop app extracts the archive into its app data directory on first use.
+Windows archives should include `robotcloud-shims/*.cmd` runtime-relative
+console entries. The desktop app regenerates them after extraction so
+`lerobot-*` commands do not depend on build-machine absolute paths.
