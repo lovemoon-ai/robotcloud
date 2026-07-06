@@ -808,6 +808,7 @@ export function SO101Client() {
   const [cameraCount, setCameraCount] = useState(DEFAULT_CAMERA_COUNT);
   const [connectionLoaded, setConnectionLoaded] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [selectedAction, setSelectedAction] = useState<ActionId | null>(null);
   const [uploadPreparing, setUploadPreparing] = useState(false);
   const [actionConfigError, setActionConfigError] = useState<ActionConfigError | null>(null);
   const [highlightedField, setHighlightedField] = useState<ConfigFieldId | null>(null);
@@ -827,6 +828,7 @@ export function SO101Client() {
     idleCheck
   ]);
   const [previewingCamera, setPreviewingCamera] = useState<number | null>(null);
+  const lastWrittenActionCommandRef = useRef<string | null>(null);
   const terminalPhase = terminalState.phase;
   const terminalError = terminalState.error;
   const bridgeReady = desktopBridgeAvailability === "available";
@@ -1045,25 +1047,52 @@ export function SO101Client() {
     };
   }, [bridgeReady, terminalContainerEl, token]);
 
-  const writeTerminalCommand = async (command: string) => {
+  const writeTerminalCommand = useCallback(async (command: string) => {
     const sessionId = persistentTerminalStore.sessionId;
     if (!sessionId || !window.robotcloudDesktop) {
       throw new Error("Terminal is not ready.");
     }
     await window.robotcloudDesktop.terminal.write(sessionId, `${CLEAR_CURRENT_TERMINAL_INPUT}${command}`);
     persistentTerminalStore.term?.focus();
-  };
+  }, []);
+
+  const writeActionCommand = useCallback(async (action: ActionId, options: { force?: boolean } = {}) => {
+    const command = buildActionCommand(action, form, status, cameraCount);
+    if (!options.force && command === lastWrittenActionCommandRef.current) return;
+    lastWrittenActionCommandRef.current = command;
+    try {
+      await writeTerminalCommand(command);
+    } catch (error) {
+      if (lastWrittenActionCommandRef.current === command) {
+        lastWrittenActionCommandRef.current = null;
+      }
+      throw error;
+    }
+  }, [cameraCount, form, status, writeTerminalCommand]);
 
   const runAction = async (action: ActionId) => {
+    setSelectedAction(action);
     try {
       setPersistentTerminalError(null);
       setActionConfigError(null);
-      await writeTerminalCommand(buildActionCommand(action, form, status, cameraCount));
+      await writeActionCommand(action, { force: true });
     } catch (error) {
       if (handleConfigValidationError(error)) return;
       setPersistentTerminalError(String(error));
     }
   };
+
+  useEffect(() => {
+    if (!selectedAction || terminalPhase !== "ready") return;
+    let cancelled = false;
+    writeActionCommand(selectedAction).catch((error) => {
+      if (cancelled || configValidationErrorFrom(error)) return;
+      setPersistentTerminalError(String(error));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAction, terminalPhase, writeActionCommand]);
 
   const requestDatasetUploadReview = async () => {
     try {

@@ -321,7 +321,9 @@ describe("SO101 terminal session", () => {
 
       const input = view.getByLabelText("Follower port");
 
-      expect(view.getByRole("alert")).toHaveTextContent("先配置 Follower port");
+      await waitFor(() => {
+        expect(view.getByRole("alert")).toHaveTextContent("先配置 Follower port");
+      });
       expect(input).toHaveFocus();
       expect(input).toHaveClass("border-red-500");
       expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", inline: "nearest" });
@@ -347,6 +349,39 @@ describe("SO101 terminal session", () => {
       }
       window.requestAnimationFrame = originalRequestAnimationFrame;
     }
+  });
+
+  it("keeps the selected action command synced with configuration changes", async () => {
+    const { terminalWrite } = installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
+    fireEvent.click(view.getByRole("button", { name: "Setup follower" }));
+
+    expect(terminalWrite).not.toHaveBeenCalled();
+
+    fireEvent.change(view.getByLabelText("Follower port"), { target: { value: "/dev/cu.usbmodem-follower" } });
+
+    await waitFor(() => {
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}lerobot-setup-motors --robot.type=so101_follower --robot.port='/dev/cu.usbmodem-follower' --robot.id='so101_follower'`
+      );
+    });
+
+    fireEvent.change(view.getByLabelText("Robot ID"), { target: { value: "robot-sync" } });
+
+    await waitFor(() => {
+      expect(terminalWrite).toHaveBeenLastCalledWith(
+        "session-1",
+        `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}lerobot-setup-motors --robot.type=so101_follower --robot.port='/dev/cu.usbmodem-follower' --robot.id='robot-sync'`
+      );
+    });
   });
 
   it("places the add camera control after the camera cards", async () => {
