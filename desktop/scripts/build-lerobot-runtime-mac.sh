@@ -175,7 +175,8 @@ new_runtime_env() {
     exit 1
   fi
 
-  run_checked "${python}" -m pip install --upgrade pip setuptools wheel
+  run_checked "${python}" -m pip install --upgrade pip
+  run_checked "${python}" -m pip install --upgrade --force-reinstall setuptools wheel
 
   local torch_args=("-m" "pip" "install")
   if [[ -n "${TORCH_INDEX_URL}" ]]; then

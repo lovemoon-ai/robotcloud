@@ -596,12 +596,7 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-fn script_path(app: &AppHandle) -> PathBuf {
-    let name = if cfg!(target_os = "windows") {
-        "so101.ps1"
-    } else {
-        "so101.sh"
-    };
+fn bundled_script_path(app: &AppHandle, name: &str) -> PathBuf {
     for root in resource_candidates(app) {
         let candidate = root.join("scripts").join(name);
         if candidate.exists() {
@@ -609,6 +604,15 @@ fn script_path(app: &AppHandle) -> PathBuf {
         }
     }
     PathBuf::from("resources").join("scripts").join(name)
+}
+
+fn script_path(app: &AppHandle) -> PathBuf {
+    let name = if cfg!(target_os = "windows") {
+        "so101.ps1"
+    } else {
+        "so101.sh"
+    };
+    bundled_script_path(app, name)
 }
 
 fn python_path(runtime: &PathBuf) -> PathBuf {
@@ -1133,227 +1137,321 @@ fn allowed_action(action: &str) -> bool {
     )
 }
 
-fn push_arg(args: &mut Vec<String>, key: &str, value: impl ToString) {
-    args.push(key.to_string());
-    args.push(value.to_string());
+fn config_string(value: &Option<String>, default: &str) -> String {
+    value.clone().unwrap_or_else(|| default.to_string())
 }
 
-fn so101_command_args(
-    script: &Path,
+fn non_empty_config_string(value: &Option<String>) -> Option<String> {
+    value
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+}
+
+fn required_config_string(value: &Option<String>, name: &str) -> Result<String, String> {
+    non_empty_config_string(value).ok_or_else(|| format!("{name} is required."))
+}
+
+fn push_eq_arg(args: &mut Vec<String>, key: &str, value: impl ToString) {
+    args.push(format!("{key}={}", value.to_string()));
+}
+
+fn bool_arg(value: Option<bool>) -> &'static str {
+    if value.unwrap_or(false) {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+fn camera_ref_for_config(config: &So101RunConfig) -> String {
+    let value = non_empty_config_string(&config.camera_id)
+        .unwrap_or_else(|| config.camera_index.unwrap_or(0).to_string());
+    if value.chars().all(|ch| ch.is_ascii_digit()) {
+        return value;
+    }
+
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+fn camera_config_value(config: &So101RunConfig) -> String {
+    if let Some(camera_config) = non_empty_config_string(&config.camera_config) {
+        return camera_config;
+    }
+
+    format!(
+        "{{ front: {{type: opencv, index_or_path: {}, width: {}, height: {}, fps: {}}}}}",
+        camera_ref_for_config(config),
+        config.width.unwrap_or(640),
+        config.height.unwrap_or(480),
+        config.fps.unwrap_or(30)
+    )
+}
+
+fn dataset_repo_id(config: &So101RunConfig) -> String {
+    config_string(&config.dataset_repo_id, "local/so101_desktop")
+}
+
+fn default_dataset_root(data_dir: &Path, repo_id: &str) -> String {
+    let mut path = data_dir.join("datasets");
+    for segment in repo_id
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty())
+    {
+        path = path.join(segment);
+    }
+    path.to_string_lossy().to_string()
+}
+
+fn dataset_root_for_config(config: &So101RunConfig, data_dir: &Path) -> String {
+    non_empty_config_string(&config.dataset_root)
+        .unwrap_or_else(|| default_dataset_root(data_dir, &dataset_repo_id(config)))
+}
+
+fn ensure_dataset_parent(dataset_root: &str) -> Result<(), String> {
+    if let Some(parent) = Path::new(dataset_root).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn add_common_robot_args(
+    args: &mut Vec<String>,
     config: &So101RunConfig,
-) -> Result<(String, Vec<String>), String> {
+    include_cameras: bool,
+) -> Result<(), String> {
+    push_eq_arg(args, "--robot.type", "so101_follower");
+    push_eq_arg(
+        args,
+        "--robot.port",
+        required_config_string(&config.follower_port, "Follower port")?,
+    );
+    if include_cameras {
+        push_eq_arg(args, "--robot.cameras", camera_config_value(config));
+    }
+    push_eq_arg(
+        args,
+        "--robot.id",
+        config_string(&config.robot_id, "so101_follower"),
+    );
+    push_eq_arg(
+        args,
+        "--robot.max_relative_target",
+        config.max_relative_target.unwrap_or(5.0),
+    );
+    Ok(())
+}
+
+fn add_common_teleop_args(args: &mut Vec<String>, config: &So101RunConfig) -> Result<(), String> {
+    push_eq_arg(args, "--teleop.type", "so101_leader");
+    push_eq_arg(
+        args,
+        "--teleop.port",
+        required_config_string(&config.leader_port, "Leader port")?,
+    );
+    push_eq_arg(
+        args,
+        "--teleop.id",
+        config_string(&config.teleop_id, "so101_leader"),
+    );
+    Ok(())
+}
+
+fn python_script_args<F>(
+    script_name: &str,
+    script_path: &F,
+    args: Vec<String>,
+) -> Result<(String, Vec<String>), String>
+where
+    F: Fn(&str) -> PathBuf,
+{
+    let script = script_path(script_name);
+    if !script.exists() {
+        return Err(format!(
+            "RobotCloud Python script not found: {}",
+            script.display()
+        ));
+    }
+
+    let mut all = vec![script.to_string_lossy().to_string()];
+    all.extend(args);
+    Ok(("python".to_string(), all))
+}
+
+fn so101_command_args<F>(
+    config: &So101RunConfig,
+    data_dir: &Path,
+    script_path: F,
+) -> Result<(String, Vec<String>), String>
+where
+    F: Fn(&str) -> PathBuf,
+{
     if !allowed_action(&config.action) {
         return Err(format!("Unsupported SO101 action: {}", config.action));
     }
-    if cfg!(target_os = "windows") {
-        let mut args = vec![
-            "-NoLogo".to_string(),
-            "-NoProfile".to_string(),
-            "-ExecutionPolicy".to_string(),
-            "Bypass".to_string(),
-            "-File".to_string(),
-            script.to_string_lossy().to_string(),
-        ];
-        push_arg(&mut args, "-Action", &config.action);
-        push_arg(
-            &mut args,
-            "-FollowerPort",
-            config.follower_port.clone().unwrap_or_default(),
-        );
-        push_arg(
-            &mut args,
-            "-LeaderPort",
-            config.leader_port.clone().unwrap_or_default(),
-        );
-        if let Some(camera_id) = &config.camera_id {
-            if !camera_id.trim().is_empty() {
-                push_arg(&mut args, "-CameraId", camera_id);
-            }
+
+    match config.action.as_str() {
+        "info" => Ok(("lerobot-info".to_string(), vec![])),
+        "ports" | "find-port" => Ok(("lerobot-find-port".to_string(), vec![])),
+        "cameras" => Ok((
+            "lerobot-find-cameras".to_string(),
+            vec![
+                "opencv".to_string(),
+                "--output-dir".to_string(),
+                data_dir
+                    .join("captured_images")
+                    .to_string_lossy()
+                    .to_string(),
+            ],
+        )),
+        "setup-follower" => {
+            let mut args = vec!["--robot.type=so101_follower".to_string()];
+            push_eq_arg(
+                &mut args,
+                "--robot.port",
+                required_config_string(&config.follower_port, "Follower port")?,
+            );
+            push_eq_arg(
+                &mut args,
+                "--robot.id",
+                config_string(&config.robot_id, "so101_follower"),
+            );
+            Ok(("lerobot-setup-motors".to_string(), args))
         }
-        if let Some(camera_config) = &config.camera_config {
-            if !camera_config.trim().is_empty() {
-                push_arg(&mut args, "-CameraConfigOverride", camera_config);
-            }
+        "setup-leader" => {
+            let mut args = vec!["--teleop.type=so101_leader".to_string()];
+            push_eq_arg(
+                &mut args,
+                "--teleop.port",
+                required_config_string(&config.leader_port, "Leader port")?,
+            );
+            push_eq_arg(
+                &mut args,
+                "--teleop.id",
+                config_string(&config.teleop_id, "so101_leader"),
+            );
+            Ok(("lerobot-setup-motors".to_string(), args))
         }
-        push_arg(&mut args, "-CameraIndex", config.camera_index.unwrap_or(0));
-        push_arg(&mut args, "-Width", config.width.unwrap_or(640));
-        push_arg(&mut args, "-Height", config.height.unwrap_or(480));
-        push_arg(&mut args, "-Fps", config.fps.unwrap_or(30));
-        push_arg(
-            &mut args,
-            "-RobotId",
-            config
-                .robot_id
-                .clone()
-                .unwrap_or_else(|| "so101_follower".to_string()),
-        );
-        push_arg(
-            &mut args,
-            "-TeleopId",
-            config
-                .teleop_id
-                .clone()
-                .unwrap_or_else(|| "so101_leader".to_string()),
-        );
-        push_arg(
-            &mut args,
-            "-DatasetRepoId",
-            config
-                .dataset_repo_id
-                .clone()
-                .unwrap_or_else(|| "local/so101_desktop".to_string()),
-        );
-        if let Some(root) = &config.dataset_root {
-            if !root.trim().is_empty() {
-                push_arg(&mut args, "-DatasetRoot", root);
-            }
+        "calibrate-follower" => {
+            let mut args = vec!["--robot.type=so101_follower".to_string()];
+            push_eq_arg(
+                &mut args,
+                "--robot.port",
+                required_config_string(&config.follower_port, "Follower port")?,
+            );
+            push_eq_arg(
+                &mut args,
+                "--robot.id",
+                config_string(&config.robot_id, "so101_follower"),
+            );
+            Ok(("lerobot-calibrate".to_string(), args))
         }
-        push_arg(&mut args, "-Episodes", config.episodes.unwrap_or(1));
-        push_arg(
-            &mut args,
-            "-EpisodeTimeS",
-            config.episode_time_s.unwrap_or(10.0),
-        );
-        push_arg(
-            &mut args,
-            "-MinEpisodeTimeS",
-            config.min_episode_time_s.unwrap_or(2.0),
-        );
-        push_arg(
-            &mut args,
-            "-MaxEpisodeTimeS",
-            config.max_episode_time_s.unwrap_or(60.0),
-        );
-        push_arg(&mut args, "-ResetTimeS", config.reset_time_s.unwrap_or(2.0));
-        push_arg(
-            &mut args,
-            "-TeleopTimeS",
-            config.teleop_time_s.unwrap_or(5.0),
-        );
-        push_arg(
-            &mut args,
-            "-MaxRelativeTarget",
-            config.max_relative_target.unwrap_or(5.0),
-        );
-        push_arg(
-            &mut args,
-            "-Task",
-            config
-                .task
-                .clone()
-                .unwrap_or_else(|| "SO-101 desktop teleoperation".to_string()),
-        );
-        if config.display_data.unwrap_or(false) {
-            args.push("-DisplayData".to_string());
+        "calibrate-leader" => {
+            let mut args = vec!["--teleop.type=so101_leader".to_string()];
+            push_eq_arg(
+                &mut args,
+                "--teleop.port",
+                required_config_string(&config.leader_port, "Leader port")?,
+            );
+            push_eq_arg(
+                &mut args,
+                "--teleop.id",
+                config_string(&config.teleop_id, "so101_leader"),
+            );
+            Ok(("lerobot-calibrate".to_string(), args))
         }
-        Ok((powershell_program(), args))
-    } else {
-        let mut args = vec![script.to_string_lossy().to_string()];
-        push_arg(&mut args, "--action", &config.action);
-        push_arg(
-            &mut args,
-            "--follower-port",
-            config.follower_port.clone().unwrap_or_default(),
-        );
-        push_arg(
-            &mut args,
-            "--leader-port",
-            config.leader_port.clone().unwrap_or_default(),
-        );
-        if let Some(camera_id) = &config.camera_id {
-            if !camera_id.trim().is_empty() {
-                push_arg(&mut args, "--camera-id", camera_id);
-            }
+        "teleop" => {
+            let mut args = Vec::new();
+            add_common_robot_args(&mut args, config, true)?;
+            add_common_teleop_args(&mut args, config)?;
+            push_eq_arg(&mut args, "--fps", config.fps.unwrap_or(30));
+            push_eq_arg(
+                &mut args,
+                "--teleop_time_s",
+                config.teleop_time_s.unwrap_or(5.0),
+            );
+            push_eq_arg(&mut args, "--display_data", bool_arg(config.display_data));
+            Ok(("lerobot-teleoperate".to_string(), args))
         }
-        if let Some(camera_config) = &config.camera_config {
-            if !camera_config.trim().is_empty() {
-                push_arg(&mut args, "--camera-config", camera_config);
-            }
+        "record-reset-pose" => {
+            let mut args = Vec::new();
+            add_common_robot_args(&mut args, config, false)?;
+            add_common_teleop_args(&mut args, config)?;
+            push_eq_arg(&mut args, "--fps", config.fps.unwrap_or(30));
+            python_script_args("robotcloud_reset_pose.py", &script_path, args)
         }
-        push_arg(
-            &mut args,
-            "--camera-index",
-            config.camera_index.unwrap_or(0),
-        );
-        push_arg(&mut args, "--width", config.width.unwrap_or(640));
-        push_arg(&mut args, "--height", config.height.unwrap_or(480));
-        push_arg(&mut args, "--fps", config.fps.unwrap_or(30));
-        push_arg(
-            &mut args,
-            "--robot-id",
-            config
-                .robot_id
-                .clone()
-                .unwrap_or_else(|| "so101_follower".to_string()),
-        );
-        push_arg(
-            &mut args,
-            "--teleop-id",
-            config
-                .teleop_id
-                .clone()
-                .unwrap_or_else(|| "so101_leader".to_string()),
-        );
-        push_arg(
-            &mut args,
-            "--dataset-repo-id",
-            config
-                .dataset_repo_id
-                .clone()
-                .unwrap_or_else(|| "local/so101_desktop".to_string()),
-        );
-        if let Some(root) = &config.dataset_root {
-            if !root.trim().is_empty() {
-                push_arg(&mut args, "--dataset-root", root);
-            }
+        "record-auto" => {
+            let dataset_root = dataset_root_for_config(config, data_dir);
+            let mut args = Vec::new();
+            add_common_robot_args(&mut args, config, true)?;
+            add_common_teleop_args(&mut args, config)?;
+            push_eq_arg(&mut args, "--dataset.repo_id", dataset_repo_id(config));
+            push_eq_arg(&mut args, "--dataset.root", dataset_root);
+            push_eq_arg(
+                &mut args,
+                "--dataset.num_episodes",
+                config.episodes.unwrap_or(1),
+            );
+            push_eq_arg(
+                &mut args,
+                "--dataset.single_task",
+                config_string(&config.task, "SO-101 desktop teleoperation"),
+            );
+            push_eq_arg(&mut args, "--dataset.push_to_hub", "false");
+            push_eq_arg(&mut args, "--dataset.streaming_encoding", "true");
+            push_eq_arg(&mut args, "--dataset.encoder_threads", 2);
+            push_eq_arg(&mut args, "--dataset.vcodec", "h264");
+            push_eq_arg(
+                &mut args,
+                "--min_episode_time_s",
+                config.min_episode_time_s.unwrap_or(2.0),
+            );
+            push_eq_arg(
+                &mut args,
+                "--max_episode_time_s",
+                config.max_episode_time_s.unwrap_or(60.0),
+            );
+            push_eq_arg(&mut args, "--display_data", bool_arg(config.display_data));
+            python_script_args("robotcloud_auto_record.py", &script_path, args)
         }
-        push_arg(&mut args, "--episodes", config.episodes.unwrap_or(1));
-        push_arg(
-            &mut args,
-            "--episode-time-s",
-            config.episode_time_s.unwrap_or(10.0),
-        );
-        push_arg(
-            &mut args,
-            "--min-episode-time-s",
-            config.min_episode_time_s.unwrap_or(2.0),
-        );
-        push_arg(
-            &mut args,
-            "--max-episode-time-s",
-            config.max_episode_time_s.unwrap_or(60.0),
-        );
-        push_arg(
-            &mut args,
-            "--reset-time-s",
-            config.reset_time_s.unwrap_or(2.0),
-        );
-        push_arg(
-            &mut args,
-            "--teleop-time-s",
-            config.teleop_time_s.unwrap_or(5.0),
-        );
-        push_arg(
-            &mut args,
-            "--max-relative-target",
-            config.max_relative_target.unwrap_or(5.0),
-        );
-        push_arg(
-            &mut args,
-            "--task",
-            config
-                .task
-                .clone()
-                .unwrap_or_else(|| "SO-101 desktop teleoperation".to_string()),
-        );
-        if config.display_data.unwrap_or(false) {
-            args.push("--display-data".to_string());
+        "record" => {
+            let dataset_root = dataset_root_for_config(config, data_dir);
+            let mut args = Vec::new();
+            add_common_robot_args(&mut args, config, true)?;
+            add_common_teleop_args(&mut args, config)?;
+            push_eq_arg(&mut args, "--dataset.repo_id", dataset_repo_id(config));
+            push_eq_arg(&mut args, "--dataset.root", dataset_root);
+            push_eq_arg(
+                &mut args,
+                "--dataset.num_episodes",
+                config.episodes.unwrap_or(1),
+            );
+            push_eq_arg(
+                &mut args,
+                "--dataset.episode_time_s",
+                config.episode_time_s.unwrap_or(10.0),
+            );
+            push_eq_arg(
+                &mut args,
+                "--dataset.reset_time_s",
+                config.reset_time_s.unwrap_or(2.0),
+            );
+            push_eq_arg(
+                &mut args,
+                "--dataset.single_task",
+                config_string(&config.task, "SO-101 desktop teleoperation"),
+            );
+            push_eq_arg(&mut args, "--dataset.push_to_hub", "false");
+            push_eq_arg(&mut args, "--dataset.streaming_encoding", "true");
+            push_eq_arg(&mut args, "--dataset.encoder_threads", 2);
+            push_eq_arg(&mut args, "--dataset.vcodec", "h264");
+            push_eq_arg(&mut args, "--display_data", bool_arg(config.display_data));
+            Ok(("lerobot-record".to_string(), args))
         }
-        Ok(("/usr/bin/env".to_string(), {
-            let mut all = vec!["bash".to_string()];
-            all.extend(args);
-            all
-        }))
+        _ => Err(format!("Unsupported SO101 action: {}", config.action)),
     }
 }
 
@@ -1361,11 +1459,463 @@ fn so101_command(
     app: &AppHandle,
     config: &So101RunConfig,
 ) -> Result<(String, Vec<String>), String> {
-    let script = script_path(app);
-    if !script.exists() {
-        return Err(format!("SO101 script not found: {}", script.display()));
+    let data = data_dir(app)?;
+    if matches!(config.action.as_str(), "record" | "record-auto") {
+        let dataset_root = dataset_root_for_config(config, &data);
+        ensure_dataset_parent(&dataset_root)?;
     }
-    so101_command_args(&script, config)
+    so101_command_args(config, &data, |name| bundled_script_path(app, name))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalCommandDialect {
+    Posix,
+    PowerShell,
+}
+
+fn quote_terminal_arg(value: &str, dialect: TerminalCommandDialect) -> String {
+    match dialect {
+        TerminalCommandDialect::Posix => format!("'{}'", value.replace('\'', "'\\''")),
+        TerminalCommandDialect::PowerShell => format!("'{}'", value.replace('\'', "''")),
+    }
+}
+
+fn push_terminal_eq_arg(
+    args: &mut Vec<String>,
+    key: &str,
+    value: impl ToString,
+    dialect: TerminalCommandDialect,
+) {
+    args.push(format!(
+        "{key}={}",
+        quote_terminal_arg(&value.to_string(), dialect)
+    ));
+}
+
+fn parse_posix_words(input: &str) -> Option<Vec<String>> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Plain,
+        Single,
+        Double,
+    }
+
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut state = State::Plain;
+    let mut in_word = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match state {
+            State::Plain => match ch {
+                '\'' => {
+                    state = State::Single;
+                    in_word = true;
+                }
+                '"' => {
+                    state = State::Double;
+                    in_word = true;
+                }
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        word.push(next);
+                        in_word = true;
+                    } else {
+                        word.push(ch);
+                        in_word = true;
+                    }
+                }
+                ch if ch.is_whitespace() => {
+                    if in_word {
+                        words.push(std::mem::take(&mut word));
+                        in_word = false;
+                    }
+                }
+                _ => {
+                    word.push(ch);
+                    in_word = true;
+                }
+            },
+            State::Single => {
+                if ch == '\'' {
+                    state = State::Plain;
+                } else {
+                    word.push(ch);
+                }
+            }
+            State::Double => match ch {
+                '"' => state = State::Plain,
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        word.push(next);
+                    } else {
+                        word.push(ch);
+                    }
+                }
+                _ => word.push(ch),
+            },
+        }
+    }
+
+    if state != State::Plain {
+        return None;
+    }
+    if in_word {
+        words.push(word);
+    }
+    Some(words)
+}
+
+fn parse_powershell_words(input: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_single = false;
+    let mut in_word = false;
+
+    while let Some(ch) = chars.next() {
+        if in_single {
+            if ch == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    let _ = chars.next();
+                    word.push('\'');
+                } else {
+                    in_single = false;
+                }
+            } else {
+                word.push(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' => {
+                in_single = true;
+                in_word = true;
+            }
+            ch if ch.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            _ => {
+                word.push(ch);
+                in_word = true;
+            }
+        }
+    }
+
+    if in_single {
+        return None;
+    }
+    if in_word {
+        words.push(word);
+    }
+    Some(words)
+}
+
+fn normalized_terminal_option(key: &str) -> String {
+    let key = key.trim_start_matches('-');
+    let mut normalized = String::new();
+    for (index, ch) in key.chars().enumerate() {
+        if ch == '_' {
+            normalized.push('-');
+            continue;
+        }
+        if ch.is_ascii_uppercase() {
+            if index > 0 {
+                normalized.push('-');
+            }
+            normalized.push(ch.to_ascii_lowercase());
+        } else {
+            normalized.push(ch.to_ascii_lowercase());
+        }
+    }
+    normalized
+}
+
+fn terminal_option_value<'a>(
+    options: &'a HashMap<String, String>,
+    keys: &[&str],
+) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| options.get(*key).map(String::as_str))
+}
+
+fn terminal_option_or_default(
+    options: &HashMap<String, String>,
+    keys: &[&str],
+    default: &str,
+) -> String {
+    terminal_option_value(options, keys)
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn parse_legacy_so101_wrapper_command(
+    input: &str,
+) -> Option<(TerminalCommandDialect, HashMap<String, String>)> {
+    let posix_words = parse_posix_words(input)?;
+    if posix_words.len() >= 3
+        && posix_words.first().map(String::as_str) == Some("bash")
+        && posix_words
+            .get(1)
+            .is_some_and(|script| script.ends_with("so101.sh"))
+    {
+        return Some((
+            TerminalCommandDialect::Posix,
+            collect_legacy_so101_options(&posix_words[2..]),
+        ));
+    }
+
+    let powershell_words = parse_powershell_words(input)?;
+    if powershell_words.len() >= 3
+        && powershell_words.first().map(String::as_str) == Some("&")
+        && powershell_words
+            .get(1)
+            .is_some_and(|script| script.ends_with("so101.ps1"))
+    {
+        return Some((
+            TerminalCommandDialect::PowerShell,
+            collect_legacy_so101_options(&powershell_words[2..]),
+        ));
+    }
+
+    None
+}
+
+fn collect_legacy_so101_options(words: &[String]) -> HashMap<String, String> {
+    let mut options = HashMap::new();
+    let mut index = 0;
+    while index < words.len() {
+        let word = &words[index];
+        if !word.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        let key = normalized_terminal_option(word);
+        if index + 1 < words.len() && !words[index + 1].starts_with('-') {
+            options.insert(key, words[index + 1].clone());
+            index += 2;
+        } else {
+            options.insert(key, "true".to_string());
+            index += 1;
+        }
+    }
+    options
+}
+
+fn legacy_terminal_camera_config(options: &HashMap<String, String>) -> String {
+    if let Some(value) =
+        terminal_option_value(options, &["camera-config", "camera-config-override"])
+    {
+        return value.to_string();
+    }
+    let camera_id = terminal_option_or_default(options, &["camera-id", "camera-index"], "0");
+    let camera_ref = if camera_id.chars().all(|ch| ch.is_ascii_digit()) {
+        camera_id
+    } else {
+        format!(
+            "\"{}\"",
+            camera_id.replace('\\', "\\\\").replace('"', "\\\"")
+        )
+    };
+    format!(
+        "{{ front: {{type: opencv, index_or_path: {camera_ref}, width: {}, height: {}, fps: {}}}}}",
+        terminal_option_or_default(options, &["width"], "640"),
+        terminal_option_or_default(options, &["height"], "480"),
+        terminal_option_or_default(options, &["fps"], "30")
+    )
+}
+
+fn legacy_terminal_dataset_root(options: &HashMap<String, String>) -> String {
+    terminal_option_or_default(
+        options,
+        &["dataset-root"],
+        "$ROBOTCLOUD_DATA_DIR/datasets/local/so101_desktop",
+    )
+}
+
+fn legacy_so101_direct_terminal_command<F>(
+    options: &HashMap<String, String>,
+    dialect: TerminalCommandDialect,
+    script_path: F,
+) -> Option<String>
+where
+    F: Fn(&str) -> PathBuf,
+{
+    let action = terminal_option_value(options, &["action"])?.to_string();
+    let quote = |value: &str| quote_terminal_arg(value, dialect);
+    let follower_port =
+        terminal_option_or_default(options, &["follower-port", "follower-port"], "");
+    let leader_port = terminal_option_or_default(options, &["leader-port", "leader-port"], "");
+    let robot_id = terminal_option_or_default(options, &["robot-id"], "so101_follower");
+    let teleop_id = terminal_option_or_default(options, &["teleop-id"], "so101_leader");
+    let fps = terminal_option_or_default(options, &["fps"], "30");
+    let max_relative_target = terminal_option_or_default(options, &["max-relative-target"], "5");
+    let display_data = options
+        .get("display-data")
+        .map(|value| value.as_str())
+        .unwrap_or("false");
+
+    let mut args = Vec::new();
+    match action.as_str() {
+        "info" => return Some("lerobot-info".to_string()),
+        "ports" | "find-port" => return Some("lerobot-find-port".to_string()),
+        "setup-follower" => {
+            args.push("--robot.type=so101_follower".to_string());
+            push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
+            push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
+            Some(format!("lerobot-setup-motors {}", args.join(" ")))
+        }
+        "setup-leader" => {
+            args.push("--teleop.type=so101_leader".to_string());
+            push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
+            push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
+            Some(format!("lerobot-setup-motors {}", args.join(" ")))
+        }
+        "calibrate-follower" => {
+            args.push("--robot.type=so101_follower".to_string());
+            push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
+            push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
+            Some(format!("lerobot-calibrate {}", args.join(" ")))
+        }
+        "calibrate-leader" => {
+            args.push("--teleop.type=so101_leader".to_string());
+            push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
+            push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
+            Some(format!("lerobot-calibrate {}", args.join(" ")))
+        }
+        "teleop" => {
+            args.push("--robot.type=so101_follower".to_string());
+            push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
+            push_terminal_eq_arg(
+                &mut args,
+                "--robot.cameras",
+                legacy_terminal_camera_config(options),
+                dialect,
+            );
+            push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
+            push_terminal_eq_arg(
+                &mut args,
+                "--robot.max_relative_target",
+                max_relative_target,
+                dialect,
+            );
+            args.push("--teleop.type=so101_leader".to_string());
+            push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
+            push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
+            push_terminal_eq_arg(&mut args, "--fps", fps, dialect);
+            push_terminal_eq_arg(&mut args, "--display_data", display_data, dialect);
+            Some(format!("lerobot-teleoperate {}", args.join(" ")))
+        }
+        "record-reset-pose" => {
+            let script = script_path("robotcloud_reset_pose.py");
+            args.push(quote(&script.to_string_lossy()));
+            args.push("--robot.type=so101_follower".to_string());
+            push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
+            push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
+            push_terminal_eq_arg(
+                &mut args,
+                "--robot.max_relative_target",
+                max_relative_target,
+                dialect,
+            );
+            args.push("--teleop.type=so101_leader".to_string());
+            push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
+            push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
+            push_terminal_eq_arg(&mut args, "--fps", fps, dialect);
+            Some(format!("python {}", args.join(" ")))
+        }
+        "record-auto" => {
+            let script = script_path("robotcloud_auto_record.py");
+            args.push(quote(&script.to_string_lossy()));
+            args.push("--robot.type=so101_follower".to_string());
+            push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
+            push_terminal_eq_arg(
+                &mut args,
+                "--robot.cameras",
+                legacy_terminal_camera_config(options),
+                dialect,
+            );
+            push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
+            push_terminal_eq_arg(
+                &mut args,
+                "--robot.max_relative_target",
+                max_relative_target,
+                dialect,
+            );
+            args.push("--teleop.type=so101_leader".to_string());
+            push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
+            push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
+            push_terminal_eq_arg(
+                &mut args,
+                "--dataset.repo_id",
+                terminal_option_or_default(options, &["dataset-repo-id"], "local/so101_desktop"),
+                dialect,
+            );
+            push_terminal_eq_arg(
+                &mut args,
+                "--dataset.root",
+                legacy_terminal_dataset_root(options),
+                dialect,
+            );
+            push_terminal_eq_arg(
+                &mut args,
+                "--dataset.num_episodes",
+                terminal_option_or_default(options, &["episodes"], "1"),
+                dialect,
+            );
+            push_terminal_eq_arg(
+                &mut args,
+                "--dataset.single_task",
+                terminal_option_or_default(options, &["task"], "SO-101 desktop teleoperation"),
+                dialect,
+            );
+            args.push("--dataset.push_to_hub=false".to_string());
+            args.push("--dataset.streaming_encoding=true".to_string());
+            args.push("--dataset.encoder_threads=2".to_string());
+            args.push("--dataset.vcodec=h264".to_string());
+            push_terminal_eq_arg(
+                &mut args,
+                "--min_episode_time_s",
+                terminal_option_or_default(options, &["min-episode-time-s"], "2"),
+                dialect,
+            );
+            push_terminal_eq_arg(
+                &mut args,
+                "--max_episode_time_s",
+                terminal_option_or_default(options, &["max-episode-time-s"], "60"),
+                dialect,
+            );
+            push_terminal_eq_arg(&mut args, "--display_data", display_data, dialect);
+            Some(format!("python {}", args.join(" ")))
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_legacy_so101_terminal_command<F>(data: &str, script_path: F) -> String
+where
+    F: Fn(&str) -> PathBuf,
+{
+    let clear_prefix = "\x01\x0b";
+    let (prefix, command) = data
+        .strip_prefix(clear_prefix)
+        .map(|command| (clear_prefix, command))
+        .unwrap_or(("", data));
+
+    let Some((dialect, options)) = parse_legacy_so101_wrapper_command(command.trim()) else {
+        return data.to_string();
+    };
+    let Some(rewritten) = legacy_so101_direct_terminal_command(&options, dialect, script_path)
+    else {
+        return data.to_string();
+    };
+
+    format!("{prefix}{rewritten}")
 }
 
 fn spawn_reader<R: Read + Send + 'static>(
@@ -2188,6 +2738,7 @@ fn terminal_start(app: AppHandle, state: State<AppState>) -> Result<TerminalStar
 
 #[tauri::command]
 fn terminal_write(
+    app: AppHandle,
     state: State<AppState>,
     session_id: String,
     data: String,
@@ -2200,6 +2751,7 @@ fn terminal_write(
         .cloned()
         .ok_or_else(|| "terminal session not found".to_string())?;
     let mut writer = child_arc.writer.lock().map_err(|error| error.to_string())?;
+    let data = rewrite_legacy_so101_terminal_command(&data, |name| bundled_script_path(&app, name));
     writer
         .write_all(data.as_bytes())
         .map_err(|error| error.to_string())?;
@@ -2306,6 +2858,22 @@ mod tests {
         }
     }
 
+    fn test_data_dir() -> PathBuf {
+        env::temp_dir().join("robotcloud-so101-command-test")
+    }
+
+    fn test_script_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("scripts")
+            .join(name)
+    }
+
+    fn test_so101_command_args(config: &So101RunConfig) -> Result<(String, Vec<String>), String> {
+        let data_dir = test_data_dir();
+        so101_command_args(config, &data_dir, test_script_path)
+    }
+
     #[test]
     fn default_web_url_follows_build_profile() {
         if cfg!(debug_assertions) {
@@ -2351,25 +2919,122 @@ mod tests {
 
     #[test]
     fn rejects_unknown_so101_actions_before_spawn() {
-        let error = so101_command_args(Path::new("so101.ps1"), &test_config("info; whoami"))
+        let error = test_so101_command_args(&test_config("info; whoami"))
             .expect_err("unsafe actions must be rejected");
         assert!(error.contains("Unsupported SO101 action"));
     }
 
     #[test]
-    fn builds_info_command_for_current_platform() {
-        let (program, args) =
-            so101_command_args(Path::new("scripts/so101.ps1"), &test_config("info")).unwrap();
+    fn builds_info_command_directly() {
+        let (program, args) = test_so101_command_args(&test_config("info")).unwrap();
 
-        if cfg!(target_os = "windows") {
-            assert!(program.to_lowercase().ends_with("powershell.exe"));
-            assert!(args.iter().any(|arg| arg == "-ExecutionPolicy"));
-            assert!(args.windows(2).any(|pair| pair == ["-Action", "info"]));
-        } else {
-            assert_eq!(program, "/usr/bin/env");
-            assert_eq!(args.first().map(String::as_str), Some("bash"));
-            assert!(args.windows(2).any(|pair| pair == ["--action", "info"]));
-        }
+        assert_eq!(program, "lerobot-info");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn builds_record_command_without_so101_wrapper_script() {
+        let mut config = test_config("record");
+        config.follower_port = Some("/dev/cu.usbmodem-follower".to_string());
+        config.leader_port = Some("/dev/cu.usbmodem-leader".to_string());
+        config.robot_id = Some("robot-one".to_string());
+        config.teleop_id = Some("leader-one".to_string());
+        config.dataset_repo_id = Some("local/so101_desktop".to_string());
+        config.task = Some("Pick the cube".to_string());
+
+        let (program, args) = test_so101_command_args(&config).unwrap();
+
+        assert_eq!(program, "lerobot-record");
+        assert!(args.iter().any(|arg| arg == "--robot.type=so101_follower"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--robot.port=/dev/cu.usbmodem-follower"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--dataset.repo_id=local/so101_desktop"));
+        assert!(args.iter().all(|arg| !arg.contains("so101.sh")));
+        assert!(args.iter().all(|arg| !arg.contains("so101.ps1")));
+        assert!(args.iter().all(|arg| arg != "--action"));
+    }
+
+    #[test]
+    fn builds_robotcloud_python_actions_directly() {
+        let mut config = test_config("record-reset-pose");
+        config.follower_port = Some("/dev/cu.usbmodem-follower".to_string());
+        config.leader_port = Some("/dev/cu.usbmodem-leader".to_string());
+
+        let (program, args) = test_so101_command_args(&config).unwrap();
+
+        assert_eq!(program, "python");
+        assert!(args
+            .first()
+            .is_some_and(|arg| arg.ends_with("robotcloud_reset_pose.py")));
+        assert!(args.iter().any(|arg| arg == "--robot.type=so101_follower"));
+        assert!(args.iter().all(|arg| !arg.contains("so101.sh")));
+        assert!(args.iter().all(|arg| !arg.contains("so101.ps1")));
+    }
+
+    #[test]
+    fn rewrites_legacy_posix_terminal_wrapper_to_python_script() {
+        let input = concat!(
+            "\x01\x0b",
+            "bash '/Applications/RobotCloud.app/Contents/Resources/resources/scripts/so101.sh' ",
+            "--action 'record-reset-pose' ",
+            "--follower-port '/dev/cu.usbmodem-follower' ",
+            "--leader-port '/dev/cu.usbmodem-leader' ",
+            "--robot-id 'robot'\\''one' ",
+            "--teleop-id 'leader-one' ",
+            "--fps '30' ",
+            "--max-relative-target '5' ",
+            "--display-data"
+        );
+
+        let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
+
+        assert!(rewritten.starts_with("\x01\x0bpython "));
+        assert!(rewritten.contains("robotcloud_reset_pose.py"));
+        assert!(rewritten.contains("--robot.port='/dev/cu.usbmodem-follower'"));
+        assert!(rewritten.contains("--robot.id='robot'\\''one'"));
+        assert!(!rewritten.contains("so101.sh"));
+        assert!(!rewritten.contains("--action"));
+    }
+
+    #[test]
+    fn rewrites_legacy_powershell_terminal_wrapper_to_python_script() {
+        let input = concat!(
+            "& 'C:\\Program Files\\RobotCloud\\resources\\scripts\\so101.ps1' ",
+            "-Action 'record-auto' ",
+            "-FollowerPort 'COM3' ",
+            "-LeaderPort 'COM4' ",
+            "-RobotId 'robot-one' ",
+            "-TeleopId 'leader-one' ",
+            "-CameraConfigOverride '{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30} }' ",
+            "-DatasetRepoId 'local/so101_desktop' ",
+            "-DatasetRoot 'C:\\robot data\\so101' ",
+            "-Episodes '2' ",
+            "-MinEpisodeTimeS '2' ",
+            "-MaxEpisodeTimeS '60' ",
+            "-Task 'Pick cube' ",
+            "-DisplayData"
+        );
+
+        let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
+
+        assert!(rewritten.starts_with("python "));
+        assert!(rewritten.contains("robotcloud_auto_record.py"));
+        assert!(rewritten.contains("--robot.port='COM3'"));
+        assert!(rewritten.contains("--dataset.root='C:\\robot data\\so101'"));
+        assert!(!rewritten.contains("so101.ps1"));
+        assert!(!rewritten.contains("-Action"));
+    }
+
+    #[test]
+    fn leaves_direct_terminal_commands_unchanged() {
+        let input = "lerobot-info";
+
+        let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
+
+        assert_eq!(rewritten, input);
     }
 
     #[test]

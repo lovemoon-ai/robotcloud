@@ -129,7 +129,11 @@ build_macos() {
   [[ "${FORCE_RUNTIME_BUILD}" -eq 1 ]] && args+=(--force-runtime-build)
 
   log "Building macOS desktop package"
-  "${DESKTOP_DIR}/scripts/package-macos.sh" "${args[@]}"
+  if [[ "${#args[@]}" -gt 0 ]]; then
+    "${DESKTOP_DIR}/scripts/package-macos.sh" "${args[@]}"
+  else
+    "${DESKTOP_DIR}/scripts/package-macos.sh"
+  fi
 }
 
 install_macos() {

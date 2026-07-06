@@ -1194,7 +1194,7 @@ export function SO101Client() {
   const statusCards = useMemo(
     () => [
       { label: "Runtime", value: status?.runtimeReady ? "ready" : "missing", detail: status?.runtimeError ?? status?.runtimePath ?? "not found" },
-      { label: "SO101 script", value: status?.scriptReady ? "ready" : "missing", detail: status?.scriptPath ?? "not found" },
+      { label: "Action commands", value: status?.runtimeReady ? "direct" : "pending", detail: status?.runtimeReady ? "lerobot-* / python" : "waiting for runtime" },
       { label: "Data folder", value: "local", detail: status?.dataDir || "pending" },
       { label: "Cloud API", value: "online", detail: status?.apiBaseUrl ?? "https://robotcloud.conductor-ai.top/api/v1" }
     ],
