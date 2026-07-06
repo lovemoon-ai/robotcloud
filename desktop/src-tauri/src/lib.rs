@@ -22,7 +22,7 @@ const DEBUG_WEB_URL: &str = "http://127.0.0.1:6151/so101/";
 const MIN_DATASET_UPLOAD_EPISODES: u64 = 1;
 const MIN_DATASET_UPLOAD_DURATION_SECONDS: f64 = 1.0;
 
-const BRIDGE_SCRIPT: &str = r#"
+const DEFAULT_BRIDGE_SCRIPT: &str = r#"
 (function () {
   function waitForTauri(callback) {
     if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.event) {
@@ -74,6 +74,123 @@ const BRIDGE_SCRIPT: &str = r#"
   });
 })();
 "#;
+
+const WINDOWS_BRIDGE_SCRIPT: &str = r#"
+(function () {
+  function getInvoke() {
+    if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === "function") {
+      return window.__TAURI__.core.invoke.bind(window.__TAURI__.core);
+    }
+    if (window.__TAURI_INTERNALS__ && typeof window.__TAURI_INTERNALS__.invoke === "function") {
+      return window.__TAURI_INTERNALS__.invoke.bind(window.__TAURI_INTERNALS__);
+    }
+    return null;
+  }
+
+  function getEventApi() {
+    if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === "function") {
+      return window.__TAURI__.event;
+    }
+    return null;
+  }
+
+  function getInternalEventApiReady() {
+    return Boolean(
+      window.__TAURI_INTERNALS__ &&
+      typeof window.__TAURI_INTERNALS__.invoke === "function" &&
+      typeof window.__TAURI_INTERNALS__.transformCallback === "function"
+    );
+  }
+
+  function waitForBridge(callback) {
+    if (getInvoke() && (getEventApi() || getInternalEventApiReady())) {
+      callback();
+      return;
+    }
+    setTimeout(function () { waitForBridge(callback); }, 25);
+  }
+
+  waitForBridge(function () {
+    function invoke(command, args) {
+      var invokeFn = getInvoke();
+      if (!invokeFn) {
+        return Promise.reject(new Error("RobotCloud Desktop IPC is not ready."));
+      }
+      return invokeFn(command, args || {});
+    }
+
+    function listen(name, callback) {
+      var event = getEventApi();
+      var unlistenPromise;
+      if (event) {
+        unlistenPromise = event.listen(name, function (payload) {
+          callback(payload.payload);
+        });
+      } else {
+        var handler = window.__TAURI_INTERNALS__.transformCallback(function (payload) {
+          callback(payload.payload);
+        });
+        unlistenPromise = invoke("plugin:event|listen", {
+          event: name,
+          target: { kind: "Any" },
+          handler: handler
+        }).then(function (eventId) {
+          return function () {
+            try {
+              if (
+                window.__TAURI_EVENT_PLUGIN_INTERNALS__ &&
+                typeof window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener === "function"
+              ) {
+                window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(name, eventId);
+              }
+            } catch (_) {}
+            return invoke("plugin:event|unlisten", { event: name, eventId: eventId }).catch(function () {});
+          };
+        });
+      }
+      return function () {
+        unlistenPromise.then(function (unlisten) { unlisten(); }).catch(function () {});
+      };
+    }
+
+    window.robotcloudDesktop = {
+      isDesktop: true,
+      status: function () { return invoke("desktop_status"); },
+      so101: {
+        run: function (config) { return invoke("so101_run", { config: config }); },
+        stop: function (runId) { return invoke("so101_stop", { runId: runId }); },
+        validatePort: function (value) { return invoke("so101_validate_port", { value: value }); },
+        validateCamera: function (cameraId, width, height) { return invoke("so101_validate_camera", { cameraId: cameraId, width: width, height: height }); },
+        previewCamera: function (cameraId, width, height, fps) { return invoke("so101_preview_camera", { cameraId: cameraId, width: width, height: height, fps: fps }); },
+        onOutput: function (callback) { return listen("so101-output", callback); },
+        onExit: function (callback) { return listen("so101-exit", callback); }
+      },
+      dataset: {
+        inspectUpload: function (config) { return invoke("dataset_inspect_upload", { config: config }); },
+        prepareUpload: function (config) { return invoke("dataset_prepare_upload", { config: config }); },
+        readPreparedUpload: function (filePath) { return invoke("dataset_read_prepared_upload", { filePath: filePath }); }
+      },
+      terminal: {
+        start: function () { return invoke("terminal_start"); },
+        write: function (sessionId, data) { return invoke("terminal_write", { sessionId: sessionId, data: data }); },
+        resize: function (sessionId, cols, rows) { return invoke("terminal_resize", { sessionId: sessionId, cols: cols, rows: rows }); },
+        stop: function (sessionId) { return invoke("terminal_stop", { sessionId: sessionId }); },
+        onOutput: function (callback) { return listen("terminal-output", callback); },
+        onExit: function (callback) { return listen("terminal-exit", callback); }
+      }
+    };
+    window.dispatchEvent(new CustomEvent("robotcloud-desktop-ready"));
+  });
+})();
+"#;
+
+fn bridge_script() -> &'static str {
+    if cfg!(target_os = "windows") {
+        WINDOWS_BRIDGE_SCRIPT
+    } else {
+        DEFAULT_BRIDGE_SCRIPT
+    }
+}
 
 struct AppState {
     processes: Arc<Mutex<HashMap<String, Arc<Mutex<StdChild>>>>>,
@@ -540,6 +657,7 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(path) = env::var("ROBOTCLOUD_LEROBOT_ENV") {
         let runtime = PathBuf::from(path);
         if runtime_is_ready(&runtime) {
+            prepare_runtime(&runtime)?;
             return Ok(runtime);
         }
         run_runtime_relocation_fixups(&runtime)?;
@@ -551,6 +669,7 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
 
     let runtime = runtime_path(app);
     if runtime_is_ready(&runtime) {
+        prepare_runtime(&runtime)?;
         return Ok(runtime);
     }
 
@@ -561,6 +680,7 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
 
     let runtime = runtime_path(app);
     if runtime_is_ready(&runtime) {
+        prepare_runtime(&runtime)?;
         return Ok(runtime);
     }
 
@@ -568,6 +688,7 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
         return Err("Could not resolve RobotCloud app data directory".to_string());
     };
     if runtime_is_ready(&target) {
+        prepare_runtime(&target)?;
         return Ok(target);
     }
     if target.exists() {
@@ -585,6 +706,7 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
     };
     extract_runtime_archive(&archive, &target)?;
     if runtime_is_ready(&target) {
+        prepare_runtime(&target)?;
         Ok(target)
     } else {
         run_runtime_relocation_fixups(&target)?;
@@ -736,6 +858,136 @@ fn runtime_validation_error(runtime: &PathBuf) -> Option<String> {
             error
         )),
     }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, PartialEq, Eq)]
+struct ConsoleEntryPoint {
+    name: String,
+    module: String,
+    attribute: String,
+}
+
+#[cfg(target_os = "windows")]
+fn is_safe_script_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+}
+
+#[cfg(target_os = "windows")]
+fn is_safe_python_qualname(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|part| {
+            let mut bytes = part.bytes();
+            matches!(bytes.next(), Some(byte) if byte.is_ascii_alphabetic() || byte == b'_')
+                && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn parse_console_entry_points(text: &str) -> Vec<ConsoleEntryPoint> {
+    let mut section = "";
+    let mut entries = Vec::new();
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            section = &line[1..line.len() - 1];
+            continue;
+        }
+        if section != "console_scripts" {
+            continue;
+        }
+
+        let Some((name, target)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        let target = target
+            .split_once('[')
+            .map(|(plain, _)| plain)
+            .unwrap_or(target)
+            .trim();
+        let Some((module, attribute)) = target.split_once(':') else {
+            continue;
+        };
+        let module = module.trim();
+        let attribute = attribute.trim();
+        if is_safe_script_name(name)
+            && is_safe_python_qualname(module)
+            && is_safe_python_qualname(attribute)
+        {
+            entries.push(ConsoleEntryPoint {
+                name: name.to_string(),
+                module: module.to_string(),
+                attribute: attribute.to_string(),
+            });
+        }
+    }
+    entries
+}
+
+#[cfg(target_os = "windows")]
+fn console_shim_content(entry: &ConsoleEntryPoint) -> String {
+    format!(
+        concat!(
+            "@echo off\r\n",
+            "setlocal\r\n",
+            "set \"ROBOTCLOUD_LEROBOT_ENV=%~dp0..\"\r\n",
+            "\"%ROBOTCLOUD_LEROBOT_ENV%\\python.exe\" -c \"",
+            "import functools, importlib, re, sys; ",
+            "sys.argv[0]=re.sub(r'(-script\\.pyw?|\\.exe)?$', '', sys.argv[0]); ",
+            "module=importlib.import_module('{}'); ",
+            "sys.exit(functools.reduce(getattr, '{}'.split('.'), module)())",
+            "\" %*\r\n",
+            "exit /b %ERRORLEVEL%\r\n"
+        ),
+        entry.module, entry.attribute
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_windows_console_shims(runtime: &Path) -> Result<(), String> {
+    let site_packages = runtime.join("Lib").join("site-packages");
+    if !site_packages.exists() {
+        return Ok(());
+    }
+
+    let shim_dir = runtime.join("robotcloud-shims");
+    fs::create_dir_all(&shim_dir).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(&site_packages).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if !path.is_dir()
+            || !path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(".dist-info"))
+        {
+            continue;
+        }
+
+        let entry_points = path.join("entry_points.txt");
+        if !entry_points.exists() {
+            continue;
+        }
+        let text = fs::read_to_string(&entry_points).map_err(|error| error.to_string())?;
+        for console_entry in parse_console_entry_points(&text) {
+            let shim_path = shim_dir.join(format!("{}.cmd", console_entry.name));
+            fs::write(shim_path, console_shim_content(&console_entry))
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn prepare_runtime(runtime: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    ensure_windows_console_shims(runtime)?;
+    Ok(())
 }
 
 fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -987,6 +1239,7 @@ fn build_command_path(
 ) -> Result<String, String> {
     let mut path_parts = Vec::new();
     if cfg!(target_os = "windows") {
+        path_parts.push(runtime.join("robotcloud-shims"));
         path_parts.push(runtime.join("Scripts"));
         path_parts.push(runtime.join("Library").join("bin"));
         path_parts.push(runtime.to_path_buf());
@@ -2144,7 +2397,13 @@ except Exception as exc:
     raise SystemExit(f"Could not import OpenCV: {exc}")
 
 source = int(raw) if raw.isdigit() else raw
-cap = cv2.VideoCapture(source)
+if sys.platform.startswith("win") and isinstance(source, int) and hasattr(cv2, "CAP_DSHOW"):
+    cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        cap.release()
+        cap = cv2.VideoCapture(source)
+else:
+    cap = cv2.VideoCapture(source)
 if width > 0:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
 if height > 0:
@@ -2204,7 +2463,13 @@ except Exception as exc:
     raise SystemExit(f"Could not import OpenCV: {exc}")
 
 source = int(raw) if raw.isdigit() else raw
-cap = cv2.VideoCapture(source)
+if sys.platform.startswith("win") and isinstance(source, int) and hasattr(cv2, "CAP_DSHOW"):
+    cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        cap.release()
+        cap = cv2.VideoCapture(source)
+else:
+    cap = cv2.VideoCapture(source)
 if width > 0:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
 if height > 0:
@@ -2217,24 +2482,89 @@ if not cap.isOpened():
     raise SystemExit(f"Camera is not available: {raw}")
 
 window = f"RobotCloud Camera Preview - {raw}"
-cv2.namedWindow(window, cv2.WINDOW_NORMAL)
-while True:
-    ok, frame = cap.read()
-    if not ok or frame is None:
-        time.sleep(0.05)
-        continue
-    cv2.imshow(window, frame)
-    key = cv2.waitKey(1) & 0xFF
-    if key in (27, ord("q")):
-        break
-    try:
-        if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
-            break
-    except cv2.error:
-        break
 
-cap.release()
-cv2.destroyWindow(window)
+def preview_with_tkinter():
+    import tkinter as tk
+    from PIL import Image, ImageTk
+
+    root = tk.Tk()
+    root.title(window)
+    root.minsize(320, 240)
+
+    image_label = tk.Label(root, bg="black")
+    image_label.pack(fill="both", expand=True)
+
+    status_label = tk.Label(root, text="Opening camera preview...", anchor="w")
+    status_label.pack(fill="x")
+
+    running = {"value": True}
+    delay_ms = max(1, int(1000 / fps)) if fps > 0 else 33
+
+    def stop(_event=None):
+        running["value"] = False
+        root.quit()
+
+    root.protocol("WM_DELETE_WINDOW", stop)
+    root.bind("<Escape>", stop)
+    root.bind("q", stop)
+    root.bind("Q", stop)
+
+    def update_frame():
+        if not running["value"]:
+            return
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(rgb)
+            photo = ImageTk.PhotoImage(image)
+            image_label.configure(image=photo)
+            image_label.image = photo
+            status_label.configure(text=f"{raw}  {frame.shape[1]}x{frame.shape[0]}")
+        else:
+            status_label.configure(text="Waiting for camera frame...")
+        root.after(delay_ms, update_frame)
+
+    root.after(0, update_frame)
+    root.mainloop()
+    try:
+        root.destroy()
+    except tk.TclError:
+        pass
+
+def preview_with_opencv_highgui():
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    while True:
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            time.sleep(0.05)
+            continue
+        cv2.imshow(window, frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (27, ord("q")):
+            break
+        try:
+            if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                break
+        except cv2.error:
+            break
+
+if sys.platform.startswith("win"):
+    try:
+        try:
+            preview_with_tkinter()
+        except Exception as exc:
+            print(f"Tk camera preview failed, falling back to OpenCV HighGUI: {exc}", file=sys.stderr)
+            preview_with_opencv_highgui()
+    finally:
+        cap.release()
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
+else:
+    preview_with_opencv_highgui()
+    cap.release()
+    cv2.destroyWindow(window)
 "#;
 
 fn ok_validation(message: impl Into<String>) -> ValidationResult {
@@ -2839,7 +3169,7 @@ pub fn run() {
                 .title(app_title())
                 .inner_size(1280.0, 860.0)
                 .min_inner_size(980.0, 700.0)
-                .initialization_script(BRIDGE_SCRIPT)
+                .initialization_script(bridge_script())
                 .build()?;
             Ok(())
         })
@@ -2893,6 +3223,41 @@ mod tests {
         } else {
             assert_eq!(app_title(), "RobotCloud");
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parses_console_entry_points_for_runtime_shims() {
+        let entries = parse_console_entry_points(
+            r#"
+[console_scripts]
+lerobot-info = lerobot.scripts.lerobot_info:main
+unsafe/name = os.system:main
+bad-target = os:system-call
+robotcloud-nested = robotcloud.cli:commands.main [extra]
+"#,
+        );
+
+        assert_eq!(
+            entries,
+            vec![
+                ConsoleEntryPoint {
+                    name: "lerobot-info".to_string(),
+                    module: "lerobot.scripts.lerobot_info".to_string(),
+                    attribute: "main".to_string(),
+                },
+                ConsoleEntryPoint {
+                    name: "robotcloud-nested".to_string(),
+                    module: "robotcloud.cli".to_string(),
+                    attribute: "commands.main".to_string(),
+                },
+            ]
+        );
+
+        let shim = console_shim_content(&entries[0]);
+        assert!(shim.contains("%ROBOTCLOUD_LEROBOT_ENV%\\python.exe"));
+        assert!(shim.contains("lerobot.scripts.lerobot_info"));
+        assert!(!shim.contains("C:\\"));
     }
 
     #[test]
@@ -3207,6 +3572,25 @@ from lerobot.scripts.lerobot_info import main
             path,
             "/tmp/robotcloud-runtime/bin:/usr/bin:/bin:/opt/homebrew/bin"
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn command_path_prefers_windows_runtime_shims() {
+        let runtime = Path::new("C:\\robotcloud-runtime");
+        let path = build_command_path(
+            runtime,
+            Some(std::ffi::OsString::from(
+                "C:\\Windows\\System32;C:\\Windows",
+            )),
+        )
+        .unwrap();
+        let parts = env::split_paths(&std::ffi::OsString::from(path)).collect::<Vec<_>>();
+
+        assert_eq!(parts[0], runtime.join("robotcloud-shims"));
+        assert_eq!(parts[1], runtime.join("Scripts"));
+        assert_eq!(parts[2], runtime.join("Library").join("bin"));
+        assert_eq!(parts[3], runtime);
     }
 
     #[cfg(unix)]

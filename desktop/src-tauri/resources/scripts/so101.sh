@@ -62,13 +62,14 @@ fi
 ENV_PATH=${ROBOTCLOUD_LEROBOT_ENV:-"${RESOURCE_ROOT}/runtime/${PLATFORM_DIR}/lerobot-env"}
 PYTHON="${ENV_PATH}/bin/python"
 BIN="${ENV_PATH}/bin"
+SHIMS="${ENV_PATH}/robotcloud-shims"
 
 if [[ ! -x "${PYTHON}" ]]; then
   echo "LeRobot environment was not found at ${ENV_PATH}" >&2
   exit 1
 fi
 
-export PATH="${BIN}:${PATH}"
+export PATH="${SHIMS}:${BIN}:${PATH}"
 export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
 export PYTHONNOUSERSITE=1
@@ -92,7 +93,11 @@ run_lerobot() {
   local tool="$1"
   shift
   echo "> ${tool} $*"
-  "${BIN}/${tool}" "$@"
+  if [[ -x "${SHIMS}/${tool}" ]]; then
+    "${SHIMS}/${tool}" "$@"
+  else
+    "${BIN}/${tool}" "$@"
+  fi
 }
 
 run_robotcloud_python() {
