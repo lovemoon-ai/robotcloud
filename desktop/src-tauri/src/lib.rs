@@ -513,14 +513,12 @@ fn runtime_archive_signature(archive: Option<&Path>) -> String {
         return format!("marker={RUNTIME_READY_MARKER_VERSION}\narchive=external\n");
     };
     let metadata = fs::metadata(archive).ok();
-    let len = metadata.as_ref().map(|metadata| metadata.len()).unwrap_or(0);
-    let modified = metadata
-        .and_then(|metadata| metadata.modified().ok())
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())
+    let len = metadata
+        .as_ref()
+        .map(|metadata| metadata.len())
         .unwrap_or(0);
     format!(
-        "marker={RUNTIME_READY_MARKER_VERSION}\narchive={}\nlen={len}\nmodified={modified}\n",
+        "marker={RUNTIME_READY_MARKER_VERSION}\narchive={}\nlen={len}\n",
         archive.file_name().unwrap_or_default().to_string_lossy()
     )
 }
@@ -639,9 +637,7 @@ where
             emit_runtime_progress(
                 progress,
                 "extracting",
-                format!(
-                    "Preparing LeRobot runtime: extracting {current}/{total_entries} files..."
-                ),
+                format!("Preparing LeRobot runtime: extracting {current}/{total_entries} files..."),
                 Some(current),
                 Some(total_entries),
             );
@@ -832,7 +828,7 @@ where
         prepare_runtime_with_progress(&target, progress)?;
         return Ok(target);
     }
-    if target.exists() && !runtime_ready_marker_path(&target).exists() {
+    if target.exists() {
         emit_runtime_progress(
             progress,
             "validating",
@@ -844,13 +840,7 @@ where
         if runtime_is_ready(&target) {
             prepare_runtime_with_progress(&target, progress)?;
             write_runtime_ready_marker(&target, archive.as_deref())?;
-            emit_runtime_progress(
-                progress,
-                "ready",
-                "LeRobot runtime is ready.",
-                None,
-                None,
-            );
+            emit_runtime_progress(progress, "ready", "LeRobot runtime is ready.", None, None);
             return Ok(target);
         }
     }
@@ -880,13 +870,7 @@ where
     if runtime_is_ready(&target) {
         prepare_runtime_with_progress(&target, progress)?;
         write_runtime_ready_marker(&target, Some(&archive))?;
-        emit_runtime_progress(
-            progress,
-            "ready",
-            "LeRobot runtime is ready.",
-            None,
-            None,
-        );
+        emit_runtime_progress(progress, "ready", "LeRobot runtime is ready.", None, None);
         Ok(target)
     } else {
         Err(runtime_not_ready_message(&target))
@@ -1208,8 +1192,11 @@ where
                 .map_err(|error| error.to_string())?;
         }
     }
-    fs::write(windows_shims_marker_path(runtime), WINDOWS_SHIMS_MARKER_VERSION)
-        .map_err(|error| error.to_string())?;
+    fs::write(
+        windows_shims_marker_path(runtime),
+        WINDOWS_SHIMS_MARKER_VERSION,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -2544,7 +2531,8 @@ where
         .unwrap_or(("", data));
 
     let Some((dialect, options)) = parse_legacy_so101_wrapper_command(command.trim()) else {
-        return rewrite_windows_direct_lerobot_terminal_command(data).unwrap_or_else(|| data.to_string());
+        return rewrite_windows_direct_lerobot_terminal_command(data)
+            .unwrap_or_else(|| data.to_string());
     };
     let Some(rewritten) = legacy_so101_direct_terminal_command(&options, dialect, script_path)
     else {
@@ -3601,6 +3589,23 @@ mod tests {
         so101_command_args(config, &data_dir, test_script_path)
     }
 
+    fn create_basic_runtime_entrypoints(runtime: &Path) {
+        if cfg!(target_os = "windows") {
+            let module_dir = runtime
+                .join("Lib")
+                .join("site-packages")
+                .join("lerobot")
+                .join("scripts");
+            fs::create_dir_all(&module_dir).unwrap();
+            fs::write(runtime.join("python.exe"), b"python").unwrap();
+            fs::write(module_dir.join("lerobot_info.py"), b"def main(): pass\n").unwrap();
+        } else {
+            fs::create_dir_all(runtime.join("bin")).unwrap();
+            fs::write(runtime.join("bin").join("python"), b"#!/bin/sh\n").unwrap();
+            fs::write(runtime.join("bin").join("lerobot-info"), b"#!/bin/sh\n").unwrap();
+        }
+    }
+
     #[test]
     fn default_web_url_follows_build_profile() {
         if cfg!(debug_assertions) {
@@ -3620,6 +3625,23 @@ mod tests {
         } else {
             assert_eq!(app_title(), "RobotCloud");
         }
+    }
+
+    #[test]
+    fn runtime_ready_marker_signature_ignores_archive_mtime() {
+        let base = env::temp_dir().join(format!("robotcloud-runtime-test-{}", Uuid::new_v4()));
+        let runtime = base.join("lerobot-env");
+        let archive = base.join(runtime_archive_name());
+        fs::create_dir_all(&base).unwrap();
+        create_basic_runtime_entrypoints(&runtime);
+        fs::write(&archive, b"runtime-v1").unwrap();
+
+        write_runtime_ready_marker(&runtime, Some(&archive)).unwrap();
+        fs::write(&archive, b"runtime-v2").unwrap();
+
+        assert!(runtime_ready_marker_is_current(&runtime, Some(&archive)));
+
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[cfg(target_os = "windows")]
@@ -3655,6 +3677,53 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert!(shim.contains("%ROBOTCLOUD_LEROBOT_ENV%\\python.exe"));
         assert!(shim.contains("lerobot.scripts.lerobot_info"));
         assert!(!shim.contains("C:\\"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_console_shims_are_generated_once_after_marker() {
+        let base = env::temp_dir().join(format!("robotcloud-runtime-test-{}", Uuid::new_v4()));
+        let runtime = base.join("lerobot-env");
+        let dist_info = runtime
+            .join("Lib")
+            .join("site-packages")
+            .join("lerobot-0.0.0.dist-info");
+        fs::create_dir_all(&dist_info).unwrap();
+        fs::write(
+            dist_info.join("entry_points.txt"),
+            "[console_scripts]\nlerobot-info = lerobot.scripts.lerobot_info:main\n",
+        )
+        .unwrap();
+
+        let mut progress_count = 0_u32;
+        ensure_windows_console_shims(&runtime, &mut |_event| {
+            progress_count += 1;
+        })
+        .unwrap();
+
+        let shim = runtime.join("robotcloud-shims").join("lerobot-info.cmd");
+        assert!(shim.exists());
+        assert!(windows_shims_are_ready(&runtime));
+        assert!(progress_count > 0);
+
+        fs::write(
+            dist_info.join("entry_points.txt"),
+            "[console_scripts]\nlerobot-info = lerobot.scripts.lerobot_info:main\nnew-tool = lerobot.scripts.new_tool:main\n",
+        )
+        .unwrap();
+        progress_count = 0;
+        ensure_windows_console_shims(&runtime, &mut |_event| {
+            progress_count += 1;
+        })
+        .unwrap();
+
+        assert_eq!(progress_count, 0);
+        assert!(!runtime
+            .join("robotcloud-shims")
+            .join("new-tool.cmd")
+            .exists());
+
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
@@ -3694,10 +3763,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
             assert_eq!(program, "python");
             assert_eq!(
                 args,
-                vec![
-                    "-m".to_string(),
-                    "lerobot.scripts.lerobot_info".to_string()
-                ]
+                vec!["-m".to_string(), "lerobot.scripts.lerobot_info".to_string()]
             );
         } else {
             assert_eq!(program, "lerobot-info");

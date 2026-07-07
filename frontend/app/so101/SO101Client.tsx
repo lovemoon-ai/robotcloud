@@ -720,7 +720,11 @@ function ensurePersistentTerminalListeners(bridge: DesktopBridge) {
   }
 }
 
-function ensurePersistentTerminal(bridge: DesktopBridge, container: HTMLDivElement) {
+function ensurePersistentTerminal(
+  bridge: DesktopBridge,
+  container: HTMLDivElement,
+  options: { onRuntimePrepared?: () => Promise<void> | void } = {}
+) {
   persistentTerminalStore.host = container;
   ensurePersistentTerminalListeners(bridge);
 
@@ -754,6 +758,7 @@ function ensurePersistentTerminal(bridge: DesktopBridge, container: HTMLDivEleme
       }) ?? null;
       if (bridge.runtime?.prepare) {
         await bridge.runtime.prepare();
+        await options.onRuntimePrepared?.();
       }
     } finally {
       offRuntimeProgress?.();
@@ -1097,14 +1102,16 @@ export function SO101Client() {
 
   useEffect(() => {
     if (!token || !bridgeReady || !window.robotcloudDesktop || !terminalContainerEl) return;
-    ensurePersistentTerminal(window.robotcloudDesktop, terminalContainerEl);
+    ensurePersistentTerminal(window.robotcloudDesktop, terminalContainerEl, {
+      onRuntimePrepared: () => refreshStatus().catch((error) => setPersistentTerminalError(String(error)))
+    });
     return () => {
       if (persistentTerminalStore.host === terminalContainerEl) {
         persistentTerminalStore.host = null;
       }
       disconnectPersistentTerminalResize();
     };
-  }, [bridgeReady, terminalContainerEl, token]);
+  }, [bridgeReady, refreshStatus, terminalContainerEl, token]);
 
   const writeTerminalCommand = useCallback(async (command: string) => {
     const sessionId = persistentTerminalStore.sessionId;

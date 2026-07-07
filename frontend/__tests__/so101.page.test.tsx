@@ -166,9 +166,10 @@ describe("SO101 terminal session", () => {
     dataDir: "/tmp/robotcloud data"
   };
 
-  function installDesktopBridge() {
+  function installDesktopBridge(options: { status?: jest.Mock; runtime?: DesktopBridge["runtime"] } = {}) {
     let outputCallback: ((event: TerminalOutputEvent) => void) | null = null;
     let exitCallback: ((event: TerminalExitEvent) => void) | null = null;
+    const status = options.status ?? jest.fn().mockResolvedValue(desktopStatus);
     const terminalStart = jest.fn().mockResolvedValue({ sessionId: "session-1", shell: "/bin/zsh" });
     const terminalWrite = jest.fn().mockResolvedValue({ ok: true });
     const terminalStop = jest.fn().mockResolvedValue({ stopped: true });
@@ -194,7 +195,7 @@ describe("SO101 terminal session", () => {
     });
     const bridge: DesktopBridge = {
       isDesktop: true,
-      status: jest.fn().mockResolvedValue(desktopStatus),
+      status,
       so101: {
         run: jest.fn(),
         stop: jest.fn(),
@@ -224,8 +225,12 @@ describe("SO101 terminal session", () => {
         })
       }
     };
+    if (options.runtime) {
+      bridge.runtime = options.runtime;
+    }
     window.robotcloudDesktop = bridge;
     return {
+      status,
       terminalStart,
       terminalWrite,
       terminalStop,
@@ -274,6 +279,36 @@ describe("SO101 terminal session", () => {
     expect(secondRender.getByTestId("mock-xterm")).toHaveTextContent("first output");
     expect(terminalStart).toHaveBeenCalledTimes(1);
     expect(terminalStop).not.toHaveBeenCalled();
+  });
+
+  it("refreshes desktop status after preparing the runtime", async () => {
+    const status = jest.fn()
+      .mockResolvedValueOnce({
+        ...desktopStatus,
+        runtimeReady: false,
+        runtimeError: "runtime is still preparing"
+      })
+      .mockResolvedValue(desktopStatus);
+    const runtimePrepare = jest.fn().mockResolvedValue({ runtimePath: "/runtime", ready: true });
+    const { terminalStart } = installDesktopBridge({
+      status,
+      runtime: {
+        prepare: runtimePrepare,
+        onProgress: jest.fn(() => jest.fn())
+      }
+    });
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+    await waitFor(() => {
+      expect(status.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    expect(runtimePrepare).toHaveBeenCalledTimes(1);
+    expect(status.mock.invocationCallOrder.some((order) => order > runtimePrepare.mock.invocationCallOrder[0])).toBe(true);
+    expect(terminalStart).toHaveBeenCalledTimes(1);
   });
 
   it("inserts action commands without submitting them", async () => {
