@@ -926,7 +926,7 @@ fn lerobot_info_path(runtime: &Path) -> PathBuf {
 }
 
 fn runtime_entrypoint_validation_error(runtime: &Path) -> Option<String> {
-    // Actions invoke LeRobot via `python -m lerobot.scripts.*` (see so101.sh / so101.ps1),
+    // Actions invoke LeRobot via `python -m lerobot.scripts.*` (see so101_command_args),
     // so we no longer depend on the console-script shebang being relocatable. We only check
     // that the entrypoint file exists as an "installed" smoke test; real importability is
     // verified by the `import lerobot` check in runtime_validation_error.
@@ -1677,11 +1677,11 @@ fn add_common_robot_args(
         "--robot.id",
         config_string(&config.robot_id, "so101_follower"),
     );
-    push_eq_arg(
-        args,
-        "--robot.max_relative_target",
-        config.max_relative_target.unwrap_or(5.0),
-    );
+    // push_eq_arg(
+    //     args,
+    //     "--robot.max_relative_target",
+    //     config.max_relative_target.unwrap_or(5.0),
+    // );
     Ok(())
 }
 

@@ -27,7 +27,6 @@ type FormState = {
   maxEpisodeTimeS: number;
   resetTimeS: number;
   teleopTimeS: number;
-  maxRelativeTarget: number;
   displayData: boolean;
   useLerobotRecorder: boolean;
   task: string;
@@ -64,7 +63,6 @@ type ConfigFieldId =
   | "maxEpisodeTimeS"
   | "resetTimeS"
   | "teleopTimeS"
-  | "maxRelativeTarget"
   | "task"
   | CameraConfigFieldId;
 type ActionConfigError = { field: ConfigFieldId; message: string };
@@ -103,7 +101,11 @@ type ActionId =
 type ShellDialect = "posix" | "powershell";
 
 const CONNECTION_STORAGE_KEY = "robotcloud-so101-connection";
+const CONNECTION_STORAGE_VERSION = 3;
 const DEFAULT_CAMERA_COUNT = 1;
+const DEFAULT_MAX_RELATIVE_TARGET = 5;
+const LEGACY_DEFAULT_EPISODES = 1;
+const LEGACY_DEFAULT_CAMERA = { width: 480, height: 640, fps: 30 };
 const MAX_CAMERAS = 3;
 const MIN_UPLOAD_EPISODES = 1;
 const MIN_UPLOAD_DURATION_SECONDS = 1;
@@ -137,13 +139,12 @@ const initialForm: FormState = {
   teleopId: "so101_leader",
   datasetRepoId: "local/so101_desktop",
   datasetRoot: "",
-  episodes: 1,
+  episodes: 50,
   episodeTimeS: 10,
   minEpisodeTimeS: 2,
   maxEpisodeTimeS: 60,
   resetTimeS: 2,
   teleopTimeS: 5,
-  maxRelativeTarget: 5,
   displayData: true,
   useLerobotRecorder: true,
   task: ""
@@ -176,7 +177,6 @@ const configFieldIds = new Set<string>([
   "maxEpisodeTimeS",
   "resetTimeS",
   "teleopTimeS",
-  "maxRelativeTarget",
   "task",
   "camera0Id",
   "camera0Width",
@@ -205,7 +205,6 @@ const configFieldByLabel: Record<string, ConfigFieldId> = {
   "Max episode seconds": "maxEpisodeTimeS",
   "Reset seconds": "resetTimeS",
   "Teleop seconds": "teleopTimeS",
-  "Max relative target": "maxRelativeTarget",
   "Task label": "task",
   "Camera 0": "camera0Id",
   "Camera 0 width": "camera0Width",
@@ -396,15 +395,24 @@ function toPositiveInteger(value: unknown) {
   return Math.round(numeric);
 }
 
-function normalizeCamera(value: unknown, index: number): CameraForm {
+function normalizeCamera(value: unknown, index: number, migrateLegacyDefaults = false): CameraForm {
   const source = value && typeof value === "object" ? (value as Partial<CameraForm>) : {};
   const fallback = defaultCamera(index);
-  return {
+  const normalized = {
     id: typeof source.id === "string" ? source.id : fallback.id,
     width: toNumber(source.width, fallback.width),
     height: toNumber(source.height, fallback.height),
     fps: toNumber(source.fps, fallback.fps)
   };
+  if (
+    migrateLegacyDefaults &&
+    normalized.width === LEGACY_DEFAULT_CAMERA.width &&
+    normalized.height === LEGACY_DEFAULT_CAMERA.height &&
+    normalized.fps === LEGACY_DEFAULT_CAMERA.fps
+  ) {
+    return { ...normalized, width: initialCamera.width, height: initialCamera.height };
+  }
+  return normalized;
 }
 
 function applyDetectedCameraProfile(camera: CameraForm, result: ValidationResult): CameraForm {
@@ -435,8 +443,10 @@ export function removeCameraAtIndex(
 export function parseConnectionSettings(raw: string | null) {
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as Partial<FormState> & { cameraCount?: number };
+    const parsed = JSON.parse(raw) as Partial<FormState> & { cameraCount?: number; storageVersion?: number };
     const camerasSource = Array.isArray(parsed.cameras) ? parsed.cameras : [];
+    const migrateLegacyDefaults = parsed.storageVersion !== CONNECTION_STORAGE_VERSION;
+    const episodes = toFiniteNumber(parsed.episodes, initialForm.episodes);
     return {
       followerPort: typeof parsed.followerPort === "string" ? parsed.followerPort : initialForm.followerPort,
       leaderPort: typeof parsed.leaderPort === "string" ? parsed.leaderPort : initialForm.leaderPort,
@@ -444,20 +454,19 @@ export function parseConnectionSettings(raw: string | null) {
       teleopId: typeof parsed.teleopId === "string" ? parsed.teleopId : initialForm.teleopId,
       datasetRepoId: typeof parsed.datasetRepoId === "string" ? parsed.datasetRepoId : initialForm.datasetRepoId,
       datasetRoot: typeof parsed.datasetRoot === "string" ? parsed.datasetRoot : initialForm.datasetRoot,
-      episodes: toFiniteNumber(parsed.episodes, initialForm.episodes),
+      episodes: migrateLegacyDefaults && episodes === LEGACY_DEFAULT_EPISODES ? initialForm.episodes : episodes,
       episodeTimeS: toFiniteNumber(parsed.episodeTimeS, initialForm.episodeTimeS),
       minEpisodeTimeS: toFiniteNumber(parsed.minEpisodeTimeS, initialForm.minEpisodeTimeS),
       maxEpisodeTimeS: toFiniteNumber(parsed.maxEpisodeTimeS, initialForm.maxEpisodeTimeS),
       resetTimeS: toFiniteNumber(parsed.resetTimeS, initialForm.resetTimeS),
       teleopTimeS: toFiniteNumber(parsed.teleopTimeS, initialForm.teleopTimeS),
-      maxRelativeTarget: toFiniteNumber(parsed.maxRelativeTarget, initialForm.maxRelativeTarget),
       displayData: toBoolean(parsed.displayData, initialForm.displayData),
       useLerobotRecorder: toBoolean(parsed.useLerobotRecorder, initialForm.useLerobotRecorder),
       task: typeof parsed.task === "string" ? parsed.task : initialForm.task,
       cameras: [
-        normalizeCamera(camerasSource[0], 0),
-        normalizeCamera(camerasSource[1], 1),
-        normalizeCamera(camerasSource[2], 2)
+        normalizeCamera(camerasSource[0], 0, migrateLegacyDefaults),
+        normalizeCamera(camerasSource[1], 1, migrateLegacyDefaults),
+        normalizeCamera(camerasSource[2], 2, migrateLegacyDefaults)
       ] as [CameraForm, CameraForm, CameraForm],
       cameraCount: clampCameraCount(parsed.cameraCount)
     } satisfies PersistedSO101Settings;
@@ -468,6 +477,7 @@ export function parseConnectionSettings(raw: string | null) {
 
 export function serializeConnectionSettings(form: FormState, cameraCount: number) {
   return JSON.stringify({
+    storageVersion: CONNECTION_STORAGE_VERSION,
     followerPort: form.followerPort,
     leaderPort: form.leaderPort,
     robotId: form.robotId,
@@ -480,7 +490,6 @@ export function serializeConnectionSettings(form: FormState, cameraCount: number
     maxEpisodeTimeS: form.maxEpisodeTimeS,
     resetTimeS: form.resetTimeS,
     teleopTimeS: form.teleopTimeS,
-    maxRelativeTarget: form.maxRelativeTarget,
     displayData: form.displayData,
     useLerobotRecorder: form.useLerobotRecorder,
     task: form.task,
@@ -608,7 +617,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
         `--robot.id=${quote(robotId())}`,
-        `--robot.max_relative_target=${requireNumber(form.maxRelativeTarget, "Max relative target", { min: 0 })}`,
+        `--robot.max_relative_target=${DEFAULT_MAX_RELATIVE_TARGET}`,
         "--teleop.type=so101_leader",
         `--teleop.port=${quote(leaderPort())}`,
         `--teleop.id=${quote(teleopId())}`,
@@ -632,7 +641,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
           `--robot.port=${quote(followerPort())}`,
           cameraArg,
           `--robot.id=${quote(robotId())}`,
-          `--robot.max_relative_target=${requireNumber(form.maxRelativeTarget, "Max relative target", { min: 0 })}`,
+          `--robot.max_relative_target=${DEFAULT_MAX_RELATIVE_TARGET}`,
           "--teleop.type=so101_leader",
           `--teleop.port=${quote(leaderPort())}`,
           `--teleop.id=${quote(teleopId())}`,
@@ -661,7 +670,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
         `--robot.id=${quote(robotId())}`,
-        `--robot.max_relative_target=${requireNumber(form.maxRelativeTarget, "Max relative target", { min: 0 })}`,
+        `--robot.max_relative_target=${DEFAULT_MAX_RELATIVE_TARGET}`,
         cameraArg,
         "--teleop.type=so101_leader",
         `--teleop.port=${quote(leaderPort())}`,
@@ -1792,19 +1801,6 @@ export function SO101Client() {
                   </label>
                 </>
               )}
-              <label className="text-sm">
-                <span className="text-muted">Max relative target</span>
-                <input
-                  ref={registerConfigInput("maxRelativeTarget")}
-                  type="number"
-                  step="0.5"
-                  value={form.maxRelativeTarget}
-                  onChange={(event) => updateField("maxRelativeTarget", Number(event.target.value))}
-                  className={configInputClass("maxRelativeTarget")}
-                  {...configInputA11y("maxRelativeTarget")}
-                />
-                {renderConfigFieldError("maxRelativeTarget")}
-              </label>
               <label className="text-sm md:col-span-2">
                 <span className="text-muted">Task label</span>
                 <input

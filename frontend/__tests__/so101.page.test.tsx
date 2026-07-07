@@ -455,8 +455,12 @@ describe("SO101 terminal session", () => {
 
     const cameraLabel = within(connectionSection as HTMLElement).getByText("Camera 0");
     const addCameraButton = within(connectionSection as HTMLElement).getByRole("button", { name: "Add camera" });
+    const connectionControls = within(connectionSection as HTMLElement);
 
     expect(cameraLabel.compareDocumentPosition(addCameraButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(connectionControls.getByLabelText("Width")).toHaveValue(640);
+    expect(connectionControls.getByLabelText("Height")).toHaveValue(480);
+    expect(connectionControls.getByLabelText("FPS")).toHaveValue(30);
   });
 
   it("shows direct lerobot-record parameters without an alternate script flow", async () => {
@@ -478,7 +482,9 @@ describe("SO101 terminal session", () => {
     expect(recordControls.queryByLabelText("Use LeRobot original collection flow")).not.toBeInTheDocument();
     expect(recordControls.getByLabelText("Episode seconds")).toBeInTheDocument();
     expect(recordControls.getByLabelText("Reset seconds")).toBeInTheDocument();
-    expect(recordControls.getByLabelText("Max relative target")).toBeInTheDocument();
+    expect(recordControls.queryByLabelText("Max relative target")).not.toBeInTheDocument();
+    expect(recordControls.getByLabelText("Episodes")).toHaveValue(50);
+    expect(recordControls.getByRole("checkbox", { name: /LeRobot 原版录制工具/ })).toBeChecked();
     expect(recordControls.queryByLabelText("Min episode seconds")).not.toBeInTheDocument();
     expect(recordControls.queryByLabelText("Max episode seconds")).not.toBeInTheDocument();
   });
@@ -497,7 +503,6 @@ describe("SO101 terminal session", () => {
           minEpisodeTimeS: 4,
           maxEpisodeTimeS: 45,
           resetTimeS: 3,
-          maxRelativeTarget: 7.5,
           task: "Pick persisted cube",
           useLerobotRecorder: false,
           displayData: false
@@ -523,7 +528,7 @@ describe("SO101 terminal session", () => {
     expect(recordControls.getByLabelText("Episodes")).toHaveValue(4);
     expect(recordControls.getByLabelText("Min episode seconds")).toHaveValue(4);
     expect(recordControls.getByLabelText("Max episode seconds")).toHaveValue(45);
-    expect(recordControls.getByLabelText("Max relative target")).toHaveValue(7.5);
+    expect(recordControls.queryByLabelText("Max relative target")).not.toBeInTheDocument();
     expect(recordControls.getByLabelText("Task label")).toHaveValue("Pick persisted cube");
     expect(recordControls.getByRole("checkbox", { name: /Display LeRobot data windows/ })).not.toBeChecked();
 
@@ -941,6 +946,27 @@ describe("SO101 command generation", () => {
     expect(saved?.cameras[2]).toMatchObject({ id: "2", width: 640, height: 480, fps: 30 });
   });
 
+  it("migrates legacy and incorrect saved defaults to the current SO101 defaults", () => {
+    const saved = parseConnectionSettings(
+      JSON.stringify({
+        episodes: 1,
+        cameras: [
+          { id: "0", width: 480, height: 640, fps: 30 },
+          { id: "custom", width: 800, height: 600, fps: 15 }
+        ]
+      })
+    );
+
+    expect(saved).toMatchObject({
+      episodes: 50,
+      cameras: [
+        { id: "0", width: 640, height: 480, fps: 30 },
+        { id: "custom", width: 800, height: 600, fps: 15 },
+        { id: "2", width: 640, height: 480, fps: 30 }
+      ]
+    });
+  });
+
   it("round-trips persisted SO101 settings", () => {
     const serialized = serializeConnectionSettings(
       {
@@ -956,7 +982,6 @@ describe("SO101 command generation", () => {
         minEpisodeTimeS: 4,
         maxEpisodeTimeS: 45,
         resetTimeS: 3,
-        maxRelativeTarget: 7.5,
         displayData: false,
         useLerobotRecorder: false,
         task: "Pick persisted cube",
@@ -982,7 +1007,6 @@ describe("SO101 command generation", () => {
       minEpisodeTimeS: 4,
       maxEpisodeTimeS: 45,
       resetTimeS: 3,
-      maxRelativeTarget: 7.5,
       displayData: false,
       useLerobotRecorder: false,
       task: "Pick persisted cube",
