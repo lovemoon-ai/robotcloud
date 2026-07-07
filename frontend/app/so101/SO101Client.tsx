@@ -464,7 +464,7 @@ function cameraConfigArg(form: FormState, cameraCount: number, quote: (value: st
   return `--robot.cameras=${quote(value)}`;
 }
 
-const windowsLerobotModules: Record<string, string> = {
+const lerobotModules: Record<string, string> = {
   "lerobot-calibrate": "lerobot.scripts.lerobot_calibrate",
   "lerobot-find-cameras": "lerobot.scripts.lerobot_find_cameras",
   "lerobot-find-port": "lerobot.scripts.lerobot_find_port",
@@ -474,9 +474,10 @@ const windowsLerobotModules: Record<string, string> = {
   "lerobot-teleoperate": "lerobot.scripts.lerobot_teleoperate"
 };
 
-function lerobotCommand(status: DesktopStatus | null, command: string) {
-  if (status?.platform !== "windows") return command;
-  const moduleName = windowsLerobotModules[command];
+// Always invoke via `python -m <module>` on every platform, never the `lerobot-*`
+// console script, whose packaged shebang may not be relocatable (esp. on macOS).
+function lerobotCommand(_status: DesktopStatus | null, command: string) {
+  const moduleName = lerobotModules[command];
   if (!moduleName) throw new Error(`Unsupported LeRobot command: ${command}`);
   return `python -m ${moduleName}`;
 }
@@ -523,18 +524,16 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         `--teleop.id=${quote(teleopId())}`
       ].join(" ");
     case "teleop": {
+      // Minimal teleoperate: robot + teleop type/port/id only. No cameras,
+      // max_relative_target, fps, or display_data.
       const teleopParts = [
         lerobotCommand(status, "lerobot-teleoperate"),
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
-        `--robot.cameras=${quote(cameraConfigValue(form, cameraCount) ?? "{}")}`,
         `--robot.id=${quote(robotId())}`,
-        `--robot.max_relative_target=${requireNumber(form.maxRelativeTarget, "Max relative target", { min: 0 })}`,
         "--teleop.type=so101_leader",
         `--teleop.port=${quote(leaderPort())}`,
-        `--teleop.id=${quote(teleopId())}`,
-        `--fps=${requireNumber(form.cameras[0]?.fps ?? Number.NaN, "Camera 0 fps", { min: Number.MIN_VALUE })}`,
-        `--display_data=${form.displayData ? "true" : "false"}`
+        `--teleop.id=${quote(teleopId())}`
       ];
       return teleopParts.join(" ");
     }

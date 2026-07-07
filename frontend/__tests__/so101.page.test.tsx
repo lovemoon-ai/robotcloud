@@ -324,7 +324,7 @@ describe("SO101 terminal session", () => {
     fireEvent.click(view.getByRole("button", { name: "Info" }));
 
     await waitFor(() => {
-      expect(terminalWrite).toHaveBeenCalledWith("session-1", `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}lerobot-info`);
+      expect(terminalWrite).toHaveBeenCalledWith("session-1", `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}python -m lerobot.scripts.lerobot_info`);
     });
     expect(terminalWrite).not.toHaveBeenCalledWith("session-1", "lerobot-info\r");
   });
@@ -405,7 +405,7 @@ describe("SO101 terminal session", () => {
     await waitFor(() => {
       expect(terminalWrite).toHaveBeenCalledWith(
         "session-1",
-        `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}lerobot-setup-motors --robot.type=so101_follower --robot.port='/dev/cu.usbmodem-follower' --robot.id='so101_follower'`
+        `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}python -m lerobot.scripts.lerobot_setup_motors --robot.type=so101_follower --robot.port='/dev/cu.usbmodem-follower' --robot.id='so101_follower'`
       );
     });
 
@@ -414,7 +414,7 @@ describe("SO101 terminal session", () => {
     await waitFor(() => {
       expect(terminalWrite).toHaveBeenLastCalledWith(
         "session-1",
-        `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}lerobot-setup-motors --robot.type=so101_follower --robot.port='/dev/cu.usbmodem-follower' --robot.id='robot-sync'`
+        `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}python -m lerobot.scripts.lerobot_setup_motors --robot.type=so101_follower --robot.port='/dev/cu.usbmodem-follower' --robot.id='robot-sync'`
       );
     });
   });
@@ -656,7 +656,7 @@ describe("SO101 command generation", () => {
     expect(command).not.toContain('"local/$(touch /tmp/repo)"');
   });
 
-  it("builds default record commands with direct lerobot-record arguments", () => {
+  it("builds default record commands through the lerobot python module", () => {
     const command = buildActionCommand(
       "record",
       {
@@ -674,7 +674,8 @@ describe("SO101 command generation", () => {
       1
     );
 
-    expect(command).toContain("lerobot-record");
+    expect(command).toContain("python -m lerobot.scripts.lerobot_record");
+    expect(command).not.toContain("lerobot-record");
     expect(command).not.toContain("bash '/script'");
     expect(command).not.toContain("--action");
     expect(command).toContain("--robot.cameras='{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30} }'");
@@ -683,10 +684,35 @@ describe("SO101 command generation", () => {
     expect(command).toContain("--dataset.streaming_encoding=true");
   });
 
-  it("builds find-port commands directly against the lerobot env", () => {
+  it("builds find-port commands through the lerobot python module", () => {
     const command = buildActionCommand("find-port", initialForm, desktopStatus, 1);
 
-    expect(command).toBe("lerobot-find-port");
+    expect(command).toBe("python -m lerobot.scripts.lerobot_find_port");
+  });
+
+  it("builds a minimal teleop command without camera or visualization args", () => {
+    const command = buildActionCommand(
+      "teleop",
+      {
+        ...initialForm,
+        followerPort: "/dev/tty.usbmodem58FA1019921",
+        leaderPort: "/dev/tty.usbmodem5AAF2179591",
+        robotId: "so101_follower",
+        teleopId: "so101_leader"
+      },
+      desktopStatus,
+      1
+    );
+
+    expect(command).toBe(
+      "python -m lerobot.scripts.lerobot_teleoperate " +
+        "--robot.type=so101_follower --robot.port='/dev/tty.usbmodem58FA1019921' --robot.id='so101_follower' " +
+        "--teleop.type=so101_leader --teleop.port='/dev/tty.usbmodem5AAF2179591' --teleop.id='so101_leader'"
+    );
+    expect(command).not.toContain("--robot.cameras");
+    expect(command).not.toContain("--robot.max_relative_target");
+    expect(command).not.toContain("--fps");
+    expect(command).not.toContain("--display_data");
   });
 
   it("builds Windows LeRobot actions through python modules", () => {

@@ -92,12 +92,12 @@ require_port() {
 run_lerobot() {
   local tool="$1"
   shift
-  echo "> ${tool} $*"
-  if [[ -x "${SHIMS}/${tool}" ]]; then
-    "${SHIMS}/${tool}" "$@"
-  else
-    "${BIN}/${tool}" "$@"
-  fi
+  # Invoke via `python -m` instead of the console-script entrypoint (e.g. lerobot-info),
+  # so we never depend on the packaged shebang being relocatable. Mirrors so101.ps1.
+  # tool "lerobot-info" -> module "lerobot.scripts.lerobot_info"
+  local module="lerobot.scripts.${tool//-/_}"
+  echo "> ${PYTHON} -m ${module} $*"
+  "${PYTHON}" -m "${module}" "$@"
 }
 
 run_robotcloud_python() {

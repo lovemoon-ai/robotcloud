@@ -922,52 +922,17 @@ fn lerobot_info_path(runtime: &Path) -> PathBuf {
     }
 }
 
-#[cfg(unix)]
-fn lerobot_info_entrypoint_is_relocatable(content: &str) -> bool {
-    content.starts_with("#!/bin/sh\n")
-        && content.contains("$(dirname \"$0\")")
-        && content.contains("/python\" \"$0\" \"$@\"")
-}
-
 fn runtime_entrypoint_validation_error(runtime: &Path) -> Option<String> {
+    // Actions invoke LeRobot via `python -m lerobot.scripts.*` (see so101.sh / so101.ps1),
+    // so we no longer depend on the console-script shebang being relocatable. We only check
+    // that the entrypoint file exists as an "installed" smoke test; real importability is
+    // verified by the `import lerobot` check in runtime_validation_error.
     let lerobot_info = lerobot_info_path(runtime);
     if !lerobot_info.exists() {
         return Some(format!(
             "LeRobot runtime is missing lerobot-info at {}",
             lerobot_info.display()
         ));
-    }
-
-    #[cfg(unix)]
-    {
-        let mut file = match File::open(&lerobot_info) {
-            Ok(file) => file,
-            Err(error) => {
-                return Some(format!(
-                    "LeRobot runtime entrypoint could not be read at {}: {}",
-                    lerobot_info.display(),
-                    error
-                ));
-            }
-        };
-        let mut buffer = [0_u8; 512];
-        let length = match file.read(&mut buffer) {
-            Ok(length) => length,
-            Err(error) => {
-                return Some(format!(
-                    "LeRobot runtime entrypoint could not be read at {}: {}",
-                    lerobot_info.display(),
-                    error
-                ));
-            }
-        };
-        let content = String::from_utf8_lossy(&buffer[..length]);
-        if !lerobot_info_entrypoint_is_relocatable(&content) {
-            return Some(format!(
-                "LeRobot runtime entrypoint is not relocatable at {}",
-                lerobot_info.display()
-            ));
-        }
     }
 
     None
@@ -1754,17 +1719,15 @@ where
 }
 
 fn lerobot_python_module_args(
-    command: &str,
+    _command: &str,
     module: &str,
     args: Vec<String>,
 ) -> (String, Vec<String>) {
-    if cfg!(target_os = "windows") {
-        let mut all = vec!["-m".to_string(), module.to_string()];
-        all.extend(args);
-        ("python".to_string(), all)
-    } else {
-        (command.to_string(), args)
-    }
+    // Always invoke via `python -m <module>` on every platform, so we never depend on the
+    // packaged console-script (e.g. `lerobot-info`) whose shebang may not be relocatable.
+    let mut all = vec!["-m".to_string(), module.to_string()];
+    all.extend(args);
+    ("python".to_string(), all)
 }
 
 fn so101_command_args<F>(
@@ -1875,16 +1838,21 @@ where
             ))
         }
         "teleop" => {
+            // Minimal teleoperate: robot + teleop type/port/id only. No cameras,
+            // max_relative_target, fps, teleop_time_s, or display_data.
             let mut args = Vec::new();
-            add_common_robot_args(&mut args, config, true)?;
-            add_common_teleop_args(&mut args, config)?;
-            push_eq_arg(&mut args, "--fps", config.fps.unwrap_or(30));
+            push_eq_arg(&mut args, "--robot.type", "so101_follower");
             push_eq_arg(
                 &mut args,
-                "--teleop_time_s",
-                config.teleop_time_s.unwrap_or(5.0),
+                "--robot.port",
+                required_config_string(&config.follower_port, "Follower port")?,
             );
-            push_eq_arg(&mut args, "--display_data", bool_arg(config.display_data));
+            push_eq_arg(
+                &mut args,
+                "--robot.id",
+                config_string(&config.robot_id, "so101_follower"),
+            );
+            add_common_teleop_args(&mut args, config)?;
             Ok(lerobot_python_module_args(
                 "lerobot-teleoperate",
                 "lerobot.scripts.lerobot_teleoperate",
@@ -1984,562 +1952,6 @@ fn so101_command(
         ensure_dataset_parent(&dataset_root)?;
     }
     so101_command_args(config, &data, |name| bundled_script_path(app, name))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TerminalCommandDialect {
-    Posix,
-    PowerShell,
-}
-
-fn quote_terminal_arg(value: &str, dialect: TerminalCommandDialect) -> String {
-    match dialect {
-        TerminalCommandDialect::Posix => format!("'{}'", value.replace('\'', "'\\''")),
-        TerminalCommandDialect::PowerShell => format!("'{}'", value.replace('\'', "''")),
-    }
-}
-
-fn push_terminal_eq_arg(
-    args: &mut Vec<String>,
-    key: &str,
-    value: impl ToString,
-    dialect: TerminalCommandDialect,
-) {
-    args.push(format!(
-        "{key}={}",
-        quote_terminal_arg(&value.to_string(), dialect)
-    ));
-}
-
-fn terminal_lerobot_command(
-    dialect: TerminalCommandDialect,
-    command: &str,
-    module: &str,
-    args: Vec<String>,
-) -> String {
-    if dialect == TerminalCommandDialect::PowerShell {
-        let mut parts = vec!["python".to_string(), "-m".to_string(), module.to_string()];
-        parts.extend(args);
-        parts.join(" ")
-    } else if args.is_empty() {
-        command.to_string()
-    } else {
-        format!("{} {}", command, args.join(" "))
-    }
-}
-
-fn lerobot_module_for_command(command: &str) -> Option<&'static str> {
-    match command {
-        "lerobot-calibrate" => Some("lerobot.scripts.lerobot_calibrate"),
-        "lerobot-find-cameras" => Some("lerobot.scripts.lerobot_find_cameras"),
-        "lerobot-find-port" => Some("lerobot.scripts.lerobot_find_port"),
-        "lerobot-info" => Some("lerobot.scripts.lerobot_info"),
-        "lerobot-record" => Some("lerobot.scripts.lerobot_record"),
-        "lerobot-setup-motors" => Some("lerobot.scripts.lerobot_setup_motors"),
-        "lerobot-teleoperate" => Some("lerobot.scripts.lerobot_teleoperate"),
-        _ => None,
-    }
-}
-
-fn rewrite_windows_direct_lerobot_terminal_command(data: &str) -> Option<String> {
-    if !cfg!(target_os = "windows") {
-        return None;
-    }
-
-    let clear_prefix = "\x01\x0b";
-    let (prefix, command) = data
-        .strip_prefix(clear_prefix)
-        .map(|command| (clear_prefix, command))
-        .unwrap_or(("", data));
-    let trimmed = command.trim_start();
-    let leading = &command[..command.len() - trimmed.len()];
-
-    for command_name in [
-        "lerobot-calibrate",
-        "lerobot-find-cameras",
-        "lerobot-find-port",
-        "lerobot-info",
-        "lerobot-record",
-        "lerobot-setup-motors",
-        "lerobot-teleoperate",
-    ] {
-        let Some(rest) = trimmed.strip_prefix(command_name) else {
-            continue;
-        };
-        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
-            continue;
-        }
-        let module = lerobot_module_for_command(command_name)?;
-        return Some(format!("{prefix}{leading}python -m {module}{rest}"));
-    }
-
-    None
-}
-
-fn parse_posix_words(input: &str) -> Option<Vec<String>> {
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum State {
-        Plain,
-        Single,
-        Double,
-    }
-
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut state = State::Plain;
-    let mut in_word = false;
-    let mut chars = input.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        match state {
-            State::Plain => match ch {
-                '\'' => {
-                    state = State::Single;
-                    in_word = true;
-                }
-                '"' => {
-                    state = State::Double;
-                    in_word = true;
-                }
-                '\\' => {
-                    if let Some(next) = chars.next() {
-                        word.push(next);
-                        in_word = true;
-                    } else {
-                        word.push(ch);
-                        in_word = true;
-                    }
-                }
-                ch if ch.is_whitespace() => {
-                    if in_word {
-                        words.push(std::mem::take(&mut word));
-                        in_word = false;
-                    }
-                }
-                _ => {
-                    word.push(ch);
-                    in_word = true;
-                }
-            },
-            State::Single => {
-                if ch == '\'' {
-                    state = State::Plain;
-                } else {
-                    word.push(ch);
-                }
-            }
-            State::Double => match ch {
-                '"' => state = State::Plain,
-                '\\' => {
-                    if let Some(next) = chars.next() {
-                        word.push(next);
-                    } else {
-                        word.push(ch);
-                    }
-                }
-                _ => word.push(ch),
-            },
-        }
-    }
-
-    if state != State::Plain {
-        return None;
-    }
-    if in_word {
-        words.push(word);
-    }
-    Some(words)
-}
-
-fn parse_powershell_words(input: &str) -> Option<Vec<String>> {
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut chars = input.chars().peekable();
-    let mut in_single = false;
-    let mut in_word = false;
-
-    while let Some(ch) = chars.next() {
-        if in_single {
-            if ch == '\'' {
-                if chars.peek() == Some(&'\'') {
-                    let _ = chars.next();
-                    word.push('\'');
-                } else {
-                    in_single = false;
-                }
-            } else {
-                word.push(ch);
-            }
-            continue;
-        }
-
-        match ch {
-            '\'' => {
-                in_single = true;
-                in_word = true;
-            }
-            ch if ch.is_whitespace() => {
-                if in_word {
-                    words.push(std::mem::take(&mut word));
-                    in_word = false;
-                }
-            }
-            _ => {
-                word.push(ch);
-                in_word = true;
-            }
-        }
-    }
-
-    if in_single {
-        return None;
-    }
-    if in_word {
-        words.push(word);
-    }
-    Some(words)
-}
-
-fn normalized_terminal_option(key: &str) -> String {
-    let key = key.trim_start_matches('-');
-    let mut normalized = String::new();
-    for (index, ch) in key.chars().enumerate() {
-        if ch == '_' {
-            normalized.push('-');
-            continue;
-        }
-        if ch.is_ascii_uppercase() {
-            if index > 0 {
-                normalized.push('-');
-            }
-            normalized.push(ch.to_ascii_lowercase());
-        } else {
-            normalized.push(ch.to_ascii_lowercase());
-        }
-    }
-    normalized
-}
-
-fn terminal_option_value<'a>(
-    options: &'a HashMap<String, String>,
-    keys: &[&str],
-) -> Option<&'a str> {
-    keys.iter()
-        .find_map(|key| options.get(*key).map(String::as_str))
-}
-
-fn terminal_option_or_default(
-    options: &HashMap<String, String>,
-    keys: &[&str],
-    default: &str,
-) -> String {
-    terminal_option_value(options, keys)
-        .unwrap_or(default)
-        .to_string()
-}
-
-fn parse_legacy_so101_wrapper_command(
-    input: &str,
-) -> Option<(TerminalCommandDialect, HashMap<String, String>)> {
-    let posix_words = parse_posix_words(input)?;
-    if posix_words.len() >= 3
-        && posix_words.first().map(String::as_str) == Some("bash")
-        && posix_words
-            .get(1)
-            .is_some_and(|script| script.ends_with("so101.sh"))
-    {
-        return Some((
-            TerminalCommandDialect::Posix,
-            collect_legacy_so101_options(&posix_words[2..]),
-        ));
-    }
-
-    let powershell_words = parse_powershell_words(input)?;
-    if powershell_words.len() >= 3
-        && powershell_words.first().map(String::as_str) == Some("&")
-        && powershell_words
-            .get(1)
-            .is_some_and(|script| script.ends_with("so101.ps1"))
-    {
-        return Some((
-            TerminalCommandDialect::PowerShell,
-            collect_legacy_so101_options(&powershell_words[2..]),
-        ));
-    }
-
-    None
-}
-
-fn collect_legacy_so101_options(words: &[String]) -> HashMap<String, String> {
-    let mut options = HashMap::new();
-    let mut index = 0;
-    while index < words.len() {
-        let word = &words[index];
-        if !word.starts_with('-') {
-            index += 1;
-            continue;
-        }
-        let key = normalized_terminal_option(word);
-        if index + 1 < words.len() && !words[index + 1].starts_with('-') {
-            options.insert(key, words[index + 1].clone());
-            index += 2;
-        } else {
-            options.insert(key, "true".to_string());
-            index += 1;
-        }
-    }
-    options
-}
-
-fn legacy_terminal_camera_config(options: &HashMap<String, String>) -> String {
-    if let Some(value) =
-        terminal_option_value(options, &["camera-config", "camera-config-override"])
-    {
-        return value.to_string();
-    }
-    let camera_id = terminal_option_or_default(options, &["camera-id", "camera-index"], "0");
-    let camera_ref = if camera_id.chars().all(|ch| ch.is_ascii_digit()) {
-        camera_id
-    } else {
-        format!(
-            "\"{}\"",
-            camera_id.replace('\\', "\\\\").replace('"', "\\\"")
-        )
-    };
-    format!(
-        "{{ front: {{type: opencv, index_or_path: {camera_ref}, width: {}, height: {}, fps: {}}}}}",
-        terminal_option_or_default(options, &["width"], "640"),
-        terminal_option_or_default(options, &["height"], "480"),
-        terminal_option_or_default(options, &["fps"], "30")
-    )
-}
-
-fn legacy_terminal_dataset_root(options: &HashMap<String, String>) -> String {
-    terminal_option_or_default(
-        options,
-        &["dataset-root"],
-        "$ROBOTCLOUD_DATA_DIR/datasets/local/so101_desktop",
-    )
-}
-
-fn legacy_so101_direct_terminal_command<F>(
-    options: &HashMap<String, String>,
-    dialect: TerminalCommandDialect,
-    script_path: F,
-) -> Option<String>
-where
-    F: Fn(&str) -> PathBuf,
-{
-    let action = terminal_option_value(options, &["action"])?.to_string();
-    let quote = |value: &str| quote_terminal_arg(value, dialect);
-    let follower_port =
-        terminal_option_or_default(options, &["follower-port", "follower-port"], "");
-    let leader_port = terminal_option_or_default(options, &["leader-port", "leader-port"], "");
-    let robot_id = terminal_option_or_default(options, &["robot-id"], "so101_follower");
-    let teleop_id = terminal_option_or_default(options, &["teleop-id"], "so101_leader");
-    let fps = terminal_option_or_default(options, &["fps"], "30");
-    let max_relative_target = terminal_option_or_default(options, &["max-relative-target"], "5");
-    let display_data = options
-        .get("display-data")
-        .map(|value| value.as_str())
-        .unwrap_or("false");
-
-    let mut args = Vec::new();
-    match action.as_str() {
-        "info" => {
-            return Some(terminal_lerobot_command(
-                dialect,
-                "lerobot-info",
-                "lerobot.scripts.lerobot_info",
-                vec![],
-            ))
-        }
-        "ports" | "find-port" => {
-            return Some(terminal_lerobot_command(
-                dialect,
-                "lerobot-find-port",
-                "lerobot.scripts.lerobot_find_port",
-                vec![],
-            ))
-        }
-        "setup-follower" => {
-            args.push("--robot.type=so101_follower".to_string());
-            push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
-            push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
-            Some(terminal_lerobot_command(
-                dialect,
-                "lerobot-setup-motors",
-                "lerobot.scripts.lerobot_setup_motors",
-                args,
-            ))
-        }
-        "setup-leader" => {
-            args.push("--teleop.type=so101_leader".to_string());
-            push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
-            push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
-            Some(terminal_lerobot_command(
-                dialect,
-                "lerobot-setup-motors",
-                "lerobot.scripts.lerobot_setup_motors",
-                args,
-            ))
-        }
-        "calibrate-follower" => {
-            args.push("--robot.type=so101_follower".to_string());
-            push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
-            push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
-            Some(terminal_lerobot_command(
-                dialect,
-                "lerobot-calibrate",
-                "lerobot.scripts.lerobot_calibrate",
-                args,
-            ))
-        }
-        "calibrate-leader" => {
-            args.push("--teleop.type=so101_leader".to_string());
-            push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
-            push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
-            Some(terminal_lerobot_command(
-                dialect,
-                "lerobot-calibrate",
-                "lerobot.scripts.lerobot_calibrate",
-                args,
-            ))
-        }
-        "teleop" => {
-            args.push("--robot.type=so101_follower".to_string());
-            push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
-            push_terminal_eq_arg(
-                &mut args,
-                "--robot.cameras",
-                legacy_terminal_camera_config(options),
-                dialect,
-            );
-            push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
-            push_terminal_eq_arg(
-                &mut args,
-                "--robot.max_relative_target",
-                max_relative_target,
-                dialect,
-            );
-            args.push("--teleop.type=so101_leader".to_string());
-            push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
-            push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
-            push_terminal_eq_arg(&mut args, "--fps", fps, dialect);
-            push_terminal_eq_arg(&mut args, "--display_data", display_data, dialect);
-            Some(terminal_lerobot_command(
-                dialect,
-                "lerobot-teleoperate",
-                "lerobot.scripts.lerobot_teleoperate",
-                args,
-            ))
-        }
-        "record-reset-pose" => {
-            let script = script_path("robotcloud_reset_pose.py");
-            args.push(quote(&script.to_string_lossy()));
-            args.push("--robot.type=so101_follower".to_string());
-            push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
-            push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
-            push_terminal_eq_arg(
-                &mut args,
-                "--robot.max_relative_target",
-                max_relative_target,
-                dialect,
-            );
-            args.push("--teleop.type=so101_leader".to_string());
-            push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
-            push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
-            push_terminal_eq_arg(&mut args, "--fps", fps, dialect);
-            Some(format!("python {}", args.join(" ")))
-        }
-        "record-auto" => {
-            let script = script_path("robotcloud_auto_record.py");
-            args.push(quote(&script.to_string_lossy()));
-            args.push("--robot.type=so101_follower".to_string());
-            push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
-            push_terminal_eq_arg(
-                &mut args,
-                "--robot.cameras",
-                legacy_terminal_camera_config(options),
-                dialect,
-            );
-            push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
-            push_terminal_eq_arg(
-                &mut args,
-                "--robot.max_relative_target",
-                max_relative_target,
-                dialect,
-            );
-            args.push("--teleop.type=so101_leader".to_string());
-            push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
-            push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
-            push_terminal_eq_arg(
-                &mut args,
-                "--dataset.repo_id",
-                terminal_option_or_default(options, &["dataset-repo-id"], "local/so101_desktop"),
-                dialect,
-            );
-            push_terminal_eq_arg(
-                &mut args,
-                "--dataset.root",
-                legacy_terminal_dataset_root(options),
-                dialect,
-            );
-            push_terminal_eq_arg(
-                &mut args,
-                "--dataset.num_episodes",
-                terminal_option_or_default(options, &["episodes"], "1"),
-                dialect,
-            );
-            push_terminal_eq_arg(
-                &mut args,
-                "--dataset.single_task",
-                terminal_option_or_default(options, &["task"], "SO-101 desktop teleoperation"),
-                dialect,
-            );
-            args.push("--dataset.push_to_hub=false".to_string());
-            args.push("--dataset.streaming_encoding=true".to_string());
-            args.push("--dataset.encoder_threads=2".to_string());
-            args.push("--dataset.vcodec=h264".to_string());
-            push_terminal_eq_arg(
-                &mut args,
-                "--min_episode_time_s",
-                terminal_option_or_default(options, &["min-episode-time-s"], "2"),
-                dialect,
-            );
-            push_terminal_eq_arg(
-                &mut args,
-                "--max_episode_time_s",
-                terminal_option_or_default(options, &["max-episode-time-s"], "60"),
-                dialect,
-            );
-            push_terminal_eq_arg(&mut args, "--display_data", display_data, dialect);
-            Some(format!("python {}", args.join(" ")))
-        }
-        _ => None,
-    }
-}
-
-fn rewrite_legacy_so101_terminal_command<F>(data: &str, script_path: F) -> String
-where
-    F: Fn(&str) -> PathBuf,
-{
-    let clear_prefix = "\x01\x0b";
-    let (prefix, command) = data
-        .strip_prefix(clear_prefix)
-        .map(|command| (clear_prefix, command))
-        .unwrap_or(("", data));
-
-    let Some((dialect, options)) = parse_legacy_so101_wrapper_command(command.trim()) else {
-        return rewrite_windows_direct_lerobot_terminal_command(data)
-            .unwrap_or_else(|| data.to_string());
-    };
-    let Some(rewritten) = legacy_so101_direct_terminal_command(&options, dialect, script_path)
-    else {
-        return data.to_string();
-    };
-
-    format!("{prefix}{rewritten}")
 }
 
 fn spawn_reader<R: Read + Send + 'static>(
@@ -3452,7 +2864,6 @@ fn terminal_start(app: AppHandle, state: State<AppState>) -> Result<TerminalStar
 
 #[tauri::command]
 fn terminal_write(
-    app: AppHandle,
     state: State<AppState>,
     session_id: String,
     data: String,
@@ -3465,7 +2876,8 @@ fn terminal_write(
         .cloned()
         .ok_or_else(|| "terminal session not found".to_string())?;
     let mut writer = child_arc.writer.lock().map_err(|error| error.to_string())?;
-    let data = rewrite_legacy_so101_terminal_command(&data, |name| bundled_script_path(&app, name));
+    // Write terminal input verbatim: what the terminal shows is exactly what runs.
+    // No command rewriting happens between display and execution.
     writer
         .write_all(data.as_bytes())
         .map_err(|error| error.to_string())?;
@@ -3759,16 +3171,11 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
     fn builds_info_command_directly() {
         let (program, args) = test_so101_command_args(&test_config("info")).unwrap();
 
-        if cfg!(target_os = "windows") {
-            assert_eq!(program, "python");
-            assert_eq!(
-                args,
-                vec!["-m".to_string(), "lerobot.scripts.lerobot_info".to_string()]
-            );
-        } else {
-            assert_eq!(program, "lerobot-info");
-            assert!(args.is_empty());
-        }
+        assert_eq!(program, "python");
+        assert_eq!(
+            args,
+            vec!["-m".to_string(), "lerobot.scripts.lerobot_info".to_string()]
+        );
     }
 
     #[test]
@@ -3783,13 +3190,9 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
 
         let (program, args) = test_so101_command_args(&config).unwrap();
 
-        if cfg!(target_os = "windows") {
-            assert_eq!(program, "python");
-            assert_eq!(args[0], "-m");
-            assert_eq!(args[1], "lerobot.scripts.lerobot_record");
-        } else {
-            assert_eq!(program, "lerobot-record");
-        }
+        assert_eq!(program, "python");
+        assert_eq!(args[0], "-m");
+        assert_eq!(args[1], "lerobot.scripts.lerobot_record");
         assert!(args.iter().any(|arg| arg == "--robot.type=so101_follower"));
         assert!(args
             .iter()
@@ -3817,106 +3220,6 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert!(args.iter().any(|arg| arg == "--robot.type=so101_follower"));
         assert!(args.iter().all(|arg| !arg.contains("so101.sh")));
         assert!(args.iter().all(|arg| !arg.contains("so101.ps1")));
-    }
-
-    #[test]
-    fn rewrites_legacy_posix_terminal_wrapper_to_python_script() {
-        let input = concat!(
-            "\x01\x0b",
-            "bash '/Applications/RobotCloud.app/Contents/Resources/resources/scripts/so101.sh' ",
-            "--action 'record-reset-pose' ",
-            "--follower-port '/dev/cu.usbmodem-follower' ",
-            "--leader-port '/dev/cu.usbmodem-leader' ",
-            "--robot-id 'robot'\\''one' ",
-            "--teleop-id 'leader-one' ",
-            "--fps '30' ",
-            "--max-relative-target '5' ",
-            "--display-data"
-        );
-
-        let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
-
-        assert!(rewritten.starts_with("\x01\x0bpython "));
-        assert!(rewritten.contains("robotcloud_reset_pose.py"));
-        assert!(rewritten.contains("--robot.port='/dev/cu.usbmodem-follower'"));
-        assert!(rewritten.contains("--robot.id='robot'\\''one'"));
-        assert!(!rewritten.contains("so101.sh"));
-        assert!(!rewritten.contains("--action"));
-    }
-
-    #[test]
-    fn rewrites_legacy_powershell_terminal_wrapper_to_python_script() {
-        let input = concat!(
-            "& 'C:\\Program Files\\RobotCloud\\resources\\scripts\\so101.ps1' ",
-            "-Action 'record-auto' ",
-            "-FollowerPort 'COM3' ",
-            "-LeaderPort 'COM4' ",
-            "-RobotId 'robot-one' ",
-            "-TeleopId 'leader-one' ",
-            "-CameraConfigOverride '{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30} }' ",
-            "-DatasetRepoId 'local/so101_desktop' ",
-            "-DatasetRoot 'C:\\robot data\\so101' ",
-            "-Episodes '2' ",
-            "-MinEpisodeTimeS '2' ",
-            "-MaxEpisodeTimeS '60' ",
-            "-Task 'Pick cube' ",
-            "-DisplayData"
-        );
-
-        let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
-
-        assert!(rewritten.starts_with("python "));
-        assert!(rewritten.contains("robotcloud_auto_record.py"));
-        assert!(rewritten.contains("--robot.port='COM3'"));
-        assert!(rewritten.contains("--dataset.root='C:\\robot data\\so101'"));
-        assert!(!rewritten.contains("so101.ps1"));
-        assert!(!rewritten.contains("-Action"));
-    }
-
-    #[test]
-    fn rewrites_legacy_powershell_lerobot_action_to_python_module() {
-        let input = concat!(
-            "& 'C:\\Program Files\\RobotCloud\\resources\\scripts\\so101.ps1' ",
-            "-Action 'setup-follower' ",
-            "-FollowerPort 'COM3' ",
-            "-RobotId 'robot-one'"
-        );
-
-        let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
-
-        assert!(rewritten.starts_with("python -m lerobot.scripts.lerobot_setup_motors "));
-        assert!(rewritten.contains("--robot.port='COM3'"));
-        assert!(!rewritten.contains("lerobot-setup-motors"));
-        assert!(!rewritten.contains("so101.ps1"));
-    }
-
-    #[test]
-    fn leaves_direct_terminal_commands_unchanged() {
-        let input = "lerobot-info";
-
-        let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
-
-        if cfg!(target_os = "windows") {
-            assert_eq!(rewritten, "python -m lerobot.scripts.lerobot_info");
-        } else {
-            assert_eq!(rewritten, input);
-        }
-    }
-
-    #[test]
-    fn rewrites_windows_direct_lerobot_terminal_command_to_python_module() {
-        let input = "\x01\x0blerobot-record --robot.port='COM3'";
-
-        let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
-
-        if cfg!(target_os = "windows") {
-            assert_eq!(
-                rewritten,
-                "\x01\x0bpython -m lerobot.scripts.lerobot_record --robot.port='COM3'"
-            );
-        } else {
-            assert_eq!(rewritten, input);
-        }
     }
 
     #[test]
@@ -4070,17 +3373,15 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
 
     #[cfg(unix)]
     #[test]
-    fn accepts_relocatable_lerobot_info_entrypoint() {
+    fn accepts_lerobot_info_entrypoint_regardless_of_shebang() {
+        // Actions run `python -m lerobot.scripts.*`, so a plain pip console script
+        // (non-relocatable shebang) is fine as long as the entrypoint file exists.
         let base = env::temp_dir().join(format!("robotcloud-runtime-test-{}", Uuid::new_v4()));
         let runtime = base.join("lerobot-env");
         fs::create_dir_all(runtime.join("bin")).unwrap();
         fs::write(
             runtime.join("bin").join("lerobot-info"),
-            br#"#!/bin/sh
-'''exec' "$(CDPATH= cd "$(dirname "$0")" && pwd)/python" "$0" "$@"
-' '''
-from lerobot.scripts.lerobot_info import main
-"#,
+            b"#!/usr/bin/env python\nfrom lerobot.scripts.lerobot_info import main\n",
         )
         .unwrap();
 
@@ -4091,18 +3392,13 @@ from lerobot.scripts.lerobot_info import main
 
     #[cfg(unix)]
     #[test]
-    fn rejects_non_relocatable_lerobot_info_entrypoint() {
+    fn rejects_missing_lerobot_info_entrypoint() {
         let base = env::temp_dir().join(format!("robotcloud-runtime-test-{}", Uuid::new_v4()));
         let runtime = base.join("lerobot-env");
         fs::create_dir_all(runtime.join("bin")).unwrap();
-        fs::write(
-            runtime.join("bin").join("lerobot-info"),
-            b"#!/usr/bin/env python\nfrom lerobot.scripts.lerobot_info import main\n",
-        )
-        .unwrap();
 
         let error = runtime_entrypoint_validation_error(&runtime).unwrap();
-        assert!(error.contains("not relocatable"));
+        assert!(error.contains("missing lerobot-info"));
 
         fs::remove_dir_all(&base).unwrap();
     }
