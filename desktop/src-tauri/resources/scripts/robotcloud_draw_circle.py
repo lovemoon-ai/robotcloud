@@ -14,8 +14,8 @@ from typing import Any
 import numpy as np
 
 
-DEFAULT_URDF_PATH = Path(
-    "/Users/duino/ws/robotcloud/desktop/src-tauri/resources/assets/so101_new_calib.urdf"
+DEFAULT_URDF_PATH = (
+    Path(__file__).resolve().parent.parent / "assets" / "so101_new_calib.urdf"
 )
 DEFAULT_TARGET_FRAME = "gripper_frame_link"
 DEFAULT_ARM_JOINTS = [

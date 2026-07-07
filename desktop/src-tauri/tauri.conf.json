@@ -22,6 +22,8 @@
       "resources/scripts/so101.sh",
       "resources/scripts/robotcloud_auto_record.py",
       "resources/scripts/robotcloud_reset_pose.py",
+      "resources/scripts/robotcloud_draw_circle.py",
+      "resources/assets/so101_new_calib.urdf",
       "resources/runtime/*/lerobot-env-*.zip"
     ],
     "macOS": {
