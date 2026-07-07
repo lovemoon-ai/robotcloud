@@ -238,7 +238,7 @@ struct DesktopStatus {
     runtime_archive_path: Option<String>,
     runtime_archive_ready: bool,
     runtime_error: Option<String>,
-    script_path: Option<String>,
+    scripts_dir: Option<String>,
     script_ready: bool,
     data_dir: String,
 }
@@ -892,13 +892,16 @@ fn bundled_script_path(app: &AppHandle, name: &str) -> PathBuf {
     PathBuf::from("resources").join("scripts").join(name)
 }
 
-fn script_path(app: &AppHandle) -> PathBuf {
-    let name = if cfg!(target_os = "windows") {
-        "so101.ps1"
-    } else {
-        "so101.sh"
-    };
-    bundled_script_path(app, name)
+/// Directory that holds the bundled RobotCloud Python scripts (robotcloud_*.py).
+/// The frontend joins this with a script name to build `python "<dir>/<script>"`.
+fn scripts_dir(app: &AppHandle) -> PathBuf {
+    for root in resource_candidates(app) {
+        let candidate = root.join("scripts");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from("resources").join("scripts")
 }
 
 fn python_path(runtime: &PathBuf) -> PathBuf {
@@ -1886,7 +1889,7 @@ where
             push_eq_arg(&mut args, "--dataset.push_to_hub", "false");
             push_eq_arg(&mut args, "--dataset.streaming_encoding", "true");
             push_eq_arg(&mut args, "--dataset.encoder_threads", 2);
-            push_eq_arg(&mut args, "--dataset.vcodec", "h264");
+            // push_eq_arg(&mut args, "--dataset.vcodec", "h264");
             push_eq_arg(
                 &mut args,
                 "--min_episode_time_s",
@@ -1930,7 +1933,7 @@ where
             push_eq_arg(&mut args, "--dataset.push_to_hub", "false");
             push_eq_arg(&mut args, "--dataset.streaming_encoding", "true");
             push_eq_arg(&mut args, "--dataset.encoder_threads", 2);
-            push_eq_arg(&mut args, "--dataset.vcodec", "h264");
+            // push_eq_arg(&mut args, "--dataset.vcodec", "h264");
             push_eq_arg(&mut args, "--display_data", bool_arg(config.display_data));
             Ok(lerobot_python_module_args(
                 "lerobot-record",
@@ -2611,7 +2614,7 @@ fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
     } else {
         Some(runtime_not_ready_message(&runtime))
     };
-    let script = script_path(&app);
+    let scripts = scripts_dir(&app);
     let data = data_dir(&app)?;
     Ok(DesktopStatus {
         is_desktop: true,
@@ -2624,8 +2627,8 @@ fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
         runtime_archive_ready,
         runtime_archive_path: archive.map(|path| path.to_string_lossy().to_string()),
         runtime_error,
-        script_ready: script.exists(),
-        script_path: Some(script.to_string_lossy().to_string()),
+        script_ready: scripts.join("robotcloud_auto_record.py").exists(),
+        scripts_dir: Some(scripts.to_string_lossy().to_string()),
         data_dir: data.to_string_lossy().to_string(),
     })
 }

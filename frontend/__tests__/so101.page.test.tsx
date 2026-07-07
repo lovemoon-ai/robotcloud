@@ -90,7 +90,7 @@ describe("SO101 page environment guard", () => {
       runtimeArchivePath: null,
       runtimeArchiveReady: false,
       runtimeError: null,
-      scriptPath: "/script",
+      scriptsDir: "/script",
       scriptReady: true,
       dataDir: "/tmp/robotcloud data"
     });
@@ -161,7 +161,7 @@ describe("SO101 terminal session", () => {
     runtimeArchivePath: null,
     runtimeArchiveReady: false,
     runtimeError: null,
-    scriptPath: "/script",
+    scriptsDir: "/script",
     scriptReady: true,
     dataDir: "/tmp/robotcloud data"
   };
@@ -483,6 +483,58 @@ describe("SO101 terminal session", () => {
     expect(recordControls.queryByLabelText("Max episode seconds")).not.toBeInTheDocument();
   });
 
+  it("restores persisted record card settings from local storage", async () => {
+    installDesktopBridge();
+    window.localStorage.setItem(
+      "robotcloud-so101-connection",
+      so101TestExports.serializeConnectionSettings(
+        {
+          ...so101TestExports.initialForm,
+          datasetRepoId: "local/persisted",
+          datasetRoot: "/tmp/persisted dataset",
+          episodes: 4,
+          episodeTimeS: 12,
+          minEpisodeTimeS: 4,
+          maxEpisodeTimeS: 45,
+          resetTimeS: 3,
+          maxRelativeTarget: 7.5,
+          task: "Pick persisted cube",
+          useLerobotRecorder: false,
+          displayData: false
+        },
+        1
+      )
+    );
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    const recordSection = view.getByRole("heading", { name: "Record" }).closest("section");
+    expect(recordSection).not.toBeNull();
+    const recordControls = within(recordSection as HTMLElement);
+
+    await waitFor(() => {
+      expect(recordControls.getByLabelText("Dataset repo id")).toHaveValue("local/persisted");
+    });
+    expect(recordControls.getByLabelText("Dataset root")).toHaveValue("/tmp/persisted dataset");
+    expect(recordControls.getByLabelText("Episodes")).toHaveValue(4);
+    expect(recordControls.getByLabelText("Min episode seconds")).toHaveValue(4);
+    expect(recordControls.getByLabelText("Max episode seconds")).toHaveValue(45);
+    expect(recordControls.getByLabelText("Max relative target")).toHaveValue(7.5);
+    expect(recordControls.getByLabelText("Task label")).toHaveValue("Pick persisted cube");
+    expect(recordControls.getByRole("checkbox", { name: /Display LeRobot data windows/ })).not.toBeChecked();
+
+    const lerobotRecorder = recordControls.getByRole("checkbox", { name: /LeRobot 原版录制工具/ });
+    expect(lerobotRecorder).not.toBeChecked();
+
+    fireEvent.click(lerobotRecorder);
+    expect(recordControls.getByLabelText("Episode seconds")).toHaveValue(12);
+    expect(recordControls.getByLabelText("Reset seconds")).toHaveValue(3);
+  });
+
   it("can start a new terminal after the previous session exits", async () => {
     const { terminalStart, terminalStop, emitExit } = installDesktopBridge();
 
@@ -613,7 +665,7 @@ describe("SO101 command generation", () => {
     runtimeArchivePath: null,
     runtimeArchiveReady: false,
     runtimeError: null,
-    scriptPath: "/script",
+    scriptsDir: "/script",
     scriptReady: true,
     dataDir: "/tmp/robotcloud data"
   };
@@ -738,7 +790,7 @@ describe("SO101 command generation", () => {
   });
 
   it("builds a reset pose command from the bundled script path", () => {
-    const status: DesktopStatus = { ...desktopStatus, scriptPath: "/opt/app/resources/scripts/so101.sh" };
+    const status: DesktopStatus = { ...desktopStatus, scriptsDir: "/opt/app/resources/scripts" };
     const command = buildActionCommand(
       "record-reset-pose",
       {
@@ -760,7 +812,7 @@ describe("SO101 command generation", () => {
   });
 
   it("builds an auto-record command via robotcloud_auto_record.py when the lerobot recorder is off", () => {
-    const status: DesktopStatus = { ...desktopStatus, scriptPath: "/opt/app/resources/scripts/so101.sh" };
+    const status: DesktopStatus = { ...desktopStatus, scriptsDir: "/opt/app/resources/scripts" };
     const command = buildActionCommand(
       "record",
       {
@@ -889,7 +941,7 @@ describe("SO101 command generation", () => {
     expect(saved?.cameras[2]).toMatchObject({ id: "2", width: 640, height: 480, fps: 30 });
   });
 
-  it("round-trips persisted connection settings", () => {
+  it("round-trips persisted SO101 settings", () => {
     const serialized = serializeConnectionSettings(
       {
         ...initialForm,
@@ -897,6 +949,17 @@ describe("SO101 command generation", () => {
         leaderPort: "/dev/leader",
         robotId: "robot-b",
         teleopId: "leader-b",
+        datasetRepoId: "local/persisted",
+        datasetRoot: "/tmp/persisted dataset",
+        episodes: 4,
+        episodeTimeS: 12,
+        minEpisodeTimeS: 4,
+        maxEpisodeTimeS: 45,
+        resetTimeS: 3,
+        maxRelativeTarget: 7.5,
+        displayData: false,
+        useLerobotRecorder: false,
+        task: "Pick persisted cube",
         cameras: [
           { id: "0", width: 1280, height: 720, fps: 30 },
           { id: "2", width: 640, height: 480, fps: 15 },
@@ -912,6 +975,17 @@ describe("SO101 command generation", () => {
       robotId: "robot-b",
       teleopId: "leader-b",
       cameraCount: 2,
+      datasetRepoId: "local/persisted",
+      datasetRoot: "/tmp/persisted dataset",
+      episodes: 4,
+      episodeTimeS: 12,
+      minEpisodeTimeS: 4,
+      maxEpisodeTimeS: 45,
+      resetTimeS: 3,
+      maxRelativeTarget: 7.5,
+      displayData: false,
+      useLerobotRecorder: false,
+      task: "Pick persisted cube",
       cameras: [
         { id: "0", width: 1280, height: 720, fps: 30 },
         { id: "2", width: 640, height: 480, fps: 15 },

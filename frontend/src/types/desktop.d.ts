@@ -10,7 +10,7 @@ type DesktopStatus = {
   runtimeArchivePath: string | null;
   runtimeArchiveReady: boolean;
   runtimeError?: string | null;
-  scriptPath: string | null;
+  scriptsDir: string | null;
   scriptReady: boolean;
   dataDir: string;
 };

@@ -335,7 +335,7 @@ describe("AppChrome shell", () => {
         runtimeReady: false,
         runtimeArchivePath: null,
         runtimeArchiveReady: false,
-        scriptPath: null,
+        scriptsDir: null,
         scriptReady: false,
         dataDir: ""
       }),
@@ -379,7 +379,7 @@ describe("AppChrome shell", () => {
         runtimeReady: false,
         runtimeArchivePath: null,
         runtimeArchiveReady: false,
-        scriptPath: null,
+        scriptsDir: null,
         scriptReady: false,
         dataDir: ""
       });

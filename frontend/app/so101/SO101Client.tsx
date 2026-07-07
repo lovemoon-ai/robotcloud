@@ -33,6 +33,8 @@ type FormState = {
   task: string;
 };
 
+type PersistedSO101Settings = FormState & { cameraCount: number };
+
 type TerminalPhase = "preparing" | "starting" | "ready" | "failed" | "closed";
 type CheckPhase = "idle" | "checking" | "valid" | "invalid";
 type CheckState = { phase: CheckPhase; message: string };
@@ -377,6 +379,17 @@ function toNumber(value: unknown, fallback: number) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
 }
 
+function toFiniteNumber(value: unknown, fallback: number) {
+  if (typeof value !== "number" && typeof value !== "string") return fallback;
+  if (typeof value === "string" && !value.trim()) return fallback;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function toBoolean(value: unknown, fallback: boolean) {
+  return typeof value === "boolean" ? value : fallback;
+}
+
 function toPositiveInteger(value: unknown) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return null;
@@ -429,13 +442,25 @@ export function parseConnectionSettings(raw: string | null) {
       leaderPort: typeof parsed.leaderPort === "string" ? parsed.leaderPort : initialForm.leaderPort,
       robotId: typeof parsed.robotId === "string" ? parsed.robotId : initialForm.robotId,
       teleopId: typeof parsed.teleopId === "string" ? parsed.teleopId : initialForm.teleopId,
+      datasetRepoId: typeof parsed.datasetRepoId === "string" ? parsed.datasetRepoId : initialForm.datasetRepoId,
+      datasetRoot: typeof parsed.datasetRoot === "string" ? parsed.datasetRoot : initialForm.datasetRoot,
+      episodes: toFiniteNumber(parsed.episodes, initialForm.episodes),
+      episodeTimeS: toFiniteNumber(parsed.episodeTimeS, initialForm.episodeTimeS),
+      minEpisodeTimeS: toFiniteNumber(parsed.minEpisodeTimeS, initialForm.minEpisodeTimeS),
+      maxEpisodeTimeS: toFiniteNumber(parsed.maxEpisodeTimeS, initialForm.maxEpisodeTimeS),
+      resetTimeS: toFiniteNumber(parsed.resetTimeS, initialForm.resetTimeS),
+      teleopTimeS: toFiniteNumber(parsed.teleopTimeS, initialForm.teleopTimeS),
+      maxRelativeTarget: toFiniteNumber(parsed.maxRelativeTarget, initialForm.maxRelativeTarget),
+      displayData: toBoolean(parsed.displayData, initialForm.displayData),
+      useLerobotRecorder: toBoolean(parsed.useLerobotRecorder, initialForm.useLerobotRecorder),
+      task: typeof parsed.task === "string" ? parsed.task : initialForm.task,
       cameras: [
         normalizeCamera(camerasSource[0], 0),
         normalizeCamera(camerasSource[1], 1),
         normalizeCamera(camerasSource[2], 2)
       ] as [CameraForm, CameraForm, CameraForm],
       cameraCount: clampCameraCount(parsed.cameraCount)
-    };
+    } satisfies PersistedSO101Settings;
   } catch {
     return null;
   }
@@ -447,6 +472,18 @@ export function serializeConnectionSettings(form: FormState, cameraCount: number
     leaderPort: form.leaderPort,
     robotId: form.robotId,
     teleopId: form.teleopId,
+    datasetRepoId: form.datasetRepoId,
+    datasetRoot: form.datasetRoot,
+    episodes: form.episodes,
+    episodeTimeS: form.episodeTimeS,
+    minEpisodeTimeS: form.minEpisodeTimeS,
+    maxEpisodeTimeS: form.maxEpisodeTimeS,
+    resetTimeS: form.resetTimeS,
+    teleopTimeS: form.teleopTimeS,
+    maxRelativeTarget: form.maxRelativeTarget,
+    displayData: form.displayData,
+    useLerobotRecorder: form.useLerobotRecorder,
+    task: form.task,
     cameras: form.cameras,
     cameraCount: clampCameraCount(cameraCount)
   });
@@ -496,18 +533,16 @@ function lerobotCommand(_status: DesktopStatus | null, command: string) {
   return `python -m ${moduleName}`;
 }
 
-// Build `python "<scripts-dir>/<scriptName>"` for a bundled RobotCloud script that
-// lives next to so101.sh / so101.ps1 (status.scriptPath points at that wrapper).
+// Build `python "<scripts-dir>/<scriptName>"` for a bundled RobotCloud Python script
+// (status.scriptsDir points at the directory that holds them).
 function bundledScriptCommand(
   status: DesktopStatus | null,
   scriptName: string,
   dialect: ShellDialect,
   quote: (value: string) => string
 ) {
-  const scriptPath = status?.scriptPath;
-  if (!scriptPath) throw new Error("脚本路径不可用，请更新桌面应用");
-  const separatorIndex = Math.max(scriptPath.lastIndexOf("/"), scriptPath.lastIndexOf("\\"));
-  const dir = separatorIndex >= 0 ? scriptPath.slice(0, separatorIndex) : scriptPath;
+  const dir = status?.scriptsDir;
+  if (!dir) throw new Error("脚本路径不可用，请更新桌面应用");
   const sep = dialect === "powershell" ? "\\" : "/";
   return `python ${quote(`${dir}${sep}${scriptName}`)}`;
 }
@@ -1063,15 +1098,9 @@ export function SO101Client() {
   useEffect(() => {
     const saved = parseConnectionSettings(window.localStorage.getItem(CONNECTION_STORAGE_KEY));
     if (saved) {
-      setForm((current) => ({
-        ...current,
-        followerPort: saved.followerPort,
-        leaderPort: saved.leaderPort,
-        robotId: saved.robotId,
-        teleopId: saved.teleopId,
-        cameras: saved.cameras
-      }));
-      setCameraCount(saved.cameraCount);
+      const { cameraCount: savedCameraCount, ...savedForm } = saved;
+      setForm((current) => ({ ...current, ...savedForm }));
+      setCameraCount(savedCameraCount);
     }
     setConnectionLoaded(true);
   }, []);
@@ -1168,7 +1197,7 @@ export function SO101Client() {
         runtimeArchivePath: null,
         runtimeArchiveReady: false,
         runtimeError: null,
-        scriptPath: null,
+        scriptsDir: null,
         scriptReady: false,
         dataDir: ""
       });
