@@ -21,6 +21,8 @@ const RELEASE_WEB_URL: &str = "https://robotcloud.conductor-ai.top/so101/";
 const DEBUG_WEB_URL: &str = "http://127.0.0.1:6151/so101/";
 const MIN_DATASET_UPLOAD_EPISODES: u64 = 1;
 const MIN_DATASET_UPLOAD_DURATION_SECONDS: f64 = 1.0;
+const RUNTIME_READY_MARKER_VERSION: &str = "2";
+const WINDOWS_SHIMS_MARKER_VERSION: &str = "2";
 
 const DEFAULT_BRIDGE_SCRIPT: &str = r#"
 (function () {
@@ -60,6 +62,10 @@ const DEFAULT_BRIDGE_SCRIPT: &str = r#"
         inspectUpload: function (config) { return core.invoke("dataset_inspect_upload", { config: config }); },
         prepareUpload: function (config) { return core.invoke("dataset_prepare_upload", { config: config }); },
         readPreparedUpload: function (filePath) { return core.invoke("dataset_read_prepared_upload", { filePath: filePath }); }
+      },
+      runtime: {
+        prepare: function () { return core.invoke("runtime_prepare"); },
+        onProgress: function (callback) { return listen("runtime-progress", callback); }
       },
       terminal: {
         start: function () { return core.invoke("terminal_start"); },
@@ -170,6 +176,10 @@ const WINDOWS_BRIDGE_SCRIPT: &str = r#"
         prepareUpload: function (config) { return invoke("dataset_prepare_upload", { config: config }); },
         readPreparedUpload: function (filePath) { return invoke("dataset_read_prepared_upload", { filePath: filePath }); }
       },
+      runtime: {
+        prepare: function () { return invoke("runtime_prepare"); },
+        onProgress: function (callback) { return listen("runtime-progress", callback); }
+      },
       terminal: {
         start: function () { return invoke("terminal_start"); },
         write: function (sessionId, data) { return invoke("terminal_write", { sessionId: sessionId, data: data }); },
@@ -231,6 +241,22 @@ struct DesktopStatus {
     script_path: Option<String>,
     script_ready: bool,
     data_dir: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeProgressEvent {
+    phase: String,
+    message: String,
+    current: Option<u64>,
+    total: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePrepared {
+    runtime_path: String,
+    ready: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -430,7 +456,7 @@ fn runtime_path(app: &AppHandle) -> PathBuf {
         return PathBuf::from(path);
     }
     if let Some(path) = extracted_runtime_path(app) {
-        if runtime_is_ready(&path) {
+        if runtime_has_basic_entrypoints(&path) {
             return path;
         }
     }
@@ -439,7 +465,7 @@ fn runtime_path(app: &AppHandle) -> PathBuf {
             .join("runtime")
             .join(platform_key())
             .join("lerobot-env");
-        if runtime_is_ready(&candidate) {
+        if runtime_has_basic_entrypoints(&candidate) {
             return candidate;
         }
     }
@@ -482,6 +508,73 @@ fn runtime_archive_path(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+fn runtime_archive_signature(archive: Option<&Path>) -> String {
+    let Some(archive) = archive else {
+        return format!("marker={RUNTIME_READY_MARKER_VERSION}\narchive=external\n");
+    };
+    let metadata = fs::metadata(archive).ok();
+    let len = metadata.as_ref().map(|metadata| metadata.len()).unwrap_or(0);
+    let modified = metadata
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    format!(
+        "marker={RUNTIME_READY_MARKER_VERSION}\narchive={}\nlen={len}\nmodified={modified}\n",
+        archive.file_name().unwrap_or_default().to_string_lossy()
+    )
+}
+
+fn runtime_ready_marker_path(runtime: &Path) -> PathBuf {
+    runtime.join(".robotcloud-runtime-ready")
+}
+
+fn runtime_has_basic_entrypoints(runtime: &Path) -> bool {
+    python_path(&runtime.to_path_buf()).exists() && lerobot_info_path(runtime).exists()
+}
+
+fn runtime_ready_marker_is_current(runtime: &Path, archive: Option<&Path>) -> bool {
+    if !runtime_has_basic_entrypoints(runtime) {
+        return false;
+    }
+    fs::read_to_string(runtime_ready_marker_path(runtime))
+        .map(|content| content == runtime_archive_signature(archive))
+        .unwrap_or(false)
+}
+
+fn write_runtime_ready_marker(runtime: &Path, archive: Option<&Path>) -> Result<(), String> {
+    fs::write(
+        runtime_ready_marker_path(runtime),
+        runtime_archive_signature(archive),
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn runtime_status_validation_error(runtime: &PathBuf, archive: Option<&Path>) -> Option<String> {
+    if runtime_ready_marker_is_current(runtime, archive) {
+        None
+    } else {
+        runtime_validation_error(runtime)
+    }
+}
+
+fn emit_runtime_progress<F>(
+    progress: &mut F,
+    phase: &str,
+    message: impl Into<String>,
+    current: Option<u64>,
+    total: Option<u64>,
+) where
+    F: FnMut(RuntimeProgressEvent),
+{
+    progress(RuntimeProgressEvent {
+        phase: phase.to_string(),
+        message: message.into(),
+        current,
+        total,
+    });
+}
+
 #[cfg(unix)]
 fn normalize_path_without_fs(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
@@ -510,7 +603,14 @@ fn symlink_target_is_safe(link_path: &Path, link_target: &Path, root: &Path) -> 
     resolved.starts_with(root)
 }
 
-fn extract_runtime_archive(archive_path: &Path, target: &Path) -> Result<(), String> {
+fn extract_runtime_archive<F>(
+    archive_path: &Path,
+    target: &Path,
+    progress: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(RuntimeProgressEvent),
+{
     let parent = target
         .parent()
         .ok_or_else(|| format!("invalid runtime target: {}", target.display()))?;
@@ -524,8 +624,28 @@ fn extract_runtime_archive(archive_path: &Path, target: &Path) -> Result<(), Str
 
     let archive_file = File::open(archive_path).map_err(|error| error.to_string())?;
     let mut archive = zip::ZipArchive::new(archive_file).map_err(|error| error.to_string())?;
+    let total_entries = archive.len() as u64;
+    emit_runtime_progress(
+        progress,
+        "extracting",
+        "Preparing LeRobot runtime: extracting archive...",
+        Some(0),
+        Some(total_entries),
+    );
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+        let current = index as u64 + 1;
+        if index == 0 || current == total_entries || current % 100 == 0 {
+            emit_runtime_progress(
+                progress,
+                "extracting",
+                format!(
+                    "Preparing LeRobot runtime: extracting {current}/{total_entries} files..."
+                ),
+                Some(current),
+                Some(total_entries),
+            );
+        }
         let Some(enclosed_name) = entry.enclosed_name() else {
             continue;
         };
@@ -576,6 +696,13 @@ fn extract_runtime_archive(archive_path: &Path, target: &Path) -> Result<(), Str
         fs::remove_dir_all(target).map_err(|error| error.to_string())?;
     }
     fs::rename(&temp, target).map_err(|error| error.to_string())?;
+    emit_runtime_progress(
+        progress,
+        "extracting",
+        "Preparing LeRobot runtime: extraction complete.",
+        Some(total_entries),
+        Some(total_entries),
+    );
     Ok(())
 }
 
@@ -653,23 +780,35 @@ fn run_runtime_relocation_fixups(runtime: &PathBuf) -> Result<(), String> {
     }
 }
 
-fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
+fn ensure_runtime_with_progress<F>(app: &AppHandle, progress: &mut F) -> Result<PathBuf, String>
+where
+    F: FnMut(RuntimeProgressEvent),
+{
     if let Ok(path) = env::var("ROBOTCLOUD_LEROBOT_ENV") {
         let runtime = PathBuf::from(path);
         if runtime_is_ready(&runtime) {
-            prepare_runtime(&runtime)?;
+            prepare_runtime_with_progress(&runtime, progress)?;
             return Ok(runtime);
         }
+        emit_runtime_progress(
+            progress,
+            "relocating",
+            "Preparing LeRobot runtime: applying relocation fixups...",
+            None,
+            None,
+        );
         run_runtime_relocation_fixups(&runtime)?;
         if runtime_is_ready(&runtime) {
+            prepare_runtime_with_progress(&runtime, progress)?;
             return Ok(runtime);
         }
         return Err(runtime_not_ready_message(&runtime));
     }
 
     let runtime = runtime_path(app);
-    if runtime_is_ready(&runtime) {
-        prepare_runtime(&runtime)?;
+    let archive = runtime_archive_path(app);
+    if runtime_ready_marker_is_current(&runtime, archive.as_deref()) {
+        prepare_runtime_with_progress(&runtime, progress)?;
         return Ok(runtime);
     }
 
@@ -679,43 +818,84 @@ fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())?;
 
     let runtime = runtime_path(app);
-    if runtime_is_ready(&runtime) {
-        prepare_runtime(&runtime)?;
+    let archive = runtime_archive_path(app);
+    if runtime_ready_marker_is_current(&runtime, archive.as_deref()) {
+        prepare_runtime_with_progress(&runtime, progress)?;
         return Ok(runtime);
     }
 
     let Some(target) = extracted_runtime_path(app) else {
         return Err("Could not resolve RobotCloud app data directory".to_string());
     };
-    if runtime_is_ready(&target) {
-        prepare_runtime(&target)?;
+    let archive = runtime_archive_path(app);
+    if runtime_ready_marker_is_current(&target, archive.as_deref()) {
+        prepare_runtime_with_progress(&target, progress)?;
         return Ok(target);
     }
-    if target.exists() {
+    if target.exists() && !runtime_ready_marker_path(&target).exists() {
+        emit_runtime_progress(
+            progress,
+            "validating",
+            "Preparing LeRobot runtime: validating existing files...",
+            None,
+            None,
+        );
         run_runtime_relocation_fixups(&target)?;
         if runtime_is_ready(&target) {
+            prepare_runtime_with_progress(&target, progress)?;
+            write_runtime_ready_marker(&target, archive.as_deref())?;
+            emit_runtime_progress(
+                progress,
+                "ready",
+                "LeRobot runtime is ready.",
+                None,
+                None,
+            );
             return Ok(target);
         }
     }
 
-    let Some(archive) = runtime_archive_path(app) else {
+    let Some(archive) = archive else {
         return Err(format!(
             "LeRobot runtime archive not found for {}",
             platform_key()
         ));
     };
-    extract_runtime_archive(&archive, &target)?;
+    extract_runtime_archive(&archive, &target, progress)?;
+    emit_runtime_progress(
+        progress,
+        "relocating",
+        "Preparing LeRobot runtime: applying relocation fixups...",
+        None,
+        None,
+    );
+    run_runtime_relocation_fixups(&target)?;
+    emit_runtime_progress(
+        progress,
+        "validating",
+        "Preparing LeRobot runtime: validating Python modules...",
+        None,
+        None,
+    );
     if runtime_is_ready(&target) {
-        prepare_runtime(&target)?;
+        prepare_runtime_with_progress(&target, progress)?;
+        write_runtime_ready_marker(&target, Some(&archive))?;
+        emit_runtime_progress(
+            progress,
+            "ready",
+            "LeRobot runtime is ready.",
+            None,
+            None,
+        );
         Ok(target)
     } else {
-        run_runtime_relocation_fixups(&target)?;
-        if runtime_is_ready(&target) {
-            Ok(target)
-        } else {
-            Err(runtime_not_ready_message(&target))
-        }
+        Err(runtime_not_ready_message(&target))
     }
+}
+
+fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
+    let mut progress = |_event: RuntimeProgressEvent| {};
+    ensure_runtime_with_progress(app, &mut progress)
 }
 
 fn bundled_script_path(app: &AppHandle, name: &str) -> PathBuf {
@@ -747,7 +927,12 @@ fn python_path(runtime: &PathBuf) -> PathBuf {
 
 fn lerobot_info_path(runtime: &Path) -> PathBuf {
     if cfg!(target_os = "windows") {
-        runtime.join("Scripts").join("lerobot-info.exe")
+        runtime
+            .join("Lib")
+            .join("site-packages")
+            .join("lerobot")
+            .join("scripts")
+            .join("lerobot_info.py")
     } else {
         runtime.join("bin").join("lerobot-info")
     }
@@ -951,7 +1136,28 @@ fn console_shim_content(entry: &ConsoleEntryPoint) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn ensure_windows_console_shims(runtime: &Path) -> Result<(), String> {
+fn windows_shims_marker_path(runtime: &Path) -> PathBuf {
+    runtime
+        .join("robotcloud-shims")
+        .join(".robotcloud-shims-ready")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shims_are_ready(runtime: &Path) -> bool {
+    fs::read_to_string(windows_shims_marker_path(runtime))
+        .map(|content| content.trim() == WINDOWS_SHIMS_MARKER_VERSION)
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_windows_console_shims<F>(runtime: &Path, progress: &mut F) -> Result<(), String>
+where
+    F: FnMut(RuntimeProgressEvent),
+{
+    if windows_shims_are_ready(runtime) {
+        return Ok(());
+    }
+
     let site_packages = runtime.join("Lib").join("site-packages");
     if !site_packages.exists() {
         return Ok(());
@@ -959,8 +1165,29 @@ fn ensure_windows_console_shims(runtime: &Path) -> Result<(), String> {
 
     let shim_dir = runtime.join("robotcloud-shims");
     fs::create_dir_all(&shim_dir).map_err(|error| error.to_string())?;
-    for entry in fs::read_dir(&site_packages).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
+    let entries = fs::read_dir(&site_packages)
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let total = entries.len() as u64;
+    emit_runtime_progress(
+        progress,
+        "shims",
+        "Preparing LeRobot runtime: creating command shims...",
+        Some(0),
+        Some(total),
+    );
+    for (index, entry) in entries.into_iter().enumerate() {
+        let current = index as u64 + 1;
+        if index == 0 || current == total || current % 50 == 0 {
+            emit_runtime_progress(
+                progress,
+                "shims",
+                format!("Preparing LeRobot runtime: scanning entry points {current}/{total}..."),
+                Some(current),
+                Some(total),
+            );
+        }
         let path = entry.path();
         if !path.is_dir()
             || !path
@@ -981,12 +1208,17 @@ fn ensure_windows_console_shims(runtime: &Path) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
         }
     }
+    fs::write(windows_shims_marker_path(runtime), WINDOWS_SHIMS_MARKER_VERSION)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
-fn prepare_runtime(runtime: &Path) -> Result<(), String> {
+fn prepare_runtime_with_progress<F>(runtime: &Path, progress: &mut F) -> Result<(), String>
+where
+    F: FnMut(RuntimeProgressEvent),
+{
     #[cfg(target_os = "windows")]
-    ensure_windows_console_shims(runtime)?;
+    ensure_windows_console_shims(runtime, progress)?;
     Ok(())
 }
 
@@ -1355,7 +1587,7 @@ fn terminal_startup_script() -> &'static [u8] {
     if cfg!(target_os = "windows") {
         concat!(
             "Remove-Item Env:PYTHONHOME,Env:PYTHONPATH -ErrorAction SilentlyContinue\r\n",
-            "$env:Path = \"$env:ROBOTCLOUD_LEROBOT_ENV\\Scripts;$env:ROBOTCLOUD_LEROBOT_ENV\\Library\\bin;$env:ROBOTCLOUD_LEROBOT_ENV;$env:Path\"\r\n",
+            "$env:Path = \"$env:ROBOTCLOUD_LEROBOT_ENV\\robotcloud-shims;$env:ROBOTCLOUD_LEROBOT_ENV\\Scripts;$env:ROBOTCLOUD_LEROBOT_ENV\\Library\\bin;$env:ROBOTCLOUD_LEROBOT_ENV;$env:Path\"\r\n",
             "$env:PYTHONNOUSERSITE = \"1\"\r\n",
             "Write-Host \"RobotCloud LeRobot runtime: $env:ROBOTCLOUD_LEROBOT_ENV\"\r\n",
         )
@@ -1534,6 +1766,20 @@ where
     Ok(("python".to_string(), all))
 }
 
+fn lerobot_python_module_args(
+    command: &str,
+    module: &str,
+    args: Vec<String>,
+) -> (String, Vec<String>) {
+    if cfg!(target_os = "windows") {
+        let mut all = vec!["-m".to_string(), module.to_string()];
+        all.extend(args);
+        ("python".to_string(), all)
+    } else {
+        (command.to_string(), args)
+    }
+}
+
 fn so101_command_args<F>(
     config: &So101RunConfig,
     data_dir: &Path,
@@ -1547,10 +1793,19 @@ where
     }
 
     match config.action.as_str() {
-        "info" => Ok(("lerobot-info".to_string(), vec![])),
-        "ports" | "find-port" => Ok(("lerobot-find-port".to_string(), vec![])),
-        "cameras" => Ok((
-            "lerobot-find-cameras".to_string(),
+        "info" => Ok(lerobot_python_module_args(
+            "lerobot-info",
+            "lerobot.scripts.lerobot_info",
+            vec![],
+        )),
+        "ports" | "find-port" => Ok(lerobot_python_module_args(
+            "lerobot-find-port",
+            "lerobot.scripts.lerobot_find_port",
+            vec![],
+        )),
+        "cameras" => Ok(lerobot_python_module_args(
+            "lerobot-find-cameras",
+            "lerobot.scripts.lerobot_find_cameras",
             vec![
                 "opencv".to_string(),
                 "--output-dir".to_string(),
@@ -1572,7 +1827,11 @@ where
                 "--robot.id",
                 config_string(&config.robot_id, "so101_follower"),
             );
-            Ok(("lerobot-setup-motors".to_string(), args))
+            Ok(lerobot_python_module_args(
+                "lerobot-setup-motors",
+                "lerobot.scripts.lerobot_setup_motors",
+                args,
+            ))
         }
         "setup-leader" => {
             let mut args = vec!["--teleop.type=so101_leader".to_string()];
@@ -1586,7 +1845,11 @@ where
                 "--teleop.id",
                 config_string(&config.teleop_id, "so101_leader"),
             );
-            Ok(("lerobot-setup-motors".to_string(), args))
+            Ok(lerobot_python_module_args(
+                "lerobot-setup-motors",
+                "lerobot.scripts.lerobot_setup_motors",
+                args,
+            ))
         }
         "calibrate-follower" => {
             let mut args = vec!["--robot.type=so101_follower".to_string()];
@@ -1600,7 +1863,11 @@ where
                 "--robot.id",
                 config_string(&config.robot_id, "so101_follower"),
             );
-            Ok(("lerobot-calibrate".to_string(), args))
+            Ok(lerobot_python_module_args(
+                "lerobot-calibrate",
+                "lerobot.scripts.lerobot_calibrate",
+                args,
+            ))
         }
         "calibrate-leader" => {
             let mut args = vec!["--teleop.type=so101_leader".to_string()];
@@ -1614,7 +1881,11 @@ where
                 "--teleop.id",
                 config_string(&config.teleop_id, "so101_leader"),
             );
-            Ok(("lerobot-calibrate".to_string(), args))
+            Ok(lerobot_python_module_args(
+                "lerobot-calibrate",
+                "lerobot.scripts.lerobot_calibrate",
+                args,
+            ))
         }
         "teleop" => {
             let mut args = Vec::new();
@@ -1627,7 +1898,11 @@ where
                 config.teleop_time_s.unwrap_or(5.0),
             );
             push_eq_arg(&mut args, "--display_data", bool_arg(config.display_data));
-            Ok(("lerobot-teleoperate".to_string(), args))
+            Ok(lerobot_python_module_args(
+                "lerobot-teleoperate",
+                "lerobot.scripts.lerobot_teleoperate",
+                args,
+            ))
         }
         "record-reset-pose" => {
             let mut args = Vec::new();
@@ -1702,7 +1977,11 @@ where
             push_eq_arg(&mut args, "--dataset.encoder_threads", 2);
             push_eq_arg(&mut args, "--dataset.vcodec", "h264");
             push_eq_arg(&mut args, "--display_data", bool_arg(config.display_data));
-            Ok(("lerobot-record".to_string(), args))
+            Ok(lerobot_python_module_args(
+                "lerobot-record",
+                "lerobot.scripts.lerobot_record",
+                args,
+            ))
         }
         _ => Err(format!("Unsupported SO101 action: {}", config.action)),
     }
@@ -1743,6 +2022,71 @@ fn push_terminal_eq_arg(
         "{key}={}",
         quote_terminal_arg(&value.to_string(), dialect)
     ));
+}
+
+fn terminal_lerobot_command(
+    dialect: TerminalCommandDialect,
+    command: &str,
+    module: &str,
+    args: Vec<String>,
+) -> String {
+    if dialect == TerminalCommandDialect::PowerShell {
+        let mut parts = vec!["python".to_string(), "-m".to_string(), module.to_string()];
+        parts.extend(args);
+        parts.join(" ")
+    } else if args.is_empty() {
+        command.to_string()
+    } else {
+        format!("{} {}", command, args.join(" "))
+    }
+}
+
+fn lerobot_module_for_command(command: &str) -> Option<&'static str> {
+    match command {
+        "lerobot-calibrate" => Some("lerobot.scripts.lerobot_calibrate"),
+        "lerobot-find-cameras" => Some("lerobot.scripts.lerobot_find_cameras"),
+        "lerobot-find-port" => Some("lerobot.scripts.lerobot_find_port"),
+        "lerobot-info" => Some("lerobot.scripts.lerobot_info"),
+        "lerobot-record" => Some("lerobot.scripts.lerobot_record"),
+        "lerobot-setup-motors" => Some("lerobot.scripts.lerobot_setup_motors"),
+        "lerobot-teleoperate" => Some("lerobot.scripts.lerobot_teleoperate"),
+        _ => None,
+    }
+}
+
+fn rewrite_windows_direct_lerobot_terminal_command(data: &str) -> Option<String> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+
+    let clear_prefix = "\x01\x0b";
+    let (prefix, command) = data
+        .strip_prefix(clear_prefix)
+        .map(|command| (clear_prefix, command))
+        .unwrap_or(("", data));
+    let trimmed = command.trim_start();
+    let leading = &command[..command.len() - trimmed.len()];
+
+    for command_name in [
+        "lerobot-calibrate",
+        "lerobot-find-cameras",
+        "lerobot-find-port",
+        "lerobot-info",
+        "lerobot-record",
+        "lerobot-setup-motors",
+        "lerobot-teleoperate",
+    ] {
+        let Some(rest) = trimmed.strip_prefix(command_name) else {
+            continue;
+        };
+        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let module = lerobot_module_for_command(command_name)?;
+        return Some(format!("{prefix}{leading}python -m {module}{rest}"));
+    }
+
+    None
 }
 
 fn parse_posix_words(input: &str) -> Option<Vec<String>> {
@@ -2015,31 +2359,65 @@ where
 
     let mut args = Vec::new();
     match action.as_str() {
-        "info" => return Some("lerobot-info".to_string()),
-        "ports" | "find-port" => return Some("lerobot-find-port".to_string()),
+        "info" => {
+            return Some(terminal_lerobot_command(
+                dialect,
+                "lerobot-info",
+                "lerobot.scripts.lerobot_info",
+                vec![],
+            ))
+        }
+        "ports" | "find-port" => {
+            return Some(terminal_lerobot_command(
+                dialect,
+                "lerobot-find-port",
+                "lerobot.scripts.lerobot_find_port",
+                vec![],
+            ))
+        }
         "setup-follower" => {
             args.push("--robot.type=so101_follower".to_string());
             push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
             push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
-            Some(format!("lerobot-setup-motors {}", args.join(" ")))
+            Some(terminal_lerobot_command(
+                dialect,
+                "lerobot-setup-motors",
+                "lerobot.scripts.lerobot_setup_motors",
+                args,
+            ))
         }
         "setup-leader" => {
             args.push("--teleop.type=so101_leader".to_string());
             push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
             push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
-            Some(format!("lerobot-setup-motors {}", args.join(" ")))
+            Some(terminal_lerobot_command(
+                dialect,
+                "lerobot-setup-motors",
+                "lerobot.scripts.lerobot_setup_motors",
+                args,
+            ))
         }
         "calibrate-follower" => {
             args.push("--robot.type=so101_follower".to_string());
             push_terminal_eq_arg(&mut args, "--robot.port", follower_port, dialect);
             push_terminal_eq_arg(&mut args, "--robot.id", robot_id, dialect);
-            Some(format!("lerobot-calibrate {}", args.join(" ")))
+            Some(terminal_lerobot_command(
+                dialect,
+                "lerobot-calibrate",
+                "lerobot.scripts.lerobot_calibrate",
+                args,
+            ))
         }
         "calibrate-leader" => {
             args.push("--teleop.type=so101_leader".to_string());
             push_terminal_eq_arg(&mut args, "--teleop.port", leader_port, dialect);
             push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
-            Some(format!("lerobot-calibrate {}", args.join(" ")))
+            Some(terminal_lerobot_command(
+                dialect,
+                "lerobot-calibrate",
+                "lerobot.scripts.lerobot_calibrate",
+                args,
+            ))
         }
         "teleop" => {
             args.push("--robot.type=so101_follower".to_string());
@@ -2062,7 +2440,12 @@ where
             push_terminal_eq_arg(&mut args, "--teleop.id", teleop_id, dialect);
             push_terminal_eq_arg(&mut args, "--fps", fps, dialect);
             push_terminal_eq_arg(&mut args, "--display_data", display_data, dialect);
-            Some(format!("lerobot-teleoperate {}", args.join(" ")))
+            Some(terminal_lerobot_command(
+                dialect,
+                "lerobot-teleoperate",
+                "lerobot.scripts.lerobot_teleoperate",
+                args,
+            ))
         }
         "record-reset-pose" => {
             let script = script_path("robotcloud_reset_pose.py");
@@ -2161,7 +2544,7 @@ where
         .unwrap_or(("", data));
 
     let Some((dialect, options)) = parse_legacy_so101_wrapper_command(command.trim()) else {
-        return data.to_string();
+        return rewrite_windows_direct_lerobot_terminal_command(data).unwrap_or_else(|| data.to_string());
     };
     let Some(rewritten) = legacy_so101_direct_terminal_command(&options, dialect, script_path)
     else {
@@ -2802,10 +3185,23 @@ fn dataset_read_prepared_upload(app: AppHandle, file_path: String) -> Result<Res
 }
 
 #[tauri::command]
+fn runtime_prepare(app: AppHandle) -> Result<RuntimePrepared, String> {
+    let progress_app = app.clone();
+    let mut progress = move |event: RuntimeProgressEvent| {
+        let _ = progress_app.emit("runtime-progress", event);
+    };
+    let runtime = ensure_runtime_with_progress(&app, &mut progress)?;
+    Ok(RuntimePrepared {
+        runtime_path: runtime.to_string_lossy().to_string(),
+        ready: true,
+    })
+}
+
+#[tauri::command]
 fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
     let runtime = runtime_path(&app);
     let archive = runtime_archive_path(&app);
-    let runtime_error = runtime_validation_error(&runtime);
+    let runtime_error = runtime_status_validation_error(&runtime, archive.as_deref());
     let runtime_ready = runtime_error.is_none();
     let runtime_archive_ready = archive.as_ref().is_some_and(|path| path.exists());
     let runtime_error = if runtime_ready {
@@ -3137,6 +3533,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
+            runtime_prepare,
             desktop_status,
             dataset_inspect_upload,
             dataset_prepare_upload,
@@ -3293,8 +3690,19 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
     fn builds_info_command_directly() {
         let (program, args) = test_so101_command_args(&test_config("info")).unwrap();
 
-        assert_eq!(program, "lerobot-info");
-        assert!(args.is_empty());
+        if cfg!(target_os = "windows") {
+            assert_eq!(program, "python");
+            assert_eq!(
+                args,
+                vec![
+                    "-m".to_string(),
+                    "lerobot.scripts.lerobot_info".to_string()
+                ]
+            );
+        } else {
+            assert_eq!(program, "lerobot-info");
+            assert!(args.is_empty());
+        }
     }
 
     #[test]
@@ -3309,7 +3717,13 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
 
         let (program, args) = test_so101_command_args(&config).unwrap();
 
-        assert_eq!(program, "lerobot-record");
+        if cfg!(target_os = "windows") {
+            assert_eq!(program, "python");
+            assert_eq!(args[0], "-m");
+            assert_eq!(args[1], "lerobot.scripts.lerobot_record");
+        } else {
+            assert_eq!(program, "lerobot-record");
+        }
         assert!(args.iter().any(|arg| arg == "--robot.type=so101_follower"));
         assert!(args
             .iter()
@@ -3394,12 +3808,49 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
     }
 
     #[test]
+    fn rewrites_legacy_powershell_lerobot_action_to_python_module() {
+        let input = concat!(
+            "& 'C:\\Program Files\\RobotCloud\\resources\\scripts\\so101.ps1' ",
+            "-Action 'setup-follower' ",
+            "-FollowerPort 'COM3' ",
+            "-RobotId 'robot-one'"
+        );
+
+        let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
+
+        assert!(rewritten.starts_with("python -m lerobot.scripts.lerobot_setup_motors "));
+        assert!(rewritten.contains("--robot.port='COM3'"));
+        assert!(!rewritten.contains("lerobot-setup-motors"));
+        assert!(!rewritten.contains("so101.ps1"));
+    }
+
+    #[test]
     fn leaves_direct_terminal_commands_unchanged() {
         let input = "lerobot-info";
 
         let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
 
-        assert_eq!(rewritten, input);
+        if cfg!(target_os = "windows") {
+            assert_eq!(rewritten, "python -m lerobot.scripts.lerobot_info");
+        } else {
+            assert_eq!(rewritten, input);
+        }
+    }
+
+    #[test]
+    fn rewrites_windows_direct_lerobot_terminal_command_to_python_module() {
+        let input = "\x01\x0blerobot-record --robot.port='COM3'";
+
+        let rewritten = rewrite_legacy_so101_terminal_command(input, test_script_path);
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                rewritten,
+                "\x01\x0bpython -m lerobot.scripts.lerobot_record --robot.port='COM3'"
+            );
+        } else {
+            assert_eq!(rewritten, input);
+        }
     }
 
     #[test]
@@ -3519,6 +3970,38 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert!(script.contains("hash -r"));
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn terminal_startup_script_prefers_windows_runtime_shims() {
+        let script = std::str::from_utf8(terminal_startup_script()).unwrap();
+
+        assert!(script.contains("Remove-Item Env:PYTHONHOME,Env:PYTHONPATH"));
+        assert!(script.contains(
+            "$env:ROBOTCLOUD_LEROBOT_ENV\\robotcloud-shims;$env:ROBOTCLOUD_LEROBOT_ENV\\Scripts"
+        ));
+        assert!(script.contains("$env:PYTHONNOUSERSITE = \"1\""));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_runtime_entrypoint_uses_lerobot_python_module() {
+        let base = env::temp_dir().join(format!("robotcloud-runtime-test-{}", Uuid::new_v4()));
+        let runtime = base.join("lerobot-env");
+        let module_dir = runtime
+            .join("Lib")
+            .join("site-packages")
+            .join("lerobot")
+            .join("scripts");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::write(runtime.join("python.exe"), b"python").unwrap();
+        fs::write(module_dir.join("lerobot_info.py"), b"def main(): pass\n").unwrap();
+
+        assert!(runtime_has_basic_entrypoints(&runtime));
+        assert!(runtime_entrypoint_validation_error(&runtime).is_none());
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn accepts_relocatable_lerobot_info_entrypoint() {
@@ -3622,7 +4105,8 @@ from lerobot.scripts.lerobot_info import main
             panic!("zip failed with status {zip_status}");
         }
 
-        extract_runtime_archive(&archive_path, &target).unwrap();
+        let mut progress = |_event: RuntimeProgressEvent| {};
+        extract_runtime_archive(&archive_path, &target, &mut progress).unwrap();
 
         let python_link = target.join("bin/python");
         let metadata = fs::symlink_metadata(&python_link).unwrap();

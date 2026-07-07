@@ -62,24 +62,16 @@ if ([string]::IsNullOrWhiteSpace($DatasetRoot)) {
     $DatasetRoot = Join-Path (Join-Path $DataDir "datasets") ($DatasetRepoId.Replace("/", "\"))
 }
 
-function Invoke-LeRobot {
+function Invoke-LeRobotModule {
     param(
         [Parameter(Mandatory = $true)]
-        [string] $Tool,
+        [string] $Module,
         [Parameter(ValueFromRemainingArguments = $true)]
         [string[]] $Args
     )
 
-    $Command = Join-Path $Shims "$Tool.cmd"
-    if (-not (Test-Path $Command)) {
-        $Command = Join-Path $Scripts "$Tool.exe"
-    }
-    if (-not (Test-Path $Command)) {
-        throw "Could not find $Command"
-    }
-
-    Write-Host "> $Tool $($Args -join ' ')"
-    & $Command @Args
+    Write-Host "> $Python -m $Module $($Args -join ' ')"
+    & $Python -m $Module @Args
 }
 
 function Invoke-RobotCloudPython {
@@ -193,7 +185,7 @@ $Display = $DisplayData.IsPresent.ToString().ToLowerInvariant()
 
 switch ($Action) {
     "info" {
-        Invoke-LeRobot "lerobot-info"
+        Invoke-LeRobotModule "lerobot.scripts.lerobot_info"
     }
     "ports" {
         Show-Ports
@@ -206,24 +198,24 @@ switch ($Action) {
     }
     "setup-follower" {
         Require-Port $FollowerPort "FollowerPort"
-        Invoke-LeRobot "lerobot-setup-motors" "--robot.type=so101_follower" "--robot.port=$FollowerPort" "--robot.id=$RobotId"
+        Invoke-LeRobotModule "lerobot.scripts.lerobot_setup_motors" "--robot.type=so101_follower" "--robot.port=$FollowerPort" "--robot.id=$RobotId"
     }
     "setup-leader" {
         Require-Port $LeaderPort "LeaderPort"
-        Invoke-LeRobot "lerobot-setup-motors" "--teleop.type=so101_leader" "--teleop.port=$LeaderPort" "--teleop.id=$TeleopId"
+        Invoke-LeRobotModule "lerobot.scripts.lerobot_setup_motors" "--teleop.type=so101_leader" "--teleop.port=$LeaderPort" "--teleop.id=$TeleopId"
     }
     "calibrate-follower" {
         Require-Port $FollowerPort "FollowerPort"
-        Invoke-LeRobot "lerobot-calibrate" "--robot.type=so101_follower" "--robot.port=$FollowerPort" "--robot.id=$RobotId"
+        Invoke-LeRobotModule "lerobot.scripts.lerobot_calibrate" "--robot.type=so101_follower" "--robot.port=$FollowerPort" "--robot.id=$RobotId"
     }
     "calibrate-leader" {
         Require-Port $LeaderPort "LeaderPort"
-        Invoke-LeRobot "lerobot-calibrate" "--teleop.type=so101_leader" "--teleop.port=$LeaderPort" "--teleop.id=$TeleopId"
+        Invoke-LeRobotModule "lerobot.scripts.lerobot_calibrate" "--teleop.type=so101_leader" "--teleop.port=$LeaderPort" "--teleop.id=$TeleopId"
     }
     "teleop" {
         Require-Port $FollowerPort "FollowerPort"
         Require-Port $LeaderPort "LeaderPort"
-        Invoke-LeRobot "lerobot-teleoperate" `
+        Invoke-LeRobotModule "lerobot.scripts.lerobot_teleoperate" `
             "--robot.type=so101_follower" `
             "--robot.port=$FollowerPort" `
             "--robot.cameras=$CameraConfig" `
@@ -284,7 +276,7 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($DatasetParent)) {
             New-Item -ItemType Directory -Force -Path $DatasetParent | Out-Null
         }
-        Invoke-LeRobot "lerobot-record" `
+        Invoke-LeRobotModule "lerobot.scripts.lerobot_record" `
             "--robot.type=so101_follower" `
             "--robot.port=$FollowerPort" `
             "--robot.cameras=$CameraConfig" `

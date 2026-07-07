@@ -69,7 +69,7 @@ const page = String.raw`<!doctype html>
         };
       }
 
-      async function runTerminalInfo(desktop) {
+      async function runTerminalInfo(desktop, status) {
         let output = "";
         let exitPayload = null;
         const offOutput = desktop.terminal.onOutput((event) => {
@@ -82,8 +82,9 @@ const page = String.raw`<!doctype html>
         });
         const started = await desktop.terminal.start();
         await wait(500);
-        await desktop.terminal.write(started.sessionId, "lerobot-info\r\nexit\r\n");
-        await waitFor(() => exitPayload, 5 * 60 * 1000, "terminal lerobot-info");
+        const command = status.platform === "windows" ? "python -m lerobot.scripts.lerobot_info" : "lerobot-info";
+        await desktop.terminal.write(started.sessionId, command + "\r\nexit\r\n");
+        await waitFor(() => exitPayload, 5 * 60 * 1000, "terminal info");
         offOutput();
         offExit();
         return {
@@ -111,7 +112,7 @@ const page = String.raw`<!doctype html>
           const status = await desktop.status();
           log("status: " + JSON.stringify(status));
           const so101Info = await runSo101Info(desktop);
-          const terminalInfo = await runTerminalInfo(desktop);
+          const terminalInfo = await runTerminalInfo(desktop, status);
           const ok = Boolean(status.isDesktop && so101Info.containsVersion && terminalInfo.containsVersion);
           const result = { ok, status, so101Info, terminalInfo, finishedAt: new Date().toISOString() };
           log("result: " + JSON.stringify({ ok }, null, 2));

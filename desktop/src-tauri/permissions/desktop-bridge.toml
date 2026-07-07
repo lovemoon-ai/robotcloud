@@ -2,6 +2,7 @@
 identifier = "desktop-bridge"
 description = "Allows the RobotCloud web frontend to use the controlled SO101 and terminal desktop bridge."
 commands.allow = [
+  "runtime_prepare",
   "desktop_status",
   "dataset_prepare_upload",
   "dataset_read_prepared_upload",

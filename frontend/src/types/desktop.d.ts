@@ -95,6 +95,18 @@ type TerminalStarted = {
   shell: string;
 };
 
+type RuntimeProgressEvent = {
+  phase: string;
+  message: string;
+  current?: number | null;
+  total?: number | null;
+};
+
+type RuntimePrepared = {
+  runtimePath: string;
+  ready: boolean;
+};
+
 type TerminalOutputEvent = {
   sessionId: string;
   data: string;
@@ -122,6 +134,10 @@ type DesktopBridge = {
     inspectUpload?: (config: DatasetPrepareUploadConfig) => Promise<DatasetUploadInspection>;
     prepareUpload: (config: DatasetPrepareUploadConfig) => Promise<PreparedDatasetUpload>;
     readPreparedUpload: (filePath: string) => Promise<ArrayBuffer>;
+  };
+  runtime?: {
+    prepare: () => Promise<RuntimePrepared>;
+    onProgress: (callback: (event: RuntimeProgressEvent) => void) => () => void;
   };
   terminal: {
     start: () => Promise<TerminalStarted>;

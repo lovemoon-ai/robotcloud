@@ -30,7 +30,7 @@ type FormState = {
   task: string;
 };
 
-type TerminalPhase = "starting" | "ready" | "failed" | "closed";
+type TerminalPhase = "preparing" | "starting" | "ready" | "failed" | "closed";
 type CheckPhase = "idle" | "checking" | "valid" | "invalid";
 type CheckState = { phase: CheckPhase; message: string };
 type PortKey = "followerPort" | "leaderPort";
@@ -71,7 +71,11 @@ type TerminalHandle = {
   open: (element: HTMLElement) => void;
   element?: HTMLElement;
 };
-type TerminalStoreSnapshot = { phase: TerminalPhase; error: string | null };
+type TerminalStoreSnapshot = {
+  phase: TerminalPhase;
+  error: string | null;
+  runtimeProgress: RuntimeProgressEvent | null;
+};
 type UploadReview = {
   datasetRepoId: string;
   datasetRoot: string;
@@ -460,6 +464,23 @@ function cameraConfigArg(form: FormState, cameraCount: number, quote: (value: st
   return `--robot.cameras=${quote(value)}`;
 }
 
+const windowsLerobotModules: Record<string, string> = {
+  "lerobot-calibrate": "lerobot.scripts.lerobot_calibrate",
+  "lerobot-find-cameras": "lerobot.scripts.lerobot_find_cameras",
+  "lerobot-find-port": "lerobot.scripts.lerobot_find_port",
+  "lerobot-info": "lerobot.scripts.lerobot_info",
+  "lerobot-record": "lerobot.scripts.lerobot_record",
+  "lerobot-setup-motors": "lerobot.scripts.lerobot_setup_motors",
+  "lerobot-teleoperate": "lerobot.scripts.lerobot_teleoperate"
+};
+
+function lerobotCommand(status: DesktopStatus | null, command: string) {
+  if (status?.platform !== "windows") return command;
+  const moduleName = windowsLerobotModules[command];
+  if (!moduleName) throw new Error(`Unsupported LeRobot command: ${command}`);
+  return `python -m ${moduleName}`;
+}
+
 export function buildActionCommand(action: ActionId, form: FormState, status: DesktopStatus | null, cameraCount: number) {
   const dialect = shellDialect(status);
   const quote = (value: string) => shellArg(value, dialect);
@@ -470,40 +491,40 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
 
   switch (action) {
     case "info":
-      return "lerobot-info";
+      return lerobotCommand(status, "lerobot-info");
     case "find-port":
-      return "lerobot-find-port";
+      return lerobotCommand(status, "lerobot-find-port");
     case "setup-follower":
       return [
-        "lerobot-setup-motors",
+        lerobotCommand(status, "lerobot-setup-motors"),
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
         `--robot.id=${quote(robotId())}`
       ].join(" ");
     case "setup-leader":
       return [
-        "lerobot-setup-motors",
+        lerobotCommand(status, "lerobot-setup-motors"),
         "--teleop.type=so101_leader",
         `--teleop.port=${quote(leaderPort())}`,
         `--teleop.id=${quote(teleopId())}`
       ].join(" ");
     case "calibrate-follower":
       return [
-        "lerobot-calibrate",
+        lerobotCommand(status, "lerobot-calibrate"),
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
         `--robot.id=${quote(robotId())}`
       ].join(" ");
     case "calibrate-leader":
       return [
-        "lerobot-calibrate",
+        lerobotCommand(status, "lerobot-calibrate"),
         "--teleop.type=so101_leader",
         `--teleop.port=${quote(leaderPort())}`,
         `--teleop.id=${quote(teleopId())}`
       ].join(" ");
     case "teleop": {
       const teleopParts = [
-        "lerobot-teleoperate",
+        lerobotCommand(status, "lerobot-teleoperate"),
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
         `--robot.cameras=${quote(cameraConfigValue(form, cameraCount) ?? "{}")}`,
@@ -526,7 +547,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
       const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
       if (!cameraArg) throw new Error("先配置 Camera 0");
       const parts = [
-        "lerobot-record",
+        lerobotCommand(status, "lerobot-record"),
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
         `--robot.id=${quote(robotId())}`,
@@ -566,10 +587,16 @@ export const so101TestExports = {
 };
 
 function statusLabel(phase: TerminalPhase) {
+  if (phase === "preparing") return "Preparing runtime";
   if (phase === "ready") return "Ready";
   if (phase === "failed") return "Failed";
   if (phase === "closed") return "Closed";
   return "Starting";
+}
+
+function runtimeProgressPercent(progress: RuntimeProgressEvent | null) {
+  if (!progress || !progress.total || progress.total <= 0 || progress.current == null) return null;
+  return Math.max(0, Math.min(100, Math.round((progress.current / progress.total) * 100)));
 }
 
 const persistentTerminalStore: {
@@ -578,6 +605,7 @@ const persistentTerminalStore: {
   shell: string | null;
   phase: TerminalPhase;
   error: string | null;
+  runtimeProgress: RuntimeProgressEvent | null;
   starting: Promise<void> | null;
   inputDisposable: TerminalDisposable | null;
   offOutput: (() => void) | null;
@@ -591,6 +619,7 @@ const persistentTerminalStore: {
   shell: null,
   phase: "starting",
   error: null,
+  runtimeProgress: null,
   starting: null,
   inputDisposable: null,
   offOutput: null,
@@ -603,7 +632,8 @@ const persistentTerminalStore: {
 function persistentTerminalSnapshot(): TerminalStoreSnapshot {
   return {
     phase: persistentTerminalStore.phase,
-    error: persistentTerminalStore.error
+    error: persistentTerminalStore.error,
+    runtimeProgress: persistentTerminalStore.runtimeProgress
   };
 }
 
@@ -621,11 +651,19 @@ function subscribePersistentTerminal(listener: () => void) {
 function setPersistentTerminalState(phase: TerminalPhase, error: string | null) {
   persistentTerminalStore.phase = phase;
   persistentTerminalStore.error = error;
+  if (phase !== "preparing") {
+    persistentTerminalStore.runtimeProgress = null;
+  }
   notifyPersistentTerminalListeners();
 }
 
 function setPersistentTerminalError(error: string | null) {
   persistentTerminalStore.error = error;
+  notifyPersistentTerminalListeners();
+}
+
+function setPersistentRuntimeProgress(progress: RuntimeProgressEvent | null) {
+  persistentTerminalStore.runtimeProgress = progress;
   notifyPersistentTerminalListeners();
 }
 
@@ -701,8 +739,26 @@ function ensurePersistentTerminal(bridge: DesktopBridge, container: HTMLDivEleme
     return;
   }
 
-  setPersistentTerminalState("starting", null);
+  setPersistentTerminalState("preparing", null);
+  setPersistentRuntimeProgress({
+    phase: "preparing",
+    message: "Preparing LeRobot runtime...",
+    current: null,
+    total: null
+  });
   persistentTerminalStore.starting = (async () => {
+    let offRuntimeProgress: (() => void) | null = null;
+    try {
+      offRuntimeProgress = bridge.runtime?.onProgress?.((event) => {
+        setPersistentRuntimeProgress(event);
+      }) ?? null;
+      if (bridge.runtime?.prepare) {
+        await bridge.runtime.prepare();
+      }
+    } finally {
+      offRuntimeProgress?.();
+    }
+    setPersistentTerminalState("starting", null);
     const [{ Terminal }, session] = await Promise.all([
       import("@xterm/xterm"),
       bridge.terminal.start()
@@ -768,6 +824,7 @@ function resetPersistentTerminalForTest() {
   persistentTerminalStore.offExit?.();
   persistentTerminalStore.phase = "starting";
   persistentTerminalStore.error = null;
+  persistentTerminalStore.runtimeProgress = null;
   persistentTerminalStore.starting = null;
   persistentTerminalStore.offOutput = null;
   persistentTerminalStore.offExit = null;
@@ -831,6 +888,8 @@ export function SO101Client() {
   const lastWrittenActionCommandRef = useRef<string | null>(null);
   const terminalPhase = terminalState.phase;
   const terminalError = terminalState.error;
+  const runtimeProgress = terminalState.runtimeProgress;
+  const runtimePercent = runtimeProgressPercent(runtimeProgress);
   const bridgeReady = desktopBridgeAvailability === "available";
   const registerConfigInput = (field: ConfigFieldId) => (node: HTMLInputElement | null) => {
     configInputRefs.current[field] = node;
@@ -1223,7 +1282,7 @@ export function SO101Client() {
   const statusCards = useMemo(
     () => [
       { label: "Runtime", value: status?.runtimeReady ? "ready" : "missing", detail: status?.runtimeError ?? status?.runtimePath ?? "not found" },
-      { label: "Action commands", value: status?.runtimeReady ? "direct" : "pending", detail: status?.runtimeReady ? "lerobot-* / python" : "waiting for runtime" },
+      { label: "Action commands", value: status?.runtimeReady ? "direct" : "pending", detail: status?.runtimeReady ? "python -m on Windows" : "waiting for runtime" },
       { label: "Data folder", value: "local", detail: status?.dataDir || "pending" },
       { label: "Cloud API", value: "online", detail: status?.apiBaseUrl ?? "https://robotcloud.conductor-ai.top/api/v1" }
     ],
@@ -1309,6 +1368,23 @@ export function SO101Client() {
           <p role="alert" className="mt-3 rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-500">
             {actionConfigError.message}
           </p>
+        ) : null}
+        {terminalPhase === "preparing" ? (
+          <div className="mt-4 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-semibold accent-text">Preparing LeRobot runtime...</span>
+              {runtimePercent == null ? null : <span className="text-muted">{runtimePercent}%</span>}
+            </div>
+            <div className="h-2 overflow-hidden rounded bg-surface">
+              <div
+                className="h-full gradient-primary transition-all"
+                style={{ width: `${runtimePercent ?? 12}%` }}
+              />
+            </div>
+            <p className="text-xs text-muted">
+              {runtimeProgress?.message ?? "Preparing LeRobot runtime..."}
+            </p>
+          </div>
         ) : null}
         <div
           ref={terminalContainerRef}

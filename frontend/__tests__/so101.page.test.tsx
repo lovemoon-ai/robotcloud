@@ -654,6 +654,40 @@ describe("SO101 command generation", () => {
     expect(command).toBe("lerobot-find-port");
   });
 
+  it("builds Windows LeRobot actions through python modules", () => {
+    const windowsStatus: DesktopStatus = {
+      ...desktopStatus,
+      platform: "windows",
+      dataDir: "C:\\Users\\duino\\AppData\\Roaming\\RobotCloud\\so101-data"
+    };
+
+    expect(buildActionCommand("info", initialForm, windowsStatus, 1)).toBe(
+      "python -m lerobot.scripts.lerobot_info"
+    );
+    expect(buildActionCommand("find-port", initialForm, windowsStatus, 1)).toBe(
+      "python -m lerobot.scripts.lerobot_find_port"
+    );
+
+    const recordCommand = buildActionCommand(
+      "record",
+      {
+        ...initialForm,
+        followerPort: "COM3",
+        leaderPort: "COM4",
+        datasetRepoId: "local/auto_dataset",
+        task: "Pick the cube"
+      },
+      windowsStatus,
+      1
+    );
+
+    expect(recordCommand).toContain("python -m lerobot.scripts.lerobot_record");
+    expect(recordCommand).toContain("--robot.port='COM3'");
+    expect(recordCommand).toContain("--dataset.root='C:\\Users\\duino\\AppData\\Roaming\\RobotCloud\\so101-data\\datasets\\local\\auto_dataset'");
+    expect(recordCommand).not.toContain("lerobot-record");
+    expect(recordCommand).not.toContain(".exe");
+  });
+
   it("rejects invalid record numbers before writing a command", () => {
     expect(() =>
       buildActionCommand(
