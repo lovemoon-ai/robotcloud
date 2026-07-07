@@ -218,6 +218,7 @@ VOLC_SMS_TEMPLATE_ID = os.getenv("VOLC_SMS_TEMPLATE_ID", "")
 # Auth Configuration
 # In development mode, use this fixed code instead of sending real SMS
 AUTH_DEV_CODE = os.getenv("AUTH_DEV_CODE", "000000" if DEBUG else "")
+AUTH_SINGLE_DEVICE_BYPASS_PHONES = _split_env_list(os.getenv("AUTH_SINGLE_DEVICE_BYPASS_PHONES"))
 
 # Alipay Configuration
 ALIPAY_APP_ID = os.getenv("ALIPAY_APP_ID", "")
@@ -225,9 +226,10 @@ ALIPAY_PRIVATE_KEY = os.getenv("ALIPAY_PRIVATE_KEY", "")
 ALIPAY_PUBLIC_KEY = os.getenv("ALIPAY_PUBLIC_KEY", "")
 ALIPAY_GATEWAY = os.getenv("ALIPAY_GATEWAY", "https://openapi.alipay.com/gateway.do")
 
-# Payment Configuration
-# In development mode, use 1 cent (0.01 RMB) for testing
-PAYMENT_DEV_AMOUNT_CENTS = 1  # 0.01 RMB
+# Plus subscription price: 1000 RMB/month (100000 cents)
+PLUS_PRICE_CENTS = _env_int("PLUS_PRICE_CENTS", 100000)
+PLUS_PRICE_CNY = PLUS_PRICE_CENTS
 
-# Plus subscription price: 600 RMB/month (60000 cents)
-PLUS_PRICE_CNY = 60000
+# Payment Configuration
+# Set PAYMENT_DEV_AMOUNT_CENTS=1 explicitly when testing a 0.01 RMB sandbox order.
+PAYMENT_DEV_AMOUNT_CENTS = _env_int("PAYMENT_DEV_AMOUNT_CENTS", PLUS_PRICE_CENTS)

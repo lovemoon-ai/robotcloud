@@ -1,7 +1,27 @@
+from django.core.cache import caches
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 
+from robotcloud_backend.api.models import User, UserSession
 from robotcloud_backend.sms import InMemorySmsGateway
+
+
+def register_user(client: APIClient, sms_gateway: InMemorySmsGateway, phone: str, password: str) -> None:
+    send_resp = client.post("/api/v1/auth/send_code", {"phone": phone}, format="json")
+    assert send_resp.status_code == 200
+    code = sms_gateway.get_code(phone)
+
+    register_resp = client.post(
+        "/api/v1/auth/register",
+        {
+            "phone": phone,
+            "password": password,
+            "code": code,
+        },
+        format="json",
+    )
+    assert register_resp.status_code == 200
 
 
 def test_auth_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
@@ -118,3 +138,206 @@ def test_login_with_code_invalid_code(client: APIClient, sms_gateway: InMemorySm
     )
     assert login_resp.status_code == 400
     assert login_resp.json()["detail"] == "Invalid verification code"
+
+
+def test_login_limits_one_session_per_device_type(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    phone = "13800000030"
+    password = "pw123456"
+    register_user(client, sms_gateway, phone, password)
+
+    mobile_login = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "phone-1", "device_type": "mobile"},
+        format="json",
+    )
+    assert mobile_login.status_code == 200
+    old_mobile_token = mobile_login.json()["data"]["token"]
+
+    desktop_login = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "desktop-1", "device_type": "desktop"},
+        format="json",
+    )
+    assert desktop_login.status_code == 200
+
+    second_mobile = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "phone-2", "device_type": "mobile"},
+        format="json",
+    )
+    assert second_mobile.status_code == 400
+    assert "device limit" in second_mobile.json()["detail"].lower()
+
+    second_desktop = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "desktop-2", "device_type": "desktop"},
+        format="json",
+    )
+    assert second_desktop.status_code == 400
+    assert "device limit" in second_desktop.json()["detail"].lower()
+
+    refreshed_mobile = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "phone-1", "device_type": "mobile"},
+        format="json",
+    )
+    assert refreshed_mobile.status_code == 200
+    new_mobile_token = refreshed_mobile.json()["data"]["token"]
+
+    revoked_resp = client.get(
+        "/api/v1/auth/verify_token",
+        HTTP_AUTHORIZATION=f"Bearer {old_mobile_token}",
+    )
+    assert revoked_resp.status_code == 400
+    assert revoked_resp.json()["detail"] == "Session revoked"
+
+    verify_resp = client.get(
+        "/api/v1/auth/verify_token",
+        HTTP_AUTHORIZATION=f"Bearer {new_mobile_token}",
+    )
+    assert verify_resp.status_code == 200
+
+
+def test_logout_releases_device_slot(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    phone = "13800000032"
+    password = "pw123456"
+    register_user(client, sms_gateway, phone, password)
+
+    first_login = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "phone-1", "device_type": "mobile"},
+        format="json",
+    )
+    assert first_login.status_code == 200
+    token = first_login.json()["data"]["token"]
+
+    logout_resp = client.post("/api/v1/auth/logout", HTTP_AUTHORIZATION=f"Bearer {token}")
+    assert logout_resp.status_code == 200
+    assert logout_resp.json()["data"]["logged_out"] is True
+
+    second_login = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "phone-2", "device_type": "mobile"},
+        format="json",
+    )
+    assert second_login.status_code == 200
+
+    old_token_resp = client.get("/api/v1/auth/verify_token", HTTP_AUTHORIZATION=f"Bearer {token}")
+    assert old_token_resp.status_code == 400
+    assert old_token_resp.json()["detail"] == "Invalid token"
+
+
+def test_login_can_replace_existing_device_type(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    phone = "13800000033"
+    password = "pw123456"
+    register_user(client, sms_gateway, phone, password)
+
+    first_login = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "desktop-1", "device_type": "desktop"},
+        format="json",
+    )
+    assert first_login.status_code == 200
+    old_token = first_login.json()["data"]["token"]
+
+    blocked_login = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "desktop-2", "device_type": "desktop"},
+        format="json",
+    )
+    assert blocked_login.status_code == 400
+    assert "device limit" in blocked_login.json()["detail"].lower()
+
+    replacement_login = client.post(
+        "/api/v1/auth/login",
+        {
+            "phone": phone,
+            "password": password,
+            "device_id": "desktop-2",
+            "device_type": "desktop",
+            "replace_existing_device": True,
+        },
+        format="json",
+    )
+    assert replacement_login.status_code == 200
+
+    revoked_resp = client.get("/api/v1/auth/verify_token", HTTP_AUTHORIZATION=f"Bearer {old_token}")
+    assert revoked_resp.status_code == 400
+    assert revoked_resp.json()["detail"] == "Session revoked"
+
+
+def test_legacy_token_cache_entries_are_rejected(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    phone = "13800000034"
+    password = "pw123456"
+    register_user(client, sms_gateway, phone, password)
+    user = User.objects.get(phone=phone)
+    caches["tokens"].set("legacy-token", user.id, 60)
+
+    response = client.get("/api/v1/auth/verify_token", HTTP_AUTHORIZATION="Bearer legacy-token")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid token"
+    assert caches["tokens"].get("legacy-token") is None
+
+
+@override_settings(AUTH_SINGLE_DEVICE_BYPASS_PHONES="13800000031")
+def test_single_device_limit_bypass_phone_whitelist(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    phone = "13800000031"
+    password = "pw123456"
+    register_user(client, sms_gateway, phone, password)
+
+    first_mobile = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "phone-1", "device_type": "mobile"},
+        format="json",
+    )
+    assert first_mobile.status_code == 200
+
+    second_mobile = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "phone-2", "device_type": "mobile"},
+        format="json",
+    )
+    assert second_mobile.status_code == 200
+
+    active_mobile_sessions = UserSession.objects.filter(
+        user__phone=phone,
+        device_type=UserSession.DEVICE_MOBILE,
+        status=UserSession.STATUS_ACTIVE,
+    ).count()
+    assert active_mobile_sessions == 2
+
+
+def test_removed_bypass_whitelist_converges_active_sessions(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    phone = "13800000035"
+    password = "pw123456"
+    register_user(client, sms_gateway, phone, password)
+
+    with override_settings(AUTH_SINGLE_DEVICE_BYPASS_PHONES=phone):
+        first_login = client.post(
+            "/api/v1/auth/login",
+            {"phone": phone, "password": password, "device_id": "phone-1", "device_type": "mobile"},
+            format="json",
+        )
+        assert first_login.status_code == 200
+        first_token = first_login.json()["data"]["token"]
+        second_login = client.post(
+            "/api/v1/auth/login",
+            {"phone": phone, "password": password, "device_id": "phone-2", "device_type": "mobile"},
+            format="json",
+        )
+        assert second_login.status_code == 200
+        second_token = second_login.json()["data"]["token"]
+
+    verify_second = client.get("/api/v1/auth/verify_token", HTTP_AUTHORIZATION=f"Bearer {second_token}")
+    assert verify_second.status_code == 200
+
+    active_mobile_sessions = UserSession.objects.filter(
+        user__phone=phone,
+        device_type=UserSession.DEVICE_MOBILE,
+        status=UserSession.STATUS_ACTIVE,
+    ).count()
+    assert active_mobile_sessions == 1
+
+    verify_first = client.get("/api/v1/auth/verify_token", HTTP_AUTHORIZATION=f"Bearer {first_token}")
+    assert verify_first.status_code == 400
+    assert verify_first.json()["detail"] == "Session revoked"

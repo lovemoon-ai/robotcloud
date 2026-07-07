@@ -52,7 +52,7 @@ function PlansContent() {
               "排队执行，无并发"
             ],
             plusTitle: "Plus",
-            plusPrice: "¥600 / 月",
+            plusPrice: "¥1000 / 月",
             plusSubtitle: "多任务排队提交，优先级更高，适合频繁使用。",
             plusHighlights: [
               "可提交多个训练，排队顺序优于 Free",
@@ -77,7 +77,7 @@ function PlansContent() {
               "Queued execution, no concurrency"
             ],
             plusTitle: "Plus",
-            plusPrice: "¥600 / mo",
+            plusPrice: "¥1000 / mo",
             plusSubtitle: "Higher priority with multiple queued jobs, ideal for frequent use.",
             plusHighlights: [
               "Submit multiple training jobs (queued, no concurrency)",

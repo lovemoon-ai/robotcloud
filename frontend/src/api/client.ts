@@ -38,6 +38,52 @@ const runtimeConfig: RuntimeConfig | undefined = (() => {
 
 const RAW_API_BASE = runtimeConfig?.publicRuntimeConfig?.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
 const API_BASE = RAW_API_BASE.replace(/\/$/, "");
+const DEVICE_ID_STORAGE_KEY = "robotcloud-device-id";
+
+type LoginDeviceType = "mobile" | "desktop";
+type LoginOptions = {
+  replaceExistingDevice?: boolean;
+};
+
+function createDeviceId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getDeviceId(): string {
+  if (typeof window === "undefined") {
+    return createDeviceId();
+  }
+  try {
+    const stored = window.localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (stored) {
+      return stored;
+    }
+    const generated = createDeviceId();
+    window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, generated);
+    return generated;
+  } catch {
+    return createDeviceId();
+  }
+}
+
+function getDeviceType(): LoginDeviceType {
+  if (typeof navigator === "undefined") {
+    return "desktop";
+  }
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(navigator.userAgent)
+    ? "mobile"
+    : "desktop";
+}
+
+function getLoginDeviceContext(): { deviceId: string; deviceType: LoginDeviceType } {
+  return {
+    deviceId: getDeviceId(),
+    deviceType: getDeviceType()
+  };
+}
 
 interface ApiResponse<T> {
   code: number;
@@ -222,7 +268,8 @@ function isAuthError(status: number, message: string): boolean {
     return (
       normalized.includes("invalid token") ||
       normalized.includes("token required") ||
-      normalized.includes("invalid authorization header")
+      normalized.includes("invalid authorization header") ||
+      normalized.includes("session revoked")
     );
   }
   return false;
@@ -570,10 +617,16 @@ function mapAgent(item: BackendAgent): GpuAgent {
 }
 
 export const robotCloudApi = {
-  loginWithPassword: async (payload: AuthCredentials): Promise<AuthSession> => {
+  loginWithPassword: async (payload: AuthCredentials, options?: LoginOptions): Promise<AuthSession> => {
+    const device = getLoginDeviceContext();
     const data = await request<BackendLoginResponse>("/auth/login", {
       method: "POST",
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        ...payload,
+        device_id: device.deviceId,
+        device_type: device.deviceType,
+        replace_existing_device: Boolean(options?.replaceExistingDevice)
+      })
     });
 
     return {
@@ -685,12 +738,16 @@ export const robotCloudApi = {
     });
     return data;
   },
-  loginWithCode: async (payload: { phone: string; code: string }): Promise<AuthSession> => {
+  loginWithCode: async (payload: { phone: string; code: string }, options?: LoginOptions): Promise<AuthSession> => {
+    const device = getLoginDeviceContext();
     const data = await request<BackendLoginResponse>("/auth/login_code", {
       method: "POST",
       body: JSON.stringify({
         phone: payload.phone,
-        code: payload.code
+        code: payload.code,
+        device_id: device.deviceId,
+        device_type: device.deviceType,
+        replace_existing_device: Boolean(options?.replaceExistingDevice)
       })
     });
     return {
@@ -701,6 +758,10 @@ export const robotCloudApi = {
       expireAt: data.expire_at
     };
   },
+  logout: () =>
+    request<{ logged_out: boolean }>("/auth/logout", {
+      method: "POST"
+    }),
   verifyOtp: (payload: OtpPayload) =>
     request<{ user_id: number }>("/auth/register", {
       method: "POST",

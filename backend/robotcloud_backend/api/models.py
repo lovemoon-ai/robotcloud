@@ -34,6 +34,48 @@ class User(models.Model):
         return f"{self.phone} ({self.role})"
 
 
+class UserSession(models.Model):
+    DEVICE_MOBILE = "mobile"
+    DEVICE_DESKTOP = "desktop"
+
+    DEVICE_TYPE_CHOICES = [
+        (DEVICE_MOBILE, "Mobile"),
+        (DEVICE_DESKTOP, "Desktop"),
+    ]
+
+    STATUS_ACTIVE = "active"
+    STATUS_REVOKED = "revoked"
+    STATUS_EXPIRED = "expired"
+
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_REVOKED, "Revoked"),
+        (STATUS_EXPIRED, "Expired"),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="sessions")
+    device_type = models.CharField(max_length=16, choices=DEVICE_TYPE_CHOICES)
+    device_id = models.CharField(max_length=128)
+    token_hash = models.CharField(max_length=64)
+    user_agent = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    last_seen_at = models.DateTimeField()
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoke_reason = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-last_seen_at"]
+        indexes = [
+            models.Index(fields=["user", "device_type", "status"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user.phone} {self.device_type} ({self.status})"
+
+
 class Dataset(models.Model):
     VISIBILITY_PRIVATE = "private"
     VISIBILITY_PUBLIC = "public"
