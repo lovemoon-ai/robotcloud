@@ -18,8 +18,6 @@
     "category": "DeveloperTool",
     "icon": ["icons/icon.png", "icons/icon.ico"],
     "resources": [
-      "resources/scripts/so101.ps1",
-      "resources/scripts/so101.sh",
       "resources/scripts/robotcloud_auto_record.py",
       "resources/scripts/robotcloud_reset_pose.py",
       "resources/scripts/robotcloud_draw_circle.py",
