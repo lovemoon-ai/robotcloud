@@ -218,15 +218,10 @@ switch ($Action) {
         Invoke-LeRobotModule "lerobot.scripts.lerobot_teleoperate" `
             "--robot.type=so101_follower" `
             "--robot.port=$FollowerPort" `
-            "--robot.cameras=$CameraConfig" `
             "--robot.id=$RobotId" `
-            "--robot.max_relative_target=$MaxRelativeTarget" `
             "--teleop.type=so101_leader" `
             "--teleop.port=$LeaderPort" `
-            "--teleop.id=$TeleopId" `
-            "--fps=$Fps" `
-            "--teleop_time_s=$TeleopTimeS" `
-            "--display_data=$Display"
+            "--teleop.id=$TeleopId"
     }
     "record-reset-pose" {
         Require-Port $FollowerPort "FollowerPort"

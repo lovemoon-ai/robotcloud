@@ -218,15 +218,10 @@ case "${ACTION}" in
     run_lerobot lerobot-teleoperate \
       --robot.type=so101_follower \
       --robot.port="${FOLLOWER_PORT}" \
-      --robot.cameras="${CAMERA_CONFIG}" \
       --robot.id="${ROBOT_ID}" \
-      --robot.max_relative_target="${MAX_RELATIVE_TARGET}" \
       --teleop.type=so101_leader \
       --teleop.port="${LEADER_PORT}" \
-      --teleop.id="${TELEOP_ID}" \
-      --fps="${FPS}" \
-      --teleop_time_s="${TELEOP_TIME_S}" \
-      --display_data="${DISPLAY_DATA}"
+      --teleop.id="${TELEOP_ID}"
     ;;
   record-reset-pose)
     require_port "${FOLLOWER_PORT}" "follower port"
