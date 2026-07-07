@@ -15,6 +15,15 @@ class UserAdmin(admin.ModelAdmin):
     ordering = ("id",)
 
 
+@admin.register(models.UserSession)
+class UserSessionAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "device_type", "device_id", "status", "last_seen_at", "expires_at")
+    list_filter = ("device_type", "status")
+    search_fields = ("user__phone", "device_id")
+    readonly_fields = ("created_at", "last_seen_at", "revoked_at")
+    list_select_related = ("user",)
+
+
 @admin.register(models.Dataset)
 class DatasetAdmin(admin.ModelAdmin):
     list_display = ("id", "name", "owner", "visibility", "status", "created_at")
@@ -66,6 +75,5 @@ class AdminLogAdmin(admin.ModelAdmin):
     search_fields = ("admin__phone", "action", "target_type", "target_id")
     readonly_fields = ("created_at",)
     list_select_related = ("admin",)
-
 
 

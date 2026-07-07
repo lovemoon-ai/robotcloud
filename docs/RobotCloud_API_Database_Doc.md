@@ -65,14 +65,23 @@
 **POST** `/api/v1/auth/login`
 
 ``` json
-{"phone":"13800000000","password":"123456"}
+{
+  "phone": "13800000000",
+  "password": "123456",
+  "device_id": "browser-or-app-installation-uuid",
+  "device_type": "desktop"
+}
 ```
+
+`device_type` 支持 `mobile` / `desktop`。同一用户同一时刻最多保留 1 个 `mobile` 会话和 1 个 `desktop` 会话；同一 `device_id` 重新登录会刷新该设备会话。可通过环境变量 `AUTH_SINGLE_DEVICE_BYPASS_PHONES` 配置逗号分隔手机号白名单，白名单用户不受该限制。
 
 **响应**
 
 ``` json
 {"code":0,"data":{"token":"xxx.yyy.zzz","role":"free"}}
 ```
+
+短信验证码登录 `/api/v1/auth/login_code` 使用同样的 `device_id` / `device_type` 规则。
 
 ### 3. 发送验证码
 

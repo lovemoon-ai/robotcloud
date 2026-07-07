@@ -27,6 +27,7 @@ from .models import (
     SimulationTask,
     TrainTask,
     User,
+    UserSession,
     WorkerNode,
 )
 from ..sms import SmsGateway
@@ -37,14 +38,19 @@ TOKEN_TIMEOUT_SECONDS = 7 * 24 * 60 * 60  # 7 days
 VERIFICATION_CODE_TIMEOUT_SECONDS = 5 * 60  # 5 minutes
 DEFAULT_DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS = 2 * 60 * 60  # 2 hours
 DEFAULT_DATASET_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+DEVICE_LIMIT_MESSAGE = "Device limit reached for this device type"
 
 
 class RobotCloudService:
     """Domain service that encapsulates RobotCloud business logic."""
 
-    # Only Plus plan is available: 600 RMB/month (60000 cents)
+    # Only Plus plan is available: 1000 RMB/month (100000 cents)
     PLAN_PRICING = {
-        User.ROLE_PLUS: {"amount_cents": 60000, "currency": "CNY", "description": "RobotCloud Plus Subscription - 1 month"},
+        User.ROLE_PLUS: {
+            "amount_cents": int(getattr(settings, "PLUS_PRICE_CENTS", 100000)),
+            "currency": "CNY",
+            "description": "RobotCloud Plus Subscription - 1 month",
+        },
     }
     TRAINING_PRIORITY_BY_ROLE = {
         User.ROLE_PRO: 100,
@@ -115,6 +121,106 @@ class RobotCloudService:
             candidate = secrets.token_hex(12)
             if not Payment.objects.filter(payment_id=candidate).exists():
                 return candidate
+
+    def _hash_token(self, token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _normalize_device_type(self, device_type: Any) -> str:
+        candidate = str(device_type or "").strip().lower()
+        if not candidate:
+            return UserSession.DEVICE_DESKTOP
+        if candidate in {UserSession.DEVICE_MOBILE, "phone", "tablet"}:
+            return UserSession.DEVICE_MOBILE
+        if candidate in {UserSession.DEVICE_DESKTOP, "pc", "web"}:
+            return UserSession.DEVICE_DESKTOP
+        raise ValueError("Invalid device type")
+
+    def _normalize_device_id(self, device_id: Any) -> str:
+        candidate = str(device_id or "").strip()
+        if not candidate:
+            return "legacy"
+        if len(candidate) > 128:
+            raise ValueError("Device id is too long")
+        return candidate
+
+    def _single_device_bypass_phones(self) -> set[str]:
+        values = getattr(settings, "AUTH_SINGLE_DEVICE_BYPASS_PHONES", [])
+        if isinstance(values, str):
+            values = values.split(",")
+        return {str(item).strip() for item in values if str(item).strip()}
+
+    def _bypasses_single_device_limit(self, user: User) -> bool:
+        return user.phone in self._single_device_bypass_phones()
+
+    def _revoke_user_sessions(self, queryset, reason: str, now=None) -> int:
+        revoked_at = now or timezone.now()
+        return queryset.update(
+            status=UserSession.STATUS_REVOKED,
+            revoked_at=revoked_at,
+            revoke_reason=reason,
+        )
+
+    def _expire_user_sessions(self, user: User, now=None) -> None:
+        expired_at = now or timezone.now()
+        UserSession.objects.filter(
+            user=user,
+            status=UserSession.STATUS_ACTIVE,
+            expires_at__lte=expired_at,
+        ).update(status=UserSession.STATUS_EXPIRED, revoked_at=expired_at, revoke_reason="expired")
+
+    def _enforce_current_single_device_limit(self, user: User, session: UserSession, now=None) -> None:
+        if self._bypasses_single_device_limit(user):
+            return
+        active_duplicates = UserSession.objects.filter(
+            user=user,
+            device_type=session.device_type,
+            status=UserSession.STATUS_ACTIVE,
+        ).exclude(id=session.id)
+        self._revoke_user_sessions(active_duplicates, "limit_enforced", now)
+
+    def _start_user_session(
+        self,
+        user: User,
+        device_id: Any = "",
+        device_type: Any = "",
+        user_agent: str = "",
+        replace_existing_device: bool = False,
+    ) -> str:
+        normalized_device_type = self._normalize_device_type(device_type)
+        normalized_device_id = self._normalize_device_id(device_id)
+        token = secrets.token_urlsafe(16)
+        now = timezone.now()
+        expires_at = now + timedelta(seconds=TOKEN_TIMEOUT_SECONDS)
+
+        with transaction.atomic():
+            User.objects.select_for_update().get(pk=user.pk)
+            self._expire_user_sessions(user, now)
+            active_sessions = UserSession.objects.select_for_update().filter(
+                user=user,
+                device_type=normalized_device_type,
+                status=UserSession.STATUS_ACTIVE,
+            )
+            if not self._bypasses_single_device_limit(user):
+                conflict = active_sessions.exclude(device_id=normalized_device_id).first()
+                if conflict:
+                    if not replace_existing_device:
+                        raise ValueError(DEVICE_LIMIT_MESSAGE)
+                    self._revoke_user_sessions(active_sessions.exclude(device_id=normalized_device_id), "replaced", now)
+                self._revoke_user_sessions(active_sessions.filter(device_id=normalized_device_id), "relogin", now)
+
+            session = UserSession.objects.create(
+                user=user,
+                device_type=normalized_device_type,
+                device_id=normalized_device_id,
+                token_hash=self._hash_token(token),
+                user_agent=(user_agent or "")[:1000],
+                status=UserSession.STATUS_ACTIVE,
+                last_seen_at=now,
+                expires_at=expires_at,
+            )
+
+        self.token_cache.set(token, {"user_id": user.id, "session_id": session.id}, TOKEN_TIMEOUT_SECONDS)
+        return token
 
     def _normalize_gpu_payload(self, payload: Any) -> int:
         if isinstance(payload, int):
@@ -381,7 +487,15 @@ class RobotCloudService:
             self.sms_gateway.send_verification_code(phone, code)
         return self._response({"sent": True, "code": code if dev_code else None})
 
-    def login_with_code(self, phone: str, code: str) -> Dict[str, Any]:
+    def login_with_code(
+        self,
+        phone: str,
+        code: str,
+        device_id: Any = "",
+        device_type: Any = "",
+        user_agent: str = "",
+        replace_existing_device: bool = False,
+    ) -> Dict[str, Any]:
         """Login or register with SMS verification code."""
         self._ensure_phone(phone)
         if not code:
@@ -401,8 +515,7 @@ class RobotCloudService:
                 user = self._create_user_without_password(phone)
             self.verification_cache.delete(self._verification_key(phone))
 
-        token = secrets.token_urlsafe(16)
-        self.token_cache.set(token, user.id, TOKEN_TIMEOUT_SECONDS)
+        token = self._start_user_session(user, device_id, device_type, user_agent, replace_existing_device)
         return self._response(
             {
                 "token": token,
@@ -430,15 +543,20 @@ class RobotCloudService:
             self.verification_cache.delete(self._verification_key(phone))
         return self._response({"user_id": user.id})
 
-
-
-    def login(self, phone: str, password: str) -> Dict[str, Any]:
+    def login(
+        self,
+        phone: str,
+        password: str,
+        device_id: Any = "",
+        device_type: Any = "",
+        user_agent: str = "",
+        replace_existing_device: bool = False,
+    ) -> Dict[str, Any]:
         self._ensure_phone(phone)
         user = self._get_user_by_phone(phone)
         if not self._verify_password(user, password):
             raise ValueError("Incorrect password")
-        token = secrets.token_urlsafe(16)
-        self.token_cache.set(token, user.id, TOKEN_TIMEOUT_SECONDS)
+        token = self._start_user_session(user, device_id, device_type, user_agent, replace_existing_device)
         return self._response(
             {
                 "token": token,
@@ -452,6 +570,22 @@ class RobotCloudService:
     def verify_token(self, token: str) -> Dict[str, Any]:
         user = self._get_user_by_token(token)
         return self._response({"user_id": user.id, "phone": user.phone, "role": user.role})
+
+    def logout(self, token: str) -> Dict[str, Any]:
+        if not token:
+            raise ValueError("Token required")
+        cached = self.token_cache.get(token)
+        now = timezone.now()
+        if isinstance(cached, dict):
+            session_id = cached.get("session_id")
+            if session_id:
+                self._revoke_user_sessions(
+                    UserSession.objects.filter(id=session_id, status=UserSession.STATUS_ACTIVE),
+                    "logout",
+                    now,
+                )
+        self.token_cache.delete(token)
+        return self._response({"logged_out": True})
 
     # -------------------- User Module --------------------
     def profile(self, token: str) -> Dict[str, Any]:
@@ -1690,13 +1824,41 @@ class RobotCloudService:
     def _get_user_by_token(self, token: str) -> User:
         if not token:
             raise ValueError("Token required")
-        user_id = self.token_cache.get(token)
+        cached = self.token_cache.get(token)
+        if cached is not None and not isinstance(cached, dict):
+            self.token_cache.delete(token)
+            raise ValueError("Invalid token")
+        user_id = cached.get("user_id") if isinstance(cached, dict) else None
         if not user_id:
             raise ValueError("Invalid token")
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist as exc:
             raise ValueError("User not found") from exc
+        if isinstance(cached, dict):
+            session_id = cached.get("session_id")
+            if session_id:
+                try:
+                    session = UserSession.objects.get(id=session_id, user=user)
+                except UserSession.DoesNotExist as exc:
+                    self.token_cache.delete(token)
+                    raise ValueError("Invalid token") from exc
+                now = timezone.now()
+                if session.expires_at <= now:
+                    session.status = UserSession.STATUS_EXPIRED
+                    session.revoked_at = now
+                    session.revoke_reason = "expired"
+                    session.save(update_fields=["status", "revoked_at", "revoke_reason"])
+                    self.token_cache.delete(token)
+                    raise ValueError("Invalid token")
+                if session.status != UserSession.STATUS_ACTIVE:
+                    self.token_cache.delete(token)
+                    raise ValueError("Session revoked")
+                if not secrets.compare_digest(session.token_hash, self._hash_token(token)):
+                    self.token_cache.delete(token)
+                    raise ValueError("Invalid token")
+                self._enforce_current_single_device_limit(user, session, now)
+                UserSession.objects.filter(pk=session.pk).update(last_seen_at=now)
         # Check subscription expiration and auto-downgrade
         self._check_subscription_expiration(user)
         return user

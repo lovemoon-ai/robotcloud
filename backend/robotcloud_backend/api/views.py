@@ -123,7 +123,16 @@ class LoginView(RobotCloudAPIView):
 
     def post(self, request: Request) -> Response:
         payload = request.data
-        return self._execute(lambda: self._service().login(payload.get("phone", ""), payload.get("password", "")))
+        return self._execute(
+            lambda: self._service().login(
+                payload.get("phone", ""),
+                payload.get("password", ""),
+                payload.get("device_id", ""),
+                payload.get("device_type", ""),
+                request.headers.get("User-Agent", ""),
+                self._bool_value(payload.get("replace_existing_device")),
+            )
+        )
 
 
 class LoginWithCodeView(RobotCloudAPIView):
@@ -136,8 +145,19 @@ class LoginWithCodeView(RobotCloudAPIView):
             lambda: self._service().login_with_code(
                 payload.get("phone", ""),
                 payload.get("code", ""),
+                payload.get("device_id", ""),
+                payload.get("device_type", ""),
+                request.headers.get("User-Agent", ""),
+                self._bool_value(payload.get("replace_existing_device")),
             )
         )
+
+
+class LogoutView(RobotCloudAPIView):
+    parser_classes = [JSONParser]
+
+    def post(self, request: Request) -> Response:
+        return self._execute_with_token(request, lambda token: self._service().logout(token))
 
 
 class VerifyTokenView(RobotCloudAPIView):

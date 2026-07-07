@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import SettingsPage from "../app/settings/page";
 import { robotCloudApi } from "@/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -18,7 +18,8 @@ jest.mock("@/api/client", () => ({
   robotCloudApi: {
     listActiveAgents: jest.fn(),
     getUserSettings: jest.fn(),
-    updateDefaultAgent: jest.fn()
+    updateDefaultAgent: jest.fn(),
+    logout: jest.fn()
   }
 }));
 
@@ -59,9 +60,10 @@ describe("/settings page", () => {
     mockedApi.getUserSettings.mockResolvedValue({
       defaultAgentNode: ""
     });
+    mockedApi.logout.mockResolvedValue({ logged_out: true });
   });
 
-  it("keeps account, language, and theme controls in settings", () => {
+  it("keeps account, language, and theme controls in settings", async () => {
     renderSettingsPage();
 
     expect(screen.getByText("13800000001")).toBeInTheDocument();
@@ -73,7 +75,10 @@ describe("/settings page", () => {
     expect(useLocaleStore.getState().locale).toBe("zh");
 
     fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
-    expect(useAuthStore.getState().token).toBeUndefined();
-    expect(replaceMock).toHaveBeenCalledWith("/login");
+    await waitFor(() => {
+      expect(mockedApi.logout).toHaveBeenCalled();
+      expect(useAuthStore.getState().token).toBeUndefined();
+      expect(replaceMock).toHaveBeenCalledWith("/login");
+    });
   });
 });

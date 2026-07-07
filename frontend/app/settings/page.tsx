@@ -127,8 +127,10 @@ export default function SettingsPage() {
 
   const defaultNode = settingsQuery.data?.defaultAgentNode || agentsQuery.data?.defaultAgentNode || "";
   const handleLogout = () => {
-    reset();
-    router.replace("/login");
+    robotCloudApi.logout().finally(() => {
+      reset();
+      router.replace("/login");
+    });
   };
 
   if (!token) {

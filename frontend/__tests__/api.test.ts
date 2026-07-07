@@ -134,7 +134,12 @@ describe("robotCloudApi", () => {
     const [, init] = mockedFetch.mock.calls[0];
     expect(mapHeaders(init)).toMatchObject({ "content-type": "application/json" });
     expect(init?.method).toBe("POST");
-    expect(init?.body).toBe(JSON.stringify(credentials));
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      ...credentials,
+      device_type: "desktop",
+      replace_existing_device: false
+    });
+    expect(JSON.parse(init?.body as string).device_id).toEqual(expect.any(String));
     expect(result).toEqual({
       token: "abc",
       userId: 9,
@@ -161,6 +166,67 @@ describe("robotCloudApi", () => {
       password: "pwd",
       code: "1234"
     });
+  });
+
+  it("loginWithCode sends persisted device context", async () => {
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          token: "abc",
+          user_id: 9,
+          phone: "13800000001",
+          role: "free",
+          expire_at: null
+        }
+      })
+    } as unknown as Response);
+
+    await robotCloudApi.loginWithCode({ phone: "13800000001", code: "000000" });
+    const [url, init] = mockedFetch.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/auth/login_code`);
+    const body = JSON.parse(init?.body as string);
+    expect(body).toMatchObject({
+      phone: "13800000001",
+      code: "000000",
+      device_type: "desktop",
+      replace_existing_device: false
+    });
+    expect(body.device_id).toEqual(expect.any(String));
+  });
+
+  it("loginWithCode can request device replacement", async () => {
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          token: "abc",
+          user_id: 9,
+          phone: "13800000001",
+          role: "free",
+          expire_at: null
+        }
+      })
+    } as unknown as Response);
+
+    await robotCloudApi.loginWithCode({ phone: "13800000001", code: "000000" }, { replaceExistingDevice: true });
+    const [, init] = mockedFetch.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      replace_existing_device: true
+    });
+  });
+
+  it("logout revokes the current backend session", async () => {
+    setAuthenticatedUser();
+    await robotCloudApi.logout();
+    const [url, init] = mockedFetch.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/auth/logout`);
+    expect(init?.method).toBe("POST");
+    expect(mapHeaders(init)).toHaveProperty("authorization", "Bearer token");
   });
 
   it("surfaces backend error messages from JSON responses", async () => {
@@ -199,7 +265,7 @@ describe("robotCloudApi", () => {
         data: {
           payment_id: "pay_1",
           target_role: "plus",
-          amount_cents: 60000,
+          amount_cents: 100000,
           currency: "CNY",
           provider: "alipay",
           status: "pending",

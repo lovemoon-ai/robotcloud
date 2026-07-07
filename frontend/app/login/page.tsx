@@ -24,6 +24,10 @@ function safeLoginRedirectTarget(value: string | null) {
   return value;
 }
 
+function isDeviceLimitError(value: string) {
+  return value.toLowerCase().includes("device limit");
+}
+
 export default function LoginPage() {
   const locale = useLocaleStore((state) => state.locale);
   const form = useForm<LoginFormValues>({
@@ -35,6 +39,8 @@ export default function LoginPage() {
   const [codeSent, setCodeSent] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [devCode, setDevCode] = useState<string | null>(null);
+  const [canReplaceDevice, setCanReplaceDevice] = useState(false);
+  const [isReplacingDevice, setIsReplacingDevice] = useState(false);
   const router = useRouter();
   const isZh = locale === "zh";
 
@@ -59,6 +65,9 @@ export default function LoginPage() {
             loginSuccess: (phone: string) => `欢迎，${phone}！`,
             codeSentSuccess: "验证码已发送",
             devCodeHint: (code: string) => `开发模式验证码：${code}`,
+            deviceLimitError: "当前账号已在另一台同类型设备登录。",
+            replaceDevice: "替换当前设备",
+            replacingDevice: "替换中...",
             genericError: "登录失败"
           }
         : {
@@ -79,6 +88,9 @@ export default function LoginPage() {
             loginSuccess: (phone: string) => `Welcome, ${phone}!`,
             codeSentSuccess: "Verification code sent",
             devCodeHint: (code: string) => `Dev mode code: ${code}`,
+            deviceLimitError: "This account is already signed in on another device of this type.",
+            replaceDevice: "Replace current device",
+            replacingDevice: "Replacing...",
             genericError: "Login failed"
           },
     [isZh]
@@ -99,6 +111,7 @@ export default function LoginPage() {
     }
     setError(null);
     setMessage(null);
+    setCanReplaceDevice(false);
     try {
       const result = await robotCloudApi.requestOtp(phone);
       setCodeSent(true);
@@ -112,27 +125,61 @@ export default function LoginPage() {
     }
   }, [form, copy]);
 
+  const completeLogin = useCallback(
+    async (values: LoginFormValues, replaceExistingDevice = false) => {
+      if (replaceExistingDevice) {
+        setIsReplacingDevice(true);
+      }
+      try {
+        const loginPayload = {
+          phone: values.phone,
+          code: values.code
+        };
+        const session = replaceExistingDevice
+          ? await robotCloudApi.loginWithCode(loginPayload, { replaceExistingDevice: true })
+          : await robotCloudApi.loginWithCode(loginPayload);
+        setAuth(session);
+        setMessage(copy.loginSuccess(session.phone));
+        setCanReplaceDevice(false);
+        const next = new URLSearchParams(window.location.search).get("next");
+        router.replace(safeLoginRedirectTarget(next));
+      } catch (err) {
+        const failure = err instanceof Error ? err.message : copy.genericError;
+        if (failure === "Invalid phone number") {
+          setError(copy.phoneInvalid);
+          setCanReplaceDevice(false);
+        } else if (isDeviceLimitError(failure)) {
+          setError(copy.deviceLimitError);
+          setCanReplaceDevice(true);
+        } else {
+          setError(failure);
+          setCanReplaceDevice(false);
+        }
+      } finally {
+        if (replaceExistingDevice) {
+          setIsReplacingDevice(false);
+        }
+      }
+    },
+    [copy, router, setAuth]
+  );
+
   const onSubmit = form.handleSubmit(async (values) => {
     setError(null);
     setMessage(null);
-    try {
-      const session = await robotCloudApi.loginWithCode({
-        phone: values.phone,
-        code: values.code
-      });
-      setAuth(session);
-      setMessage(copy.loginSuccess(session.phone));
-      const next = new URLSearchParams(window.location.search).get("next");
-      router.replace(safeLoginRedirectTarget(next));
-    } catch (err) {
-      const failure = err instanceof Error ? err.message : copy.genericError;
-      if (failure === "Invalid phone number") {
-        setError(copy.phoneInvalid);
-      } else {
-        setError(failure);
-      }
-    }
+    setCanReplaceDevice(false);
+    await completeLogin(values);
   });
+
+  const handleReplaceDevice = useCallback(async () => {
+    const valid = await form.trigger();
+    if (!valid) {
+      return;
+    }
+    setError(null);
+    setMessage(null);
+    await completeLogin(form.getValues(), true);
+  }, [completeLogin, form]);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-surface px-4 py-10 text-body">
@@ -192,6 +239,16 @@ export default function LoginPage() {
           </button>
           {message ? <p className="text-sm accent-text">{message}</p> : null}
           {error ? <p className="text-sm text-red-500">{error}</p> : null}
+          {canReplaceDevice ? (
+            <button
+              type="button"
+              onClick={handleReplaceDevice}
+              className="w-full rounded-md border border-primary px-3 py-2 text-sm font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={isReplacingDevice}
+            >
+              {isReplacingDevice ? copy.replacingDevice : copy.replaceDevice}
+            </button>
+          ) : null}
         </form>
       </section>
     </main>

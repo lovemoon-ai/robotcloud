@@ -185,4 +185,43 @@ describe("/login page", () => {
       });
     });
   });
+
+  it("can replace an existing device after device limit error", async () => {
+    mockedApi.requestOtp.mockResolvedValueOnce({ sent: true, code: "000000" });
+    mockedApi.loginWithCode
+      .mockRejectedValueOnce(new Error("Device limit reached for this device type"))
+      .mockResolvedValueOnce({
+        token: "token",
+        userId: 10,
+        phone: "13800000001",
+        role: "free",
+        expireAt: null
+      });
+
+    await fillPhoneAndSendCode();
+    fireEvent.change(screen.getByPlaceholderText("Enter 6-digit code"), { target: { value: "000000" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Login / Register" }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("This account is already signed in on another device of this type.")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Replace current device" }));
+    });
+
+    await waitFor(() => {
+      expect(mockedApi.loginWithCode).toHaveBeenLastCalledWith(
+        {
+          phone: "13800000001",
+          code: "000000"
+        },
+        { replaceExistingDevice: true }
+      );
+    });
+    expect(useAuthStore.getState().token).toBe("token");
+  });
 });

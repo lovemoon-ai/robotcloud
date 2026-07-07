@@ -219,9 +219,7 @@ def test_alipay_notify_rejects_unsigned_when_configured(client: APIClient, creat
     assert status_resp.json()["data"]["status"] == "pending"
 
 
-def test_dev_mode_payment_amount(client: APIClient, create_user_token, auth_header) -> None:
-    """Test that dev mode uses 0.01 RMB (1 cent) for payment."""
-    from django.conf import settings
+def test_payment_amount_defaults_to_1000_rmb(client: APIClient, create_user_token, auth_header) -> None:
     token = create_user_token("13800000022", "dev_amount")
 
     create_resp = client.post(
@@ -232,12 +230,35 @@ def test_dev_mode_payment_amount(client: APIClient, create_user_token, auth_head
     )
     assert create_resp.status_code == 200
     payment = create_resp.json()["data"]
-    # In dev mode (DEBUG=True), amount should be 1 cent
-    # In test mode (DEBUG may be False), amount should be normal price
-    if settings.DEBUG:
-        assert payment["amount_cents"] == 1
-    else:
-        assert payment["amount_cents"] == 60000  # Plus price: 600 RMB
+    assert payment["amount_cents"] == 100000
+
+
+@override_settings(DEBUG=True, PAYMENT_DEV_AMOUNT_CENTS=1)
+def test_debug_payment_amount_can_use_sandbox_cent_amount(client: APIClient, create_user_token, auth_header) -> None:
+    token = create_user_token("13800000028", "debug_amount")
+
+    create_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus", "provider": "alipay"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp.status_code == 200
+    assert create_resp.json()["data"]["amount_cents"] == 1
+
+
+@override_settings(DEBUG=False)
+def test_plus_payment_uses_1000_rmb_amount(client: APIClient, create_user_token, auth_header) -> None:
+    token = create_user_token("13800000027", "prod_amount")
+
+    create_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus", "provider": "alipay"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp.status_code == 200
+    assert create_resp.json()["data"]["amount_cents"] == 100000
 
 
 @override_settings(DEBUG=True)
