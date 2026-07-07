@@ -419,6 +419,28 @@ describe("SO101 terminal session", () => {
     });
   });
 
+  it("blocks auto record until a reset pose is set and highlights the reset pose button", async () => {
+    const { terminalWrite } = installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    // Switch the record card to the RobotCloud auto recorder (uncheck the lerobot option).
+    fireEvent.click(view.getByRole("checkbox", { name: /LeRobot 原版录制工具/ }));
+
+    fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
+    fireEvent.click(view.getByRole("button", { name: "Record" }));
+
+    await waitFor(() => {
+      expect(view.getByRole("alert")).toHaveTextContent("先运行 Reset pose");
+    });
+    expect(view.getByRole("button", { name: "Reset pose" }).className).toContain("ring-red-500");
+    expect(terminalWrite).not.toHaveBeenCalled();
+  });
+
   it("places the add camera control after the camera cards", async () => {
     installDesktopBridge();
 
@@ -713,6 +735,55 @@ describe("SO101 command generation", () => {
     expect(command).not.toContain("--robot.max_relative_target");
     expect(command).not.toContain("--fps");
     expect(command).not.toContain("--display_data");
+  });
+
+  it("builds a reset pose command from the bundled script path", () => {
+    const status: DesktopStatus = { ...desktopStatus, scriptPath: "/opt/app/resources/scripts/so101.sh" };
+    const command = buildActionCommand(
+      "record-reset-pose",
+      {
+        ...initialForm,
+        followerPort: "/dev/f",
+        leaderPort: "/dev/l",
+        robotId: "so101_follower",
+        teleopId: "so101_leader"
+      },
+      status,
+      1
+    );
+
+    expect(command).toBe(
+      "python '/opt/app/resources/scripts/robotcloud_reset_pose.py' " +
+        "--robot.type=so101_follower --robot.port='/dev/f' --robot.id='so101_follower' " +
+        "--robot.max_relative_target=5 --teleop.type=so101_leader --teleop.port='/dev/l' --teleop.id='so101_leader' --fps=30"
+    );
+  });
+
+  it("builds an auto-record command via robotcloud_auto_record.py when the lerobot recorder is off", () => {
+    const status: DesktopStatus = { ...desktopStatus, scriptPath: "/opt/app/resources/scripts/so101.sh" };
+    const command = buildActionCommand(
+      "record",
+      {
+        ...initialForm,
+        useLerobotRecorder: false,
+        followerPort: "/dev/f",
+        leaderPort: "/dev/l",
+        datasetRepoId: "local/auto",
+        task: "Pick",
+        minEpisodeTimeS: 3,
+        maxEpisodeTimeS: 45
+      },
+      status,
+      1
+    );
+
+    expect(command).toContain("python '/opt/app/resources/scripts/robotcloud_auto_record.py'");
+    expect(command).toContain("--min_episode_time_s=3");
+    expect(command).toContain("--max_episode_time_s=45");
+    expect(command).toContain("--robot.cameras=");
+    expect(command).not.toContain("--dataset.episode_time_s");
+    expect(command).not.toContain("--dataset.reset_time_s");
+    expect(command).not.toContain("lerobot");
   });
 
   it("builds Windows LeRobot actions through python modules", () => {

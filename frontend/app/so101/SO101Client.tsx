@@ -23,10 +23,13 @@ type FormState = {
   datasetRoot: string;
   episodes: number;
   episodeTimeS: number;
+  minEpisodeTimeS: number;
+  maxEpisodeTimeS: number;
   resetTimeS: number;
   teleopTimeS: number;
   maxRelativeTarget: number;
   displayData: boolean;
+  useLerobotRecorder: boolean;
   task: string;
 };
 
@@ -55,6 +58,8 @@ type ConfigFieldId =
   | "datasetRoot"
   | "episodes"
   | "episodeTimeS"
+  | "minEpisodeTimeS"
+  | "maxEpisodeTimeS"
   | "resetTimeS"
   | "teleopTimeS"
   | "maxRelativeTarget"
@@ -90,6 +95,7 @@ type ActionId =
   | "calibrate-follower"
   | "calibrate-leader"
   | "teleop"
+  | "record-reset-pose"
   | "record";
 
 type ShellDialect = "posix" | "powershell";
@@ -131,10 +137,13 @@ const initialForm: FormState = {
   datasetRoot: "",
   episodes: 1,
   episodeTimeS: 10,
+  minEpisodeTimeS: 2,
+  maxEpisodeTimeS: 60,
   resetTimeS: 2,
   teleopTimeS: 5,
   maxRelativeTarget: 5,
   displayData: true,
+  useLerobotRecorder: true,
   task: ""
 };
 
@@ -148,6 +157,7 @@ const actions: Array<{ id: ActionId; label: string }> = [
   { id: "calibrate-follower", label: "Calibrate follower" },
   { id: "calibrate-leader", label: "Calibrate leader" },
   { id: "teleop", label: "Teleoperate" },
+  { id: "record-reset-pose", label: "Reset pose" },
   { id: "record", label: "Record" }
 ];
 
@@ -160,6 +170,8 @@ const configFieldIds = new Set<string>([
   "datasetRoot",
   "episodes",
   "episodeTimeS",
+  "minEpisodeTimeS",
+  "maxEpisodeTimeS",
   "resetTimeS",
   "teleopTimeS",
   "maxRelativeTarget",
@@ -187,6 +199,8 @@ const configFieldByLabel: Record<string, ConfigFieldId> = {
   "Dataset root": "datasetRoot",
   "Episodes": "episodes",
   "Episode seconds": "episodeTimeS",
+  "Min episode seconds": "minEpisodeTimeS",
+  "Max episode seconds": "maxEpisodeTimeS",
   "Reset seconds": "resetTimeS",
   "Teleop seconds": "teleopTimeS",
   "Max relative target": "maxRelativeTarget",
@@ -482,6 +496,22 @@ function lerobotCommand(_status: DesktopStatus | null, command: string) {
   return `python -m ${moduleName}`;
 }
 
+// Build `python "<scripts-dir>/<scriptName>"` for a bundled RobotCloud script that
+// lives next to so101.sh / so101.ps1 (status.scriptPath points at that wrapper).
+function bundledScriptCommand(
+  status: DesktopStatus | null,
+  scriptName: string,
+  dialect: ShellDialect,
+  quote: (value: string) => string
+) {
+  const scriptPath = status?.scriptPath;
+  if (!scriptPath) throw new Error("脚本路径不可用，请更新桌面应用");
+  const separatorIndex = Math.max(scriptPath.lastIndexOf("/"), scriptPath.lastIndexOf("\\"));
+  const dir = separatorIndex >= 0 ? scriptPath.slice(0, separatorIndex) : scriptPath;
+  const sep = dialect === "powershell" ? "\\" : "/";
+  return `python ${quote(`${dir}${sep}${scriptName}`)}`;
+}
+
 export function buildActionCommand(action: ActionId, form: FormState, status: DesktopStatus | null, cameraCount: number) {
   const dialect = shellDialect(status);
   const quote = (value: string) => shellArg(value, dialect);
@@ -537,10 +567,56 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
       ];
       return teleopParts.join(" ");
     }
+    case "record-reset-pose":
+      return [
+        bundledScriptCommand(status, "robotcloud_reset_pose.py", dialect, quote),
+        "--robot.type=so101_follower",
+        `--robot.port=${quote(followerPort())}`,
+        `--robot.id=${quote(robotId())}`,
+        `--robot.max_relative_target=${requireNumber(form.maxRelativeTarget, "Max relative target", { min: 0 })}`,
+        "--teleop.type=so101_leader",
+        `--teleop.port=${quote(leaderPort())}`,
+        `--teleop.id=${quote(teleopId())}`,
+        "--fps=30"
+      ].join(" ");
     case "record": {
       const repoId = requireValue(form.datasetRepoId, "Dataset repo id");
       const datasetRoot = resolvedDatasetRoot(form, status);
       const episodes = requireNumber(form.episodes, "Episodes", { integer: true, min: 1 });
+
+      if (!form.useLerobotRecorder) {
+        // RobotCloud auto recorder (robotcloud_auto_record.py). Mirrors the Rust
+        // `record-auto` action: min/max episode time instead of episode/reset seconds.
+        const minEpisodeTimeS = requireNumber(form.minEpisodeTimeS, "Min episode seconds", { min: Number.MIN_VALUE });
+        const maxEpisodeTimeS = requireNumber(form.maxEpisodeTimeS, "Max episode seconds", { min: Number.MIN_VALUE });
+        const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
+        if (!cameraArg) throw new Error("先配置 Camera 0");
+        const parts = [
+          bundledScriptCommand(status, "robotcloud_auto_record.py", dialect, quote),
+          "--robot.type=so101_follower",
+          `--robot.port=${quote(followerPort())}`,
+          cameraArg,
+          `--robot.id=${quote(robotId())}`,
+          `--robot.max_relative_target=${requireNumber(form.maxRelativeTarget, "Max relative target", { min: 0 })}`,
+          "--teleop.type=so101_leader",
+          `--teleop.port=${quote(leaderPort())}`,
+          `--teleop.id=${quote(teleopId())}`,
+          `--dataset.repo_id=${quote(repoId)}`,
+          `--dataset.num_episodes=${episodes}`,
+          `--dataset.single_task=${quote(requireValue(form.task, "Task label"))}`,
+          "--dataset.push_to_hub=false",
+          "--dataset.streaming_encoding=true",
+          "--dataset.encoder_threads=2",
+          "--dataset.vcodec=h264",
+          `--min_episode_time_s=${minEpisodeTimeS}`,
+          `--max_episode_time_s=${maxEpisodeTimeS}`,
+          `--display_data=${form.displayData ? "true" : "false"}`
+        ];
+        if (datasetRoot) parts.splice(9, 0, `--dataset.root=${quote(datasetRoot)}`);
+        return parts.join(" ");
+      }
+
+      // LeRobot original recorder (lerobot-record).
       const episodeTimeS = requireNumber(form.episodeTimeS, "Episode seconds", { min: Number.MIN_VALUE });
       const resetTimeS = requireNumber(form.resetTimeS, "Reset seconds", { min: 0 });
       const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
@@ -890,6 +966,13 @@ export function SO101Client() {
   ]);
   const [previewingCamera, setPreviewingCamera] = useState<number | null>(null);
   const lastWrittenActionCommandRef = useRef<string | null>(null);
+  // Track whether the user has run "Reset pose" this session. The RobotCloud auto
+  // recorder depends on a reset pose being set first.
+  const [resetPoseConfigured, setResetPoseConfigured] = useState(false);
+  const [resetPoseRequired, setResetPoseRequired] = useState(false);
+  const resetPoseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const autoRecordNeedsResetPose = (action: ActionId) =>
+    action === "record" && !form.useLerobotRecorder && !resetPoseConfigured;
   const terminalPhase = terminalState.phase;
   const terminalError = terminalState.error;
   const runtimeProgress = terminalState.runtimeProgress;
@@ -1136,11 +1219,25 @@ export function SO101Client() {
   }, [cameraCount, form, status, writeTerminalCommand]);
 
   const runAction = async (action: ActionId) => {
+    if (autoRecordNeedsResetPose(action)) {
+      // Auto recorder needs a reset pose first: block, warn, and highlight the button.
+      setResetPoseRequired(true);
+      setSelectedAction(null);
+      setPersistentTerminalError(null);
+      setActionConfigError(null);
+      requestAnimationFrame(() => {
+        resetPoseButtonRef.current?.scrollIntoView?.({ block: "center", inline: "nearest" });
+        resetPoseButtonRef.current?.focus?.();
+      });
+      return;
+    }
+    setResetPoseRequired(false);
     setSelectedAction(action);
     try {
       setPersistentTerminalError(null);
       setActionConfigError(null);
       await writeActionCommand(action, { force: true });
+      if (action === "record-reset-pose") setResetPoseConfigured(true);
     } catch (error) {
       if (handleConfigValidationError(error)) return;
       setPersistentTerminalError(String(error));
@@ -1149,6 +1246,8 @@ export function SO101Client() {
 
   useEffect(() => {
     if (!selectedAction || terminalPhase !== "ready") return;
+    // Don't auto-write a blocked auto-record command until a reset pose is set.
+    if (selectedAction === "record" && !form.useLerobotRecorder && !resetPoseConfigured) return;
     let cancelled = false;
     writeActionCommand(selectedAction).catch((error) => {
       if (cancelled || configValidationErrorFrom(error)) return;
@@ -1157,7 +1256,7 @@ export function SO101Client() {
     return () => {
       cancelled = true;
     };
-  }, [selectedAction, terminalPhase, writeActionCommand]);
+  }, [selectedAction, terminalPhase, writeActionCommand, form.useLerobotRecorder, resetPoseConfigured]);
 
   const requestDatasetUploadReview = async () => {
     try {
@@ -1357,18 +1456,32 @@ export function SO101Client() {
         </div>
         {actionsOpen ? (
           <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
-            {actions.map((action) => (
-              <button
-                key={action.id}
-                type="button"
-                onClick={() => runAction(action.id)}
-                disabled={terminalPhase !== "ready"}
-                className="shrink-0 rounded-md border border-theme bg-surface px-3 py-2 text-sm font-semibold accent-text transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {action.label}
-              </button>
-            ))}
+            {actions.map((action) => {
+              const isResetPose = action.id === "record-reset-pose";
+              const highlight = isResetPose && resetPoseRequired;
+              return (
+                <button
+                  key={action.id}
+                  ref={isResetPose ? resetPoseButtonRef : undefined}
+                  type="button"
+                  onClick={() => runAction(action.id)}
+                  disabled={terminalPhase !== "ready"}
+                  className={`shrink-0 rounded-md border bg-surface px-3 py-2 text-sm font-semibold accent-text transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50 ${
+                    highlight
+                      ? "border-red-500 ring-2 ring-red-500/60 animate-pulse"
+                      : "border-theme"
+                  }`}
+                >
+                  {action.label}
+                </button>
+              );
+            })}
           </div>
+        ) : null}
+        {resetPoseRequired ? (
+          <p role="alert" className="mt-3 rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-500">
+            请先运行 Reset pose 设置初始位姿，再使用 RobotCloud 自动录制。
+          </p>
         ) : null}
         {actionConfigError ? (
           <p role="alert" className="mt-3 rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-500">
@@ -1595,30 +1708,61 @@ export function SO101Client() {
                 />
                 {renderConfigFieldError("episodes")}
               </label>
-              <label className="text-sm">
-                <span className="text-muted">Episode seconds</span>
-                <input
-                  ref={registerConfigInput("episodeTimeS")}
-                  type="number"
-                  value={form.episodeTimeS}
-                  onChange={(event) => updateField("episodeTimeS", Number(event.target.value))}
-                  className={configInputClass("episodeTimeS")}
-                  {...configInputA11y("episodeTimeS")}
-                />
-                {renderConfigFieldError("episodeTimeS")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Reset seconds</span>
-                <input
-                  ref={registerConfigInput("resetTimeS")}
-                  type="number"
-                  value={form.resetTimeS}
-                  onChange={(event) => updateField("resetTimeS", Number(event.target.value))}
-                  className={configInputClass("resetTimeS")}
-                  {...configInputA11y("resetTimeS")}
-                />
-                {renderConfigFieldError("resetTimeS")}
-              </label>
+              {form.useLerobotRecorder ? (
+                <>
+                  <label className="text-sm">
+                    <span className="text-muted">Episode seconds</span>
+                    <input
+                      ref={registerConfigInput("episodeTimeS")}
+                      type="number"
+                      value={form.episodeTimeS}
+                      onChange={(event) => updateField("episodeTimeS", Number(event.target.value))}
+                      className={configInputClass("episodeTimeS")}
+                      {...configInputA11y("episodeTimeS")}
+                    />
+                    {renderConfigFieldError("episodeTimeS")}
+                  </label>
+                  <label className="text-sm">
+                    <span className="text-muted">Reset seconds</span>
+                    <input
+                      ref={registerConfigInput("resetTimeS")}
+                      type="number"
+                      value={form.resetTimeS}
+                      onChange={(event) => updateField("resetTimeS", Number(event.target.value))}
+                      className={configInputClass("resetTimeS")}
+                      {...configInputA11y("resetTimeS")}
+                    />
+                    {renderConfigFieldError("resetTimeS")}
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="text-sm">
+                    <span className="text-muted">Min episode seconds</span>
+                    <input
+                      ref={registerConfigInput("minEpisodeTimeS")}
+                      type="number"
+                      value={form.minEpisodeTimeS}
+                      onChange={(event) => updateField("minEpisodeTimeS", Number(event.target.value))}
+                      className={configInputClass("minEpisodeTimeS")}
+                      {...configInputA11y("minEpisodeTimeS")}
+                    />
+                    {renderConfigFieldError("minEpisodeTimeS")}
+                  </label>
+                  <label className="text-sm">
+                    <span className="text-muted">Max episode seconds</span>
+                    <input
+                      ref={registerConfigInput("maxEpisodeTimeS")}
+                      type="number"
+                      value={form.maxEpisodeTimeS}
+                      onChange={(event) => updateField("maxEpisodeTimeS", Number(event.target.value))}
+                      className={configInputClass("maxEpisodeTimeS")}
+                      {...configInputA11y("maxEpisodeTimeS")}
+                    />
+                    {renderConfigFieldError("maxEpisodeTimeS")}
+                  </label>
+                </>
+              )}
               <label className="text-sm">
                 <span className="text-muted">Max relative target</span>
                 <input
@@ -1643,6 +1787,17 @@ export function SO101Client() {
                   {...configInputA11y("task")}
                 />
                 {renderConfigFieldError("task")}
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted md:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={form.useLerobotRecorder}
+                  onChange={(event) => {
+                    updateField("useLerobotRecorder", event.target.checked);
+                    if (event.target.checked) setResetPoseRequired(false);
+                  }}
+                />
+                使用 LeRobot 原版录制工具（不勾选则用 RobotCloud 自动录制，需先设置 Reset pose）
               </label>
               <label className="flex items-center gap-2 text-sm text-muted">
                 <input type="checkbox" checked={form.displayData} onChange={(event) => updateField("displayData", event.target.checked)} />
