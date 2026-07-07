@@ -26,6 +26,12 @@ export interface DashboardSummary {
   gpuHours: number;
 }
 
+export interface BuildVersionInfo {
+  version: string;
+  buildCommit: string;
+  buildTime: string;
+}
+
 export interface DatasetSummary {
   id: number;
   name: string;

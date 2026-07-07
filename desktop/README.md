@@ -156,7 +156,7 @@ Defaults:
 
 ```text
 Python 3.12
-lerobot==0.5.1
+lerobot==0.6.0
 feetech-servo-sdk>=1.0.0,<2.0.0
 torch==2.10.0
 torchvision==0.25.0

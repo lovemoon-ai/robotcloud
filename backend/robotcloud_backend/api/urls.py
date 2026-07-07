@@ -6,6 +6,7 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    path("version", views.VersionView.as_view(), name="version"),
     # Authentication
     path("auth/send_code", views.SendCodeView.as_view(), name="auth-send-code"),
     path("auth/register", views.RegisterView.as_view(), name="auth-register"),

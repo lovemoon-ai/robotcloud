@@ -3,6 +3,9 @@ type DesktopStatus = {
   isDesktop: boolean;
   platform: string;
   appVersion: string;
+  appBuildCommit?: string;
+  appBuildTime?: string;
+  lerobotVersion?: string | null;
   apiBaseUrl: string;
   webUrl: string;
   runtimePath: string | null;

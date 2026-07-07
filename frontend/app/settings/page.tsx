@@ -47,6 +47,12 @@ export default function SettingsPage() {
         themeDescription: "切换浅色或深色模式。",
         light: "浅色",
         dark: "深色",
+        versionTitle: "版本",
+        versionDescription: "当前后端服务构建信息。",
+        versionNumber: "版本号",
+        buildCommit: "构建 Commit",
+        buildTime: "构建时间",
+        unknown: "unknown",
         configTitle: "配置项",
         plans: {
           title: "套餐购买",
@@ -83,6 +89,12 @@ export default function SettingsPage() {
         themeDescription: "Switch between light and dark mode.",
         light: "Light",
         dark: "Dark",
+        versionTitle: "Version",
+        versionDescription: "Current backend service build information.",
+        versionNumber: "Version",
+        buildCommit: "Build commit",
+        buildTime: "Build time",
+        unknown: "unknown",
         configTitle: "Configuration",
         plans: {
           title: "Plans",
@@ -113,6 +125,11 @@ export default function SettingsPage() {
     queryFn: robotCloudApi.getUserSettings,
     enabled: Boolean(token)
   });
+  const versionQuery = useQuery({
+    queryKey: ["backend", "version"],
+    queryFn: robotCloudApi.fetchBackendVersion,
+    enabled: Boolean(token)
+  });
   const mutation = useMutation({
     mutationFn: robotCloudApi.updateDefaultAgent,
     onSuccess: () => {
@@ -126,6 +143,8 @@ export default function SettingsPage() {
   });
 
   const defaultNode = settingsQuery.data?.defaultAgentNode || agentsQuery.data?.defaultAgentNode || "";
+  const backendVersion = versionQuery.data;
+  const versionValue = (value: string | undefined) => value || (versionQuery.isLoading ? copy.loading : copy.unknown);
   const handleLogout = () => {
     robotCloudApi.logout().finally(() => {
       reset();
@@ -143,7 +162,7 @@ export default function SettingsPage() {
         <h1 className="text-3xl font-bold">{copy.title}</h1>
         <p className="text-sm text-muted">{copy.subtitle}</p>
       </header>
-      <section className="grid gap-4 lg:grid-cols-[0.95fr_1.05fr]">
+      <section className="grid gap-4 lg:grid-cols-3">
         <div className="rounded-lg border border-theme bg-card p-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -227,6 +246,25 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
+        </div>
+
+        <div className="rounded-lg border border-theme bg-card p-5">
+          <h2 className="text-base font-semibold text-body">{copy.versionTitle}</h2>
+          <p className="mt-1 text-sm text-muted">{copy.versionDescription}</p>
+          <dl className="mt-4 grid gap-3 text-sm">
+            <div className="rounded-md border border-theme bg-surface p-3">
+              <dt className="text-xs text-muted">{copy.versionNumber}</dt>
+              <dd className="mt-1 break-all font-medium text-body">{versionValue(backendVersion?.version)}</dd>
+            </div>
+            <div className="rounded-md border border-theme bg-surface p-3">
+              <dt className="text-xs text-muted">{copy.buildCommit}</dt>
+              <dd className="mt-1 break-all font-medium text-body">{versionValue(backendVersion?.buildCommit)}</dd>
+            </div>
+            <div className="rounded-md border border-theme bg-surface p-3">
+              <dt className="text-xs text-muted">{copy.buildTime}</dt>
+              <dd className="mt-1 break-all font-medium text-body">{versionValue(backendVersion?.buildTime)}</dd>
+            </div>
+          </dl>
         </div>
       </section>
       <section aria-label={copy.configTitle} className="grid gap-3 md:grid-cols-2">

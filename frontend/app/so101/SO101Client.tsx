@@ -351,6 +351,10 @@ function formatDuration(seconds: number | null | undefined) {
   return `${minutes}:${remainingSeconds}`;
 }
 
+function versionText(value: string | null | undefined) {
+  return value && value.trim() ? value : "unknown";
+}
+
 export function datasetUploadValidationIssues(stats: DatasetUploadInspection) {
   const issues: string[] = [];
   if (stats.fileCount < 1) {
@@ -1199,6 +1203,9 @@ export function SO101Client() {
         isDesktop: false,
         platform: "browser",
         appVersion: "browser",
+        appBuildCommit: "unknown",
+        appBuildTime: "unknown",
+        lerobotVersion: null,
         apiBaseUrl: "https://robotcloud.conductor-ai.top/api/v1",
         webUrl: "",
         runtimePath: null,
@@ -1425,9 +1432,17 @@ export function SO101Client() {
   const statusCards = useMemo(
     () => [
       { label: "Runtime", value: status?.runtimeReady ? "ready" : "missing", detail: status?.runtimeError ?? status?.runtimePath ?? "not found" },
-      { label: "Action commands", value: status?.runtimeReady ? "direct" : "pending", detail: status?.runtimeReady ? "python -m on Windows" : "waiting for runtime" },
       { label: "Data folder", value: "local", detail: status?.dataDir || "pending" },
-      { label: "Cloud API", value: "online", detail: status?.apiBaseUrl ?? "https://robotcloud.conductor-ai.top/api/v1" }
+      {
+        label: "Version",
+        value: versionText(status?.appVersion),
+        rows: [
+          { label: "App version", value: versionText(status?.appVersion) },
+          { label: "Build commit", value: versionText(status?.appBuildCommit) },
+          { label: "Build time", value: versionText(status?.appBuildTime) },
+          { label: "LeRobot", value: versionText(status?.lerobotVersion) }
+        ]
+      }
     ],
     [status]
   );
@@ -1926,14 +1941,25 @@ export function SO101Client() {
         </div>
       ) : null}
 
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {statusCards.map((card) => (
           <div key={card.label} className="rounded-lg border border-theme bg-card p-4">
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs uppercase tracking-wide text-muted">{card.label}</span>
               <span className="rounded border border-theme px-2 py-0.5 text-xs accent-text">{card.value}</span>
             </div>
-            <p className="mt-2 break-all text-xs text-muted">{card.detail}</p>
+            {card.rows ? (
+              <dl className="mt-3 grid gap-2 text-xs">
+                {card.rows.map((row) => (
+                  <div key={row.label} className="grid grid-cols-[6rem_minmax(0,1fr)] gap-2">
+                    <dt className="text-muted">{row.label}</dt>
+                    <dd className="break-all text-body">{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : (
+              <p className="mt-2 break-all text-xs text-muted">{card.detail ?? ""}</p>
+            )}
           </div>
         ))}
       </section>

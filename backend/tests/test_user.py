@@ -5,6 +5,21 @@ from rest_framework.test import APIClient
 from robotcloud_backend.api.models import TrainTask
 
 
+def test_version_endpoint_returns_build_metadata(client: APIClient, monkeypatch) -> None:
+    monkeypatch.setenv("ROBOTCLOUD_BACKEND_VERSION", "1.2.3")
+    monkeypatch.setenv("ROBOTCLOUD_BACKEND_BUILD_COMMIT", "abc1234")
+    monkeypatch.setenv("ROBOTCLOUD_BACKEND_BUILD_TIME", "2026-01-01T00:00:00Z")
+
+    response = client.get("/api/v1/version")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "version": "1.2.3",
+        "build_commit": "abc1234",
+        "build_time": "2026-01-01T00:00:00Z",
+    }
+
+
 def test_profile(client: APIClient, create_user_token, auth_header) -> None:
     token = create_user_token()
     profile_resp = client.get("/api/v1/user/profile", **auth_header(token))

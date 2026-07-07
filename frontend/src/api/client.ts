@@ -4,6 +4,7 @@ import {
   AdminUser,
   AuthCredentials,
   AuthSession,
+  BuildVersionInfo,
   DashboardSummary,
   DatasetSummary,
   DatasetUploadInput,
@@ -230,6 +231,12 @@ type BackendDashboardResponse = {
   datasets: number;
   tier: UserRole;
   gpu_hours: number;
+};
+
+type BackendBuildVersion = {
+  version: string;
+  build_commit: string;
+  build_time: string;
 };
 
 type AgentUploadStatus = {
@@ -617,6 +624,14 @@ function mapAgent(item: BackendAgent): GpuAgent {
 }
 
 export const robotCloudApi = {
+  fetchBackendVersion: async (): Promise<BuildVersionInfo> => {
+    const data = await request<BackendBuildVersion>("/version");
+    return {
+      version: data.version,
+      buildCommit: data.build_commit,
+      buildTime: data.build_time
+    };
+  },
   loginWithPassword: async (payload: AuthCredentials, options?: LoginOptions): Promise<AuthSession> => {
     const device = getLoginDeviceContext();
     const data = await request<BackendLoginResponse>("/auth/login", {

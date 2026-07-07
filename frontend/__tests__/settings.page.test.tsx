@@ -16,6 +16,7 @@ jest.mock("next/navigation", () => ({
 
 jest.mock("@/api/client", () => ({
   robotCloudApi: {
+    fetchBackendVersion: jest.fn(),
     listActiveAgents: jest.fn(),
     getUserSettings: jest.fn(),
     updateDefaultAgent: jest.fn(),
@@ -60,6 +61,11 @@ describe("/settings page", () => {
     mockedApi.getUserSettings.mockResolvedValue({
       defaultAgentNode: ""
     });
+    mockedApi.fetchBackendVersion.mockResolvedValue({
+      version: "0.1.0",
+      buildCommit: "test-commit",
+      buildTime: "2026-01-01T00:00:00Z"
+    });
     mockedApi.logout.mockResolvedValue({ logged_out: true });
   });
 
@@ -67,6 +73,7 @@ describe("/settings page", () => {
     renderSettingsPage();
 
     expect(screen.getByText("13800000001")).toBeInTheDocument();
+    expect(await screen.findByText("test-commit")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Light" }));
     expect(useThemeStore.getState().theme).toBe("light");

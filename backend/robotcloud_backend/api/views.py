@@ -9,8 +9,9 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from ..build_info import get_backend_build_info
+from ..sms import SmsGateway, get_default_sms_gateway
 from .services import RobotCloudService
-from ..sms import ConsoleSmsGateway, SmsGateway, get_default_sms_gateway
 
 
 _sms_gateway: SmsGateway = get_default_sms_gateway()
@@ -94,6 +95,11 @@ class RobotCloudAPIView(APIView):
         if isinstance(value, str):
             return value.strip().lower() not in {"0", "false", "no", "off"}
         return bool(value)
+
+
+class VersionView(RobotCloudAPIView):
+    def get(self, request: Request) -> Response:
+        return self._execute(lambda: {"code": 0, "message": "success", "data": get_backend_build_info()})
 
 
 class SendCodeView(RobotCloudAPIView):

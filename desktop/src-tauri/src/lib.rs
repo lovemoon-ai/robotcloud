@@ -231,6 +231,9 @@ struct DesktopStatus {
     is_desktop: bool,
     platform: String,
     app_version: String,
+    app_build_commit: String,
+    app_build_time: String,
+    lerobot_version: Option<String>,
     api_base_url: String,
     web_url: String,
     runtime_path: Option<String>,
@@ -241,6 +244,13 @@ struct DesktopStatus {
     scripts_dir: Option<String>,
     script_ready: bool,
     data_dir: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeManifest {
+    lerobot_spec: Option<String>,
+    packages: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -506,6 +516,91 @@ fn runtime_archive_path(app: &AppHandle) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn runtime_manifest_path(runtime: &Path) -> PathBuf {
+    runtime.join("ROBOTCLOUD_RUNTIME_MANIFEST.json")
+}
+
+fn lerobot_version_from_spec(spec: &str) -> Option<String> {
+    let trimmed = spec.trim();
+    trimmed
+        .strip_prefix("lerobot==")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn lerobot_version_from_manifest(content: &str) -> Option<String> {
+    let manifest = serde_json::from_str::<RuntimeManifest>(content).ok()?;
+    manifest
+        .lerobot_spec
+        .as_deref()
+        .and_then(lerobot_version_from_spec)
+        .or_else(|| {
+            manifest.packages.as_ref().and_then(|packages| {
+                packages
+                    .iter()
+                    .find_map(|package| lerobot_version_from_spec(package))
+            })
+        })
+}
+
+fn lerobot_version_from_runtime_manifest(runtime: &Path) -> Option<String> {
+    fs::read_to_string(runtime_manifest_path(runtime))
+        .ok()
+        .and_then(|content| lerobot_version_from_manifest(&content))
+}
+
+fn lerobot_version_from_archive(archive: &Path) -> Option<String> {
+    let archive_file = File::open(archive).ok()?;
+    let mut archive = zip::ZipArchive::new(archive_file).ok()?;
+    let mut manifest = archive.by_name("ROBOTCLOUD_RUNTIME_MANIFEST.json").ok()?;
+    let mut content = String::new();
+    manifest.read_to_string(&mut content).ok()?;
+    lerobot_version_from_manifest(&content)
+}
+
+fn lerobot_version_from_python(runtime: &Path) -> Option<String> {
+    let python = python_path(&runtime.to_path_buf());
+    if !python.exists() {
+        return None;
+    }
+    let output = Command::new(&python)
+        .arg("-c")
+        .arg("import importlib.metadata; print(importlib.metadata.version('lerobot'))")
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn lerobot_runtime_version(
+    runtime: &Path,
+    archive: Option<&Path>,
+    runtime_ready: bool,
+) -> Option<String> {
+    env::var("ROBOTCLOUD_LEROBOT_VERSION")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| lerobot_version_from_runtime_manifest(runtime))
+        .or_else(|| archive.and_then(lerobot_version_from_archive))
+        .or_else(|| {
+            if runtime_ready {
+                lerobot_version_from_python(runtime)
+            } else {
+                None
+            }
+        })
 }
 
 fn runtime_archive_signature(archive: Option<&Path>) -> String {
@@ -2614,12 +2709,16 @@ fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
     } else {
         Some(runtime_not_ready_message(&runtime))
     };
+    let lerobot_version = lerobot_runtime_version(&runtime, archive.as_deref(), runtime_ready);
     let scripts = scripts_dir(&app);
     let data = data_dir(&app)?;
     Ok(DesktopStatus {
         is_desktop: true,
         platform: env::consts::OS.to_string(),
         app_version: app.package_info().version.to_string(),
+        app_build_commit: env!("ROBOTCLOUD_APP_BUILD_COMMIT").to_string(),
+        app_build_time: env!("ROBOTCLOUD_APP_BUILD_TIME").to_string(),
+        lerobot_version,
         api_base_url: api_base_url(),
         web_url: web_url(),
         runtime_ready,
