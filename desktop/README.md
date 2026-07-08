@@ -1,14 +1,15 @@
 # RobotCloud Tauri
 
-This is the Rust/Tauri implementation of RobotCloud Desktop. It loads the
-RobotCloud web frontend and exposes local SO101/LeRobot capabilities through a
-narrow JavaScript bridge.
+This is the Rust/Tauri implementation of RobotCloud Desktop. Release builds
+start from the bundled SO101 workbench frontend, while the rest of RobotCloud
+continues to load from the cloud web app. Local SO101/LeRobot capabilities are
+exposed through a narrow JavaScript bridge.
 
 Default web URLs:
 
 ```text
-debug:   http://127.0.0.1:3000/so101/
-release: https://robotcloud.conductor-ai.top/so101/
+debug:   http://127.0.0.1:6151/so101/
+release: app://local/so101/ (bundled at src-tauri/frontend-dist/so101/index.html)
 ```
 
 For local desktop frontend testing, start the frontend dev server, then run the
@@ -29,6 +30,21 @@ To point the debug shell at a different local frontend port, override the URL:
 $env:ROBOTCLOUD_DESKTOP_URL="http://127.0.0.1:6151/so101/"
 pnpm dev
 ```
+
+Release builds run `scripts/prepare-frontend-dist.mjs` before packaging. The
+script exports the Next.js frontend and copies only the local SO101 entrypoint,
+shared `_next` assets, and public metadata into `src-tauri/frontend-dist/`.
+Use it directly when checking bundle contents:
+
+```bash
+pnpm prepare:frontend
+```
+
+Cloud pages such as datasets, training, models, inference, settings, and plans
+remain cloud-backed. In the packaged app, navigation from local SO101 to those
+pages uses `https://robotcloud.conductor-ai.top/...`; navigation from the cloud
+SO101 route is intercepted by Tauri and redirected back to the bundled local
+SO101 workbench.
 
 Windows build:
 
@@ -60,7 +76,7 @@ macOS build:
 macOS local-frontend debug build:
 
 ```bash
-# Build RobotCloud-debug.app in a DMG whose default frontend URL is http://127.0.0.1:3000/so101/.
+# Build RobotCloud-debug.app in a DMG whose default frontend URL is http://127.0.0.1:6151/so101/.
 npm run build:mac:debug
 ```
 
@@ -124,6 +140,11 @@ leader candidates, then use **Detect cameras** to call LeRobot camera discovery
 and fill the OpenCV camera id plus default profile. Use each camera card's
 **Check** button to verify the selected camera and refresh the actual width,
 height, and fps before teleoperation or recording.
+
+RobotCloud auto recording does not depend on a preconfigured reset pose. Each
+episode ends when the current 6-joint pose remains stationary for 3 seconds;
+the standalone **Save pose** action records a specific 6-joint pose to
+`saved_poses/<robot-id>.json` for later inspection or manual workflows.
 
 Before a recorded dataset is packaged for upload, the workbench asks the desktop
 bridge to inspect the local LeRobot dataset. The review dialog shows file count,

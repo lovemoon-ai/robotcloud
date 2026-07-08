@@ -1,5 +1,5 @@
 use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::HashMap,
     env,
@@ -17,8 +17,12 @@ use tauri::{
 };
 use uuid::Uuid;
 
+#[cfg(test)]
 const RELEASE_WEB_URL: &str = "https://robotcloud.conductor-ai.top/so101/";
 const DEBUG_WEB_URL: &str = "http://127.0.0.1:6151/so101/";
+const CLOUD_WEB_HOST: &str = "robotcloud.conductor-ai.top";
+const LOCAL_SO101_WEB_URL: &str = "app://local/so101/";
+const LOCAL_SO101_APP_PATH: &str = "so101/index.html";
 const MIN_DATASET_UPLOAD_EPISODES: u64 = 1;
 const MIN_DATASET_UPLOAD_DURATION_SECONDS: f64 = 1.0;
 const RUNTIME_READY_MARKER_VERSION: &str = "2";
@@ -61,7 +65,15 @@ const DEFAULT_BRIDGE_SCRIPT: &str = r#"
       dataset: {
         inspectUpload: function (config) { return core.invoke("dataset_inspect_upload", { config: config }); },
         prepareUpload: function (config) { return core.invoke("dataset_prepare_upload", { config: config }); },
+        getPreparedUpload: function () { return core.invoke("dataset_get_prepared_upload"); },
+        setPreparedUpload: function (prepared) { return core.invoke("dataset_set_prepared_upload", { prepared: prepared }); },
+        clearPreparedUpload: function () { return core.invoke("dataset_clear_prepared_upload"); },
         readPreparedUpload: function (filePath) { return core.invoke("dataset_read_prepared_upload", { filePath: filePath }); }
+      },
+      auth: {
+        getSession: function () { return core.invoke("desktop_get_auth_session"); },
+        setSession: function (session) { return core.invoke("desktop_set_auth_session", { session: session }); },
+        clearSession: function () { return core.invoke("desktop_clear_auth_session"); }
       },
       runtime: {
         prepare: function () { return core.invoke("runtime_prepare"); },
@@ -174,7 +186,15 @@ const WINDOWS_BRIDGE_SCRIPT: &str = r#"
       dataset: {
         inspectUpload: function (config) { return invoke("dataset_inspect_upload", { config: config }); },
         prepareUpload: function (config) { return invoke("dataset_prepare_upload", { config: config }); },
+        getPreparedUpload: function () { return invoke("dataset_get_prepared_upload"); },
+        setPreparedUpload: function (prepared) { return invoke("dataset_set_prepared_upload", { prepared: prepared }); },
+        clearPreparedUpload: function () { return invoke("dataset_clear_prepared_upload"); },
         readPreparedUpload: function (filePath) { return invoke("dataset_read_prepared_upload", { filePath: filePath }); }
+      },
+      auth: {
+        getSession: function () { return invoke("desktop_get_auth_session"); },
+        setSession: function (session) { return invoke("desktop_set_auth_session", { session: session }); },
+        clearSession: function () { return invoke("desktop_clear_auth_session"); }
       },
       runtime: {
         prepare: function () { return invoke("runtime_prepare"); },
@@ -370,7 +390,7 @@ struct DatasetPrepareUploadConfig {
     task: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct PreparedDatasetUpload {
     file_path: String,
@@ -381,10 +401,10 @@ struct PreparedDatasetUpload {
     description: String,
     visibility: String,
     created_at: String,
-    stats: DatasetUploadInspection,
+    stats: Option<DatasetUploadInspection>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct DatasetUploadInspection {
     dataset_root: String,
@@ -399,6 +419,16 @@ struct DatasetUploadInspection {
     duration_seconds: Option<f64>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopAuthSession {
+    token: String,
+    user_id: u64,
+    phone: String,
+    role: String,
+    expire_at: Option<String>,
+}
+
 #[derive(Debug, Default)]
 struct DatasetDirectoryStats {
     file_count: u64,
@@ -410,7 +440,7 @@ fn default_web_url() -> &'static str {
     if cfg!(debug_assertions) {
         DEBUG_WEB_URL
     } else {
-        RELEASE_WEB_URL
+        LOCAL_SO101_WEB_URL
     }
 }
 
@@ -424,6 +454,45 @@ fn app_title() -> &'static str {
 
 fn web_url() -> String {
     env::var("ROBOTCLOUD_DESKTOP_URL").unwrap_or_else(|_| default_web_url().to_string())
+}
+
+fn initial_webview_url() -> Result<WebviewUrl, String> {
+    if let Ok(url) = env::var("ROBOTCLOUD_DESKTOP_URL") {
+        let parsed = url::Url::parse(&url)
+            .map_err(|error| format!("Invalid ROBOTCLOUD_DESKTOP_URL {url}: {error}"))?;
+        return Ok(WebviewUrl::External(parsed));
+    }
+    if cfg!(debug_assertions) {
+        let parsed = url::Url::parse(DEBUG_WEB_URL)
+            .map_err(|error| format!("Invalid debug web URL {DEBUG_WEB_URL}: {error}"))?;
+        Ok(WebviewUrl::External(parsed))
+    } else {
+        Ok(WebviewUrl::App(LOCAL_SO101_APP_PATH.into()))
+    }
+}
+
+fn local_so101_url() -> Result<url::Url, String> {
+    let raw = if cfg!(target_os = "windows") {
+        "http://tauri.localhost/so101/index.html"
+    } else {
+        "tauri://localhost/so101/index.html"
+    };
+    url::Url::parse(raw).map_err(|error| error.to_string())
+}
+
+fn normalized_url_path(url: &url::Url) -> String {
+    let path = url.path().trim_end_matches('/');
+    if path.is_empty() {
+        "/".to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+fn is_cloud_so101_url(url: &url::Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str() == Some(CLOUD_WEB_HOST)
+        && normalized_url_path(url) == "/so101"
 }
 
 fn api_base_url() -> String {
@@ -1287,6 +1356,43 @@ fn prepared_upload_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+fn shared_state_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = data_dir(app)?.join("shared_state");
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    Ok(dir)
+}
+
+fn prepared_upload_state_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(shared_state_dir(app)?.join("prepared_upload.json"))
+}
+
+fn auth_session_state_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(shared_state_dir(app)?.join("auth_session.json"))
+}
+
+fn read_json_state<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+    match fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .map(Some)
+            .map_err(|error| error.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn write_json_state<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let raw = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
+    fs::write(path, raw).map_err(|error| error.to_string())
+}
+
+fn remove_state_file(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn dataset_repo_path(repo_id: &str) -> Result<PathBuf, String> {
     let mut path = PathBuf::new();
     let mut has_segment = false;
@@ -1666,6 +1772,7 @@ fn allowed_action(action: &str) -> bool {
             | "calibrate-follower"
             | "calibrate-leader"
             | "teleop"
+            | "save-pose"
             | "record-reset-pose"
             | "record-auto"
             | "record"
@@ -1957,12 +2064,12 @@ where
                 args,
             ))
         }
-        "record-reset-pose" => {
+        "save-pose" | "record-reset-pose" => {
             let mut args = Vec::new();
             add_common_robot_args(&mut args, config, false)?;
             add_common_teleop_args(&mut args, config)?;
             push_eq_arg(&mut args, "--fps", config.fps.unwrap_or(30));
-            python_script_args("robotcloud_reset_pose.py", &script_path, args)
+            python_script_args("robotcloud_save_pose.py", &script_path, args)
         }
         "record-auto" => {
             let dataset_root = dataset_root_for_config(config, data_dir);
@@ -2647,7 +2754,7 @@ fn dataset_prepare_upload(
         format!("SO101 Desktop recording: {task}")
     };
 
-    Ok(PreparedDatasetUpload {
+    let prepared = PreparedDatasetUpload {
         file_path: final_path.to_string_lossy().to_string(),
         file_name,
         file_size,
@@ -2656,13 +2763,14 @@ fn dataset_prepare_upload(
         description,
         visibility: "private".to_string(),
         created_at,
-        stats: inspection,
-    })
+        stats: Some(inspection),
+    };
+    write_prepared_upload_state(&app, &prepared)?;
+    Ok(prepared)
 }
 
-#[tauri::command]
-fn dataset_read_prepared_upload(app: AppHandle, file_path: String) -> Result<Response, String> {
-    let upload_dir = prepared_upload_dir(&app)?;
+fn prepared_upload_file(app: &AppHandle, file_path: &str) -> Result<PathBuf, String> {
+    let upload_dir = prepared_upload_dir(app)?;
     let upload_dir = upload_dir
         .canonicalize()
         .map_err(|error| error.to_string())?;
@@ -2678,8 +2786,120 @@ fn dataset_read_prepared_upload(app: AppHandle, file_path: String) -> Result<Res
             file.display()
         ));
     }
+    Ok(file)
+}
+
+fn validate_prepared_upload(
+    app: &AppHandle,
+    prepared: &PreparedDatasetUpload,
+) -> Result<(), String> {
+    if prepared.file_name.trim().is_empty()
+        || prepared.dataset_root.trim().is_empty()
+        || prepared.name.trim().is_empty()
+        || prepared.created_at.trim().is_empty()
+    {
+        return Err("Prepared upload metadata is incomplete.".to_string());
+    }
+    if prepared.visibility != "private" && prepared.visibility != "public" {
+        return Err("Prepared upload visibility must be private or public.".to_string());
+    }
+    let file = prepared_upload_file(app, &prepared.file_path)?;
+    let file_size = fs::metadata(file).map_err(|error| error.to_string())?.len();
+    if file_size != prepared.file_size {
+        return Err("Prepared upload file size does not match metadata.".to_string());
+    }
+    Ok(())
+}
+
+fn read_prepared_upload_state(app: &AppHandle) -> Result<Option<PreparedDatasetUpload>, String> {
+    read_json_state(&prepared_upload_state_path(app)?)
+}
+
+fn write_prepared_upload_state(
+    app: &AppHandle,
+    prepared: &PreparedDatasetUpload,
+) -> Result<(), String> {
+    validate_prepared_upload(app, prepared)?;
+    write_json_state(&prepared_upload_state_path(app)?, prepared)
+}
+
+fn clear_prepared_upload_state(app: &AppHandle) -> Result<(), String> {
+    remove_state_file(&prepared_upload_state_path(app)?)
+}
+
+#[tauri::command]
+fn dataset_get_prepared_upload(app: AppHandle) -> Result<Option<PreparedDatasetUpload>, String> {
+    let prepared = read_prepared_upload_state(&app)?;
+    if let Some(prepared) = prepared {
+        if validate_prepared_upload(&app, &prepared).is_ok() {
+            Ok(Some(prepared))
+        } else {
+            let _ = clear_prepared_upload_state(&app);
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+fn dataset_set_prepared_upload(
+    app: AppHandle,
+    prepared: PreparedDatasetUpload,
+) -> Result<(), String> {
+    write_prepared_upload_state(&app, &prepared)
+}
+
+#[tauri::command]
+fn dataset_clear_prepared_upload(app: AppHandle) -> Result<(), String> {
+    clear_prepared_upload_state(&app)
+}
+
+#[tauri::command]
+fn dataset_read_prepared_upload(app: AppHandle, file_path: String) -> Result<Response, String> {
+    let file = prepared_upload_file(&app, &file_path)?;
     let bytes = fs::read(&file).map_err(|error| error.to_string())?;
     Ok(Response::new(bytes))
+}
+
+fn validate_auth_session(session: &DesktopAuthSession) -> Result<(), String> {
+    if session.token.trim().is_empty() || session.phone.trim().is_empty() {
+        return Err("Auth session is incomplete.".to_string());
+    }
+    match session.role.as_str() {
+        "free" | "plus" | "pro" | "admin" => Ok(()),
+        _ => Err("Auth session role is invalid.".to_string()),
+    }
+}
+
+fn clear_auth_session_state(app: &AppHandle) -> Result<(), String> {
+    remove_state_file(&auth_session_state_path(app)?)
+}
+
+#[tauri::command]
+fn desktop_get_auth_session(app: AppHandle) -> Result<Option<DesktopAuthSession>, String> {
+    let session = read_json_state::<DesktopAuthSession>(&auth_session_state_path(&app)?)?;
+    if let Some(session) = session {
+        if validate_auth_session(&session).is_ok() {
+            Ok(Some(session))
+        } else {
+            let _ = clear_auth_session_state(&app);
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+fn desktop_set_auth_session(app: AppHandle, session: DesktopAuthSession) -> Result<(), String> {
+    validate_auth_session(&session)?;
+    write_json_state(&auth_session_state_path(&app)?, &session)
+}
+
+#[tauri::command]
+fn desktop_clear_auth_session(app: AppHandle) -> Result<(), String> {
+    clear_auth_session_state(&app)
 }
 
 #[tauri::command]
@@ -3039,7 +3259,13 @@ pub fn run() {
             desktop_status,
             dataset_inspect_upload,
             dataset_prepare_upload,
+            dataset_get_prepared_upload,
+            dataset_set_prepared_upload,
+            dataset_clear_prepared_upload,
             dataset_read_prepared_upload,
+            desktop_get_auth_session,
+            desktop_set_auth_session,
+            desktop_clear_auth_session,
             so101_run,
             so101_stop,
             so101_validate_port,
@@ -3058,17 +3284,28 @@ pub fn run() {
             _ => {}
         })
         .setup(|app| {
-            let url = web_url();
-            let parsed_url = url::Url::parse(&url).map_err(|error| {
-                Box::<dyn std::error::Error>::from(format!(
-                    "Invalid ROBOTCLOUD_DESKTOP_URL {url}: {error}"
-                ))
-            })?;
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed_url))
+            let initial_url = initial_webview_url().map_err(Box::<dyn std::error::Error>::from)?;
+            let app_handle = app.handle().clone();
+            WebviewWindowBuilder::new(app, "main", initial_url)
                 .title(app_title())
                 .inner_size(1280.0, 860.0)
                 .min_inner_size(980.0, 700.0)
                 .initialization_script(bridge_script())
+                .on_navigation(move |url| {
+                    if is_cloud_so101_url(url) {
+                        let app_handle = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                if let Ok(url) = local_so101_url() {
+                                    let _ = window.navigate(url);
+                                }
+                            }
+                        });
+                        false
+                    } else {
+                        true
+                    }
+                })
                 .build()?;
             Ok(())
         })
@@ -3125,11 +3362,24 @@ mod tests {
         if cfg!(debug_assertions) {
             assert_eq!(default_web_url(), "http://127.0.0.1:6151/so101/");
         } else {
-            assert_eq!(
-                default_web_url(),
-                "https://robotcloud.conductor-ai.top/so101/"
-            );
+            assert_eq!(default_web_url(), "app://local/so101/");
         }
+    }
+
+    #[test]
+    fn cloud_so101_url_is_intercepted_for_local_workbench() {
+        assert!(is_cloud_so101_url(
+            &url::Url::parse(RELEASE_WEB_URL).unwrap()
+        ));
+        assert!(is_cloud_so101_url(
+            &url::Url::parse("https://robotcloud.conductor-ai.top/so101").unwrap()
+        ));
+        assert!(!is_cloud_so101_url(
+            &url::Url::parse("https://robotcloud.conductor-ai.top/datasets").unwrap()
+        ));
+        assert!(!is_cloud_so101_url(
+            &url::Url::parse("http://127.0.0.1:6151/so101/").unwrap()
+        ));
     }
 
     #[test]
@@ -3252,7 +3502,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
             "calibrate-follower",
             "calibrate-leader",
             "teleop",
-            "record-reset-pose",
+            "save-pose",
             "record-auto",
             "record",
         ] {
@@ -3309,7 +3559,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
 
     #[test]
     fn builds_robotcloud_python_actions_directly() {
-        let mut config = test_config("record-reset-pose");
+        let mut config = test_config("save-pose");
         config.follower_port = Some("/dev/cu.usbmodem-follower".to_string());
         config.leader_port = Some("/dev/cu.usbmodem-leader".to_string());
 
@@ -3318,7 +3568,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert_eq!(program, "python");
         assert!(args
             .first()
-            .is_some_and(|arg| arg.ends_with("robotcloud_reset_pose.py")));
+            .is_some_and(|arg| arg.ends_with("robotcloud_save_pose.py")));
         assert!(args.iter().any(|arg| arg == "--robot.type=so101_follower"));
         assert!(args.iter().all(|arg| !arg.contains("so101.sh")));
         assert!(args.iter().all(|arg| !arg.contains("so101.ps1")));

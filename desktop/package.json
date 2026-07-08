@@ -4,6 +4,7 @@
   "private": true,
   "description": "RobotCloud Tauri desktop shell for SO101 and LeRobot",
   "scripts": {
+    "prepare:frontend": "node scripts/prepare-frontend-dist.mjs",
     "dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "build": "tauri build",
     "build:win": "tauri build --bundles msi",

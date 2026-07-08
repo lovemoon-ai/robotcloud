@@ -16,6 +16,12 @@ const RAW_API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ??
   "https://robotcloud.conductor-ai.top/api/v1";
 const API_BASE_URL = RAW_API_BASE_URL.replace(/\/$/, "");
+const RAW_WEB_BASE_URL =
+  process.env.PUBLIC_WEB_BASE_URL ??
+  process.env.ROBOTCLOUD_WEB_BASE_URL ??
+  process.env.NEXT_PUBLIC_ROBOTCLOUD_WEB_BASE_URL ??
+  "https://robotcloud.conductor-ai.top";
+const WEB_BASE_URL = RAW_WEB_BASE_URL.replace(/\/$/, "");
 const RAW_BASE_PATH = process.env.ROBOTCLOUD_FRONTEND_BASE_PATH ?? "";
 const BASE_PATH = RAW_BASE_PATH && RAW_BASE_PATH !== "/" ? RAW_BASE_PATH.replace(/\/$/, "") : "";
 
@@ -26,6 +32,7 @@ const nextConfig = {
   reactStrictMode: true,
   env: {
     NEXT_PUBLIC_API_BASE_URL: API_BASE_URL,
+    NEXT_PUBLIC_ROBOTCLOUD_WEB_BASE_URL: WEB_BASE_URL,
     NEXT_PUBLIC_ROBOTCLOUD_BASE_PATH: BASE_PATH
   },
   experimental: {

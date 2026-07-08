@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { writePreparedDatasetUpload } from "@/desktop/preparedDatasetUpload";
+import { isLocalDesktopFrontend, navigateToCloudPath } from "@/desktop/navigation";
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
 import { useAuthStore } from "@/store/useAuthStore";
 
@@ -95,7 +96,7 @@ type ActionId =
   | "calibrate-follower"
   | "calibrate-leader"
   | "teleop"
-  | "record-reset-pose"
+  | "save-pose"
   | "record";
 
 type ShellDialect = "posix" | "powershell";
@@ -160,7 +161,7 @@ const actions: Array<{ id: ActionId; label: string }> = [
   { id: "calibrate-follower", label: "Calibrate follower" },
   { id: "calibrate-leader", label: "Calibrate leader" },
   { id: "teleop", label: "Teleoperate" },
-  { id: "record-reset-pose", label: "Reset pose" },
+  { id: "save-pose", label: "Save pose" },
   { id: "record", label: "Record" }
 ];
 
@@ -615,9 +616,9 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
       ];
       return teleopParts.join(" ");
     }
-    case "record-reset-pose":
+    case "save-pose":
       return [
-        bundledScriptCommand(status, "robotcloud_reset_pose.py", dialect, quote),
+        bundledScriptCommand(status, "robotcloud_save_pose.py", dialect, quote),
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
         `--robot.id=${quote(robotId())}`,
@@ -1014,13 +1015,6 @@ export function SO101Client() {
   ]);
   const [previewingCamera, setPreviewingCamera] = useState<number | null>(null);
   const lastWrittenActionCommandRef = useRef<string | null>(null);
-  // Track whether the user has run "Reset pose" this session. The RobotCloud auto
-  // recorder depends on a reset pose being set first.
-  const [resetPoseConfigured, setResetPoseConfigured] = useState(false);
-  const [resetPoseRequired, setResetPoseRequired] = useState(false);
-  const resetPoseButtonRef = useRef<HTMLButtonElement | null>(null);
-  const autoRecordNeedsResetPose = (action: ActionId) =>
-    action === "record" && !form.useLerobotRecorder && !resetPoseConfigured;
   const terminalPhase = terminalState.phase;
   const terminalError = terminalState.error;
   const runtimeProgress = terminalState.runtimeProgress;
@@ -1090,7 +1084,11 @@ export function SO101Client() {
 
   useEffect(() => {
     if (!token) {
-      router.replace("/login?next=%2Fso101");
+      if (isLocalDesktopFrontend()) {
+        navigateToCloudPath("/login?next=%2Fso101");
+      } else {
+        router.replace("/login?next=%2Fso101");
+      }
     }
   }, [router, token]);
 
@@ -1264,25 +1262,11 @@ export function SO101Client() {
   }, [cameraCount, form, status, writeTerminalCommand]);
 
   const runAction = async (action: ActionId) => {
-    if (autoRecordNeedsResetPose(action)) {
-      // Auto recorder needs a reset pose first: block, warn, and highlight the button.
-      setResetPoseRequired(true);
-      setSelectedAction(null);
-      setPersistentTerminalError(null);
-      setActionConfigError(null);
-      requestAnimationFrame(() => {
-        resetPoseButtonRef.current?.scrollIntoView?.({ block: "center", inline: "nearest" });
-        resetPoseButtonRef.current?.focus?.();
-      });
-      return;
-    }
-    setResetPoseRequired(false);
     setSelectedAction(action);
     try {
       setPersistentTerminalError(null);
       setActionConfigError(null);
       await writeActionCommand(action, { force: true });
-      if (action === "record-reset-pose") setResetPoseConfigured(true);
     } catch (error) {
       if (handleConfigValidationError(error)) return;
       setPersistentTerminalError(String(error));
@@ -1291,8 +1275,6 @@ export function SO101Client() {
 
   useEffect(() => {
     if (!selectedAction || terminalPhase !== "ready") return;
-    // Don't auto-write a blocked auto-record command until a reset pose is set.
-    if (selectedAction === "record" && !form.useLerobotRecorder && !resetPoseConfigured) return;
     let cancelled = false;
     writeActionCommand(selectedAction).catch((error) => {
       if (cancelled || configValidationErrorFrom(error)) return;
@@ -1301,7 +1283,7 @@ export function SO101Client() {
     return () => {
       cancelled = true;
     };
-  }, [selectedAction, terminalPhase, writeActionCommand, form.useLerobotRecorder, resetPoseConfigured]);
+  }, [selectedAction, terminalPhase, writeActionCommand]);
 
   const requestDatasetUploadReview = async () => {
     try {
@@ -1347,8 +1329,12 @@ export function SO101Client() {
         datasetRepoId: uploadReview.datasetRepoId,
         task: form.task
       });
-      writePreparedDatasetUpload(prepared);
-      router.push("/datasets?source=so101");
+      await writePreparedDatasetUpload(prepared);
+      if (isLocalDesktopFrontend()) {
+        navigateToCloudPath("/datasets?source=so101");
+      } else {
+        router.push("/datasets?source=so101");
+      }
     } catch (error) {
       if (handleConfigValidationError(error)) return;
       setPersistentTerminalError(String(error));
@@ -1509,32 +1495,18 @@ export function SO101Client() {
         </div>
         {actionsOpen ? (
           <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
-            {actions.map((action) => {
-              const isResetPose = action.id === "record-reset-pose";
-              const highlight = isResetPose && resetPoseRequired;
-              return (
-                <button
-                  key={action.id}
-                  ref={isResetPose ? resetPoseButtonRef : undefined}
-                  type="button"
-                  onClick={() => runAction(action.id)}
-                  disabled={terminalPhase !== "ready"}
-                  className={`shrink-0 rounded-md border bg-surface px-3 py-2 text-sm font-semibold accent-text transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50 ${
-                    highlight
-                      ? "border-red-500 ring-2 ring-red-500/60 animate-pulse"
-                      : "border-theme"
-                  }`}
-                >
-                  {action.label}
-                </button>
-              );
-            })}
+            {actions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                onClick={() => runAction(action.id)}
+                disabled={terminalPhase !== "ready"}
+                className="shrink-0 rounded-md border border-theme bg-surface px-3 py-2 text-sm font-semibold accent-text transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {action.label}
+              </button>
+            ))}
           </div>
-        ) : null}
-        {resetPoseRequired ? (
-          <p role="alert" className="mt-3 rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-500">
-            请先运行 Reset pose 设置初始位姿，再使用 RobotCloud 自动录制。
-          </p>
         ) : null}
         {actionConfigError ? (
           <p role="alert" className="mt-3 rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-500">
@@ -1832,12 +1804,9 @@ export function SO101Client() {
                 <input
                   type="checkbox"
                   checked={form.useLerobotRecorder}
-                  onChange={(event) => {
-                    updateField("useLerobotRecorder", event.target.checked);
-                    if (event.target.checked) setResetPoseRequired(false);
-                  }}
+                  onChange={(event) => updateField("useLerobotRecorder", event.target.checked)}
                 />
-                使用 LeRobot 原版录制工具（不勾选则用 RobotCloud 自动录制，需先设置 Reset pose）
+                使用 LeRobot 原版录制工具（不勾选则用 RobotCloud 自动录制，姿势静止 3 秒自动切分下一条）
               </label>
               <label className="flex items-center gap-2 text-sm text-muted">
                 <input type="checkbox" checked={form.displayData} onChange={(event) => updateField("displayData", event.target.checked)} />

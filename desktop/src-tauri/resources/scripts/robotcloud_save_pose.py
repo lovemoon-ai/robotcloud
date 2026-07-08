@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 import json
 import logging
 import math
@@ -20,14 +19,14 @@ from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import init_logging
 
-
 HOLD_TIME_S = 3.0
 STATIONARY_TOLERANCE = 1.0
-RESET_POSE_VERSION = 1
+EXPECTED_JOINT_COUNT = 6
+SAVED_POSE_VERSION = 1
 
 
 @dataclass
-class ResetPoseConfig:
+class SavePoseConfig:
     robot: RobotConfig
     teleop: TeleoperatorConfig
     fps: int = 30
@@ -49,8 +48,8 @@ def safe_stem(value: str) -> str:
     return stem or "so101_follower"
 
 
-def reset_pose_path(robot_id: str | None) -> Path:
-    path = data_dir() / "reset_poses" / f"{safe_stem(robot_id or 'so101_follower')}.json"
+def saved_pose_path(robot_id: str | None) -> Path:
+    path = data_dir() / "saved_poses" / f"{safe_stem(robot_id or 'so101_follower')}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -64,8 +63,10 @@ def numeric_action(action: dict[str, Any]) -> dict[str, float]:
             values[key] = float(value)
         except (TypeError, ValueError):
             continue
-    if not values:
-        raise RuntimeError("No numeric '.pos' action fields were read from the teleoperator.")
+    if len(values) != EXPECTED_JOINT_COUNT:
+        raise RuntimeError(
+            f"Expected {EXPECTED_JOINT_COUNT} numeric '.pos' action fields, got {len(values)}."
+        )
     return values
 
 
@@ -84,7 +85,7 @@ def mean_pose(samples: deque[tuple[float, dict[str, float]]]) -> dict[str, float
 
 
 @parser.wrap()
-def save_reset_pose(cfg: ResetPoseConfig) -> None:
+def save_pose(cfg: SavePoseConfig) -> None:
     init_logging()
     logging.info(pformat(asdict(cfg)))
 
@@ -100,8 +101,8 @@ def save_reset_pose(cfg: ResetPoseConfig) -> None:
     try:
         robot.connect()
         teleop.connect()
-        print("Teleoperation active. Use the leader to move the follower into the reset pose.")
-        print(f"Hold still; the reset action will be recorded after a {HOLD_TIME_S:.0f}s countdown.")
+        print("Teleoperation active. Use the leader to move the follower into the pose to save.")
+        print(f"Hold still; the pose will be saved after a {HOLD_TIME_S:.0f}s countdown.")
 
         while True:
             start_loop_t = time.perf_counter()
@@ -146,7 +147,7 @@ def save_reset_pose(cfg: ResetPoseConfig) -> None:
                 elapsed_s = now - countdown_started_at
                 countdown_value = math.ceil(max(HOLD_TIME_S - elapsed_s, 0.0))
                 if countdown_value > 0 and countdown_value != last_countdown_value:
-                    print(f"Recording reset pose in {countdown_value}...")
+                    print(f"Saving pose in {countdown_value}...")
                     last_countdown_value = countdown_value
 
                 if elapsed_s < HOLD_TIME_S:
@@ -155,9 +156,9 @@ def save_reset_pose(cfg: ResetPoseConfig) -> None:
                     continue
 
                 pose = mean_pose(samples)
-                path = reset_pose_path(cfg.robot.id)
+                path = saved_pose_path(cfg.robot.id)
                 payload = {
-                    "version": RESET_POSE_VERSION,
+                    "version": SAVED_POSE_VERSION,
                     "robot_type": cfg.robot.type,
                     "robot_id": cfg.robot.id,
                     "teleop_type": cfg.teleop.type,
@@ -165,11 +166,12 @@ def save_reset_pose(cfg: ResetPoseConfig) -> None:
                     "source": "teleop_action",
                     "hold_time_s": HOLD_TIME_S,
                     "stationary_tolerance": STATIONARY_TOLERANCE,
+                    "joint_count": len(pose),
                     "joints": pose,
                     "created_at": int(time.time()),
                 }
                 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-                print(f"Reset action saved: {path}")
+                print(f"Pose saved: {path}")
                 return
 
             dt_s = time.perf_counter() - start_loop_t
@@ -183,7 +185,7 @@ def save_reset_pose(cfg: ResetPoseConfig) -> None:
 
 def main() -> None:
     register_third_party_plugins()
-    save_reset_pose()
+    save_pose()
 
 
 if __name__ == "__main__":

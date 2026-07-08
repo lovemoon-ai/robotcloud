@@ -71,6 +71,14 @@ type PreparedDatasetUpload = {
   stats?: DatasetUploadInspection;
 };
 
+type DesktopAuthSession = {
+  token: string;
+  userId: number;
+  phone: string;
+  role: "free" | "plus" | "pro" | "admin";
+  expireAt: string | null;
+};
+
 type ProcessOutputEvent = {
   runId?: string;
   run_id?: string;
@@ -136,7 +144,15 @@ type DesktopBridge = {
   dataset: {
     inspectUpload?: (config: DatasetPrepareUploadConfig) => Promise<DatasetUploadInspection>;
     prepareUpload: (config: DatasetPrepareUploadConfig) => Promise<PreparedDatasetUpload>;
+    getPreparedUpload?: () => Promise<PreparedDatasetUpload | null>;
+    setPreparedUpload?: (prepared: PreparedDatasetUpload) => Promise<void>;
+    clearPreparedUpload?: () => Promise<void>;
     readPreparedUpload: (filePath: string) => Promise<ArrayBuffer>;
+  };
+  auth?: {
+    getSession: () => Promise<DesktopAuthSession | null>;
+    setSession: (session: DesktopAuthSession) => Promise<void>;
+    clearSession: () => Promise<void>;
   };
   runtime?: {
     prepare: () => Promise<RuntimePrepared>;

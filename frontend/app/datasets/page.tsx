@@ -198,14 +198,19 @@ export default function DatasetsPage() {
   const selectedTargetNode = form.watch("targetNode");
 
   useEffect(() => {
-    const prepared = readPreparedDatasetUpload();
-    if (!prepared) {
-      return;
-    }
-    setPreparedUpload(prepared);
-    form.setValue("name", prepared.name, { shouldDirty: false });
-    form.setValue("description", prepared.description, { shouldDirty: false });
-    form.setValue("visibility", prepared.visibility, { shouldDirty: false });
+    let cancelled = false;
+    void readPreparedDatasetUpload().then((prepared) => {
+      if (cancelled || !prepared) {
+        return;
+      }
+      setPreparedUpload(prepared);
+      form.setValue("name", prepared.name, { shouldDirty: false });
+      form.setValue("description", prepared.description, { shouldDirty: false });
+      form.setValue("visibility", prepared.visibility, { shouldDirty: false });
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [form]);
 
   useEffect(() => {
@@ -234,7 +239,7 @@ export default function DatasetsPage() {
       setSuccess(copy.upload.success);
       setFormError(null);
       setUploadProgress(0);
-      clearPreparedDatasetUpload();
+      void clearPreparedDatasetUpload();
       setPreparedUpload(null);
       form.reset({
         name: "",
@@ -269,7 +274,7 @@ export default function DatasetsPage() {
   };
 
   const clearPreparedUpload = () => {
-    clearPreparedDatasetUpload();
+    void clearPreparedDatasetUpload();
     setPreparedUpload(null);
   };
 

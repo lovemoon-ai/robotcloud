@@ -4,6 +4,7 @@ dist/
 
 src-tauri/target/
 src-tauri/gen/schemas/
+src-tauri/frontend-dist/
 
 # Local packaged LeRobot runtimes are release artifacts. Keep them on disk for
 # offline installer builds, but do not push them through normal Git.

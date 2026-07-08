@@ -138,6 +138,66 @@ describe("AppChrome shell", () => {
     expect(replaceMock).not.toHaveBeenCalled();
   });
 
+  it("restores desktop bridge auth before redirecting protected routes", async () => {
+    useAuthStore.getState().reset();
+    const getSession = jest.fn().mockResolvedValue({
+      token: "bridge-token",
+      userId: 7,
+      phone: "13800000007",
+      role: "plus",
+      expireAt: null
+    });
+    window.robotcloudDesktop = {
+      isDesktop: true,
+      status: jest.fn().mockResolvedValue({
+        isDesktop: true,
+        platform: "darwin",
+        appVersion: "test",
+        apiBaseUrl: "http://127.0.0.1:8000/api/v1",
+        webUrl: "http://127.0.0.1:3000/so101/",
+        runtimePath: null,
+        runtimeReady: false,
+        runtimeArchivePath: null,
+        runtimeArchiveReady: false,
+        scriptsDir: null,
+        scriptReady: false,
+        dataDir: ""
+      }),
+      auth: {
+        getSession,
+        setSession: jest.fn(),
+        clearSession: jest.fn()
+      },
+      so101: {
+        run: jest.fn(),
+        stop: jest.fn(),
+        onOutput: jest.fn(() => jest.fn()),
+        onExit: jest.fn(() => jest.fn())
+      },
+      terminal: {
+        start: jest.fn(),
+        write: jest.fn(),
+        resize: jest.fn(),
+        stop: jest.fn(),
+        onOutput: jest.fn(() => jest.fn()),
+        onExit: jest.fn(() => jest.fn())
+      }
+    } as unknown as DesktopBridge;
+
+    render(
+      <AppChrome>
+        <div>placeholder</div>
+      </AppChrome>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("placeholder")).toBeInTheDocument();
+    });
+    expect(getSession).toHaveBeenCalled();
+    expect(useAuthStore.getState().token).toBe("bridge-token");
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
   it("renders the login route without app navigation", () => {
     useAuthStore.getState().reset();
     mockPathname = "/login";

@@ -96,17 +96,60 @@ export function parsePreparedDatasetUpload(raw: string | null): PreparedDatasetU
   }
 }
 
-export function readPreparedDatasetUpload(): PreparedDatasetUploadState | null {
+function desktopDatasetBridge() {
+  if (typeof window === "undefined") return undefined;
+  return window.robotcloudDesktop?.dataset;
+}
+
+function readPreparedDatasetUploadFromSession(): PreparedDatasetUploadState | null {
   if (typeof sessionStorage === "undefined") return null;
   return parsePreparedDatasetUpload(sessionStorage.getItem(PREPARED_DATASET_UPLOAD_STORAGE_KEY));
 }
 
-export function writePreparedDatasetUpload(value: PreparedDatasetUploadState): void {
+function writePreparedDatasetUploadToSession(value: PreparedDatasetUploadState): void {
   if (typeof sessionStorage === "undefined") return;
   sessionStorage.setItem(PREPARED_DATASET_UPLOAD_STORAGE_KEY, JSON.stringify(value));
 }
 
-export function clearPreparedDatasetUpload(): void {
+function clearPreparedDatasetUploadFromSession(): void {
   if (typeof sessionStorage === "undefined") return;
   sessionStorage.removeItem(PREPARED_DATASET_UPLOAD_STORAGE_KEY);
+}
+
+export async function readPreparedDatasetUpload(): Promise<PreparedDatasetUploadState | null> {
+  const bridge = desktopDatasetBridge();
+  if (bridge?.getPreparedUpload) {
+    try {
+      const prepared = await bridge.getPreparedUpload();
+      if (prepared) {
+        writePreparedDatasetUploadToSession(prepared);
+        return prepared;
+      }
+    } catch {
+      // Fall back to same-origin browser storage for plain web and older desktop builds.
+    }
+  }
+  return readPreparedDatasetUploadFromSession();
+}
+
+export async function writePreparedDatasetUpload(value: PreparedDatasetUploadState): Promise<void> {
+  writePreparedDatasetUploadToSession(value);
+  const bridge = desktopDatasetBridge();
+  if (!bridge?.setPreparedUpload) return;
+  try {
+    await bridge.setPreparedUpload(value);
+  } catch {
+    // Session storage is still enough for same-origin web flows.
+  }
+}
+
+export async function clearPreparedDatasetUpload(): Promise<void> {
+  clearPreparedDatasetUploadFromSession();
+  const bridge = desktopDatasetBridge();
+  if (!bridge?.clearPreparedUpload) return;
+  try {
+    await bridge.clearPreparedUpload();
+  } catch {
+    // Ignore bridge cleanup failures; stale bridge state is validated before reuse.
+  }
 }

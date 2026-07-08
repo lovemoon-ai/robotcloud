@@ -4,7 +4,8 @@
   "version": "0.2.0",
   "identifier": "top.conductor-ai.robotcloud.desktop",
   "build": {
-    "frontendDist": "placeholder"
+    "beforeBuildCommand": "node scripts/prepare-frontend-dist.mjs",
+    "frontendDist": "frontend-dist"
   },
   "app": {
     "withGlobalTauri": true,
@@ -19,7 +20,7 @@
     "icon": ["icons/icon.png", "icons/icon.ico"],
     "resources": [
       "resources/scripts/robotcloud_auto_record.py",
-      "resources/scripts/robotcloud_reset_pose.py",
+      "resources/scripts/robotcloud_save_pose.py",
       "resources/scripts/robotcloud_draw_circle.py",
       "resources/assets/so101_new_calib.urdf",
       "resources/runtime/*/lerobot-env-*.zip"

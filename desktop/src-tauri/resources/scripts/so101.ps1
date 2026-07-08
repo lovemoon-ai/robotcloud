@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("info", "ports", "find-port", "cameras", "setup-follower", "setup-leader", "calibrate-follower", "calibrate-leader", "teleop", "record-reset-pose", "record-auto", "record")]
+    [ValidateSet("info", "ports", "find-port", "cameras", "setup-follower", "setup-leader", "calibrate-follower", "calibrate-leader", "teleop", "save-pose", "record-reset-pose", "record-auto", "record")]
     [string] $Action = "info",
 
     [string] $FollowerPort = "",
@@ -223,10 +223,23 @@ switch ($Action) {
             "--teleop.port=$LeaderPort" `
             "--teleop.id=$TeleopId"
     }
+    "save-pose" {
+        Require-Port $FollowerPort "FollowerPort"
+        Require-Port $LeaderPort "LeaderPort"
+        Invoke-RobotCloudPython "robotcloud_save_pose.py" `
+            "--robot.type=so101_follower" `
+            "--robot.port=$FollowerPort" `
+            "--robot.id=$RobotId" `
+            "--robot.max_relative_target=$MaxRelativeTarget" `
+            "--teleop.type=so101_leader" `
+            "--teleop.port=$LeaderPort" `
+            "--teleop.id=$TeleopId" `
+            "--fps=$Fps"
+    }
     "record-reset-pose" {
         Require-Port $FollowerPort "FollowerPort"
         Require-Port $LeaderPort "LeaderPort"
-        Invoke-RobotCloudPython "robotcloud_reset_pose.py" `
+        Invoke-RobotCloudPython "robotcloud_save_pose.py" `
             "--robot.type=so101_follower" `
             "--robot.port=$FollowerPort" `
             "--robot.id=$RobotId" `

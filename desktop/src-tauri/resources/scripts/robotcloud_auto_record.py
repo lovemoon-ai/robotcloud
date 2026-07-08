@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 import inspect
-import json
 import logging
-import os
-import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -84,8 +81,9 @@ from lerobot.utils.utils import init_logging, log_say
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 
-RESET_HOLD_TIME_S = 3.0
-RESET_ACTION_TOLERANCE = 3.0
+STATIONARY_HOLD_TIME_S = 3.0
+STATIONARY_ACTION_TOLERANCE = 1.0
+MIN_POSE_JOINT_COUNT = 6
 
 
 @dataclass
@@ -147,37 +145,6 @@ class AutoRecordConfig:
         return ["policy"]
 
 
-def data_dir() -> Path:
-    root = os.environ.get("ROBOTCLOUD_DATA_DIR")
-    if root:
-        return Path(root)
-    if os.name == "nt":
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            return Path(local_app_data) / "RobotCloud" / "so101-data"
-    return Path.home() / ".robotcloud" / "so101-data"
-
-
-def safe_stem(value: str) -> str:
-    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_.")
-    return stem or "so101_follower"
-
-
-def reset_pose_path(robot_id: str | None) -> Path:
-    return data_dir() / "reset_poses" / f"{safe_stem(robot_id or 'so101_follower')}.json"
-
-
-def load_reset_action(robot_id: str | None) -> dict[str, float]:
-    path = reset_pose_path(robot_id)
-    if not path.exists():
-        raise FileNotFoundError(f"Reset action file not found: {path}")
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    joints = payload.get("joints")
-    if not isinstance(joints, dict) or not joints:
-        raise ValueError(f"Reset action file has no joints: {path}")
-    return {str(key): float(value) for key, value in joints.items()}
-
-
 def numeric_action(action: dict[str, Any]) -> dict[str, float]:
     values: dict[str, float] = {}
     for key, value in action.items():
@@ -189,17 +156,15 @@ def numeric_action(action: dict[str, Any]) -> dict[str, float]:
             continue
     if not values:
         raise RuntimeError("No numeric '.pos' action fields were available.")
+    if len(values) < MIN_POSE_JOINT_COUNT:
+        raise RuntimeError(f"Expected at least {MIN_POSE_JOINT_COUNT} numeric '.pos' action fields, got {len(values)}.")
     return values
 
 
-def near_reset(action: dict[str, Any], reset_action: dict[str, float]) -> bool:
-    current = numeric_action(action)
-    for key, reset_value in reset_action.items():
-        if key not in current:
-            return False
-        if abs(current[key] - reset_value) > RESET_ACTION_TOLERANCE:
-            return False
-    return True
+def action_distance(first: dict[str, float], second: dict[str, float]) -> float:
+    if first.keys() != second.keys():
+        return float("inf")
+    return max(abs(second[key] - first[key]) for key in first)
 
 
 def supported_kwargs(fn: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -250,14 +215,13 @@ def get_action_values(
     raise RuntimeError("Auto recording requires a teleoperator or policy.")
 
 
-def wait_until_leave_reset(
+def wait_until_pose_changes(
     robot: Robot,
     events: dict,
     fps: int,
     teleop_action_processor: RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction],
     robot_action_processor: RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction],
     robot_observation_processor: RobotProcessorPipeline[RobotObservation, RobotObservation],
-    reset_action: dict[str, float],
     dataset: LeRobotDataset,
     teleop: Teleoperator | None,
     policy: PreTrainedPolicy | None,
@@ -267,6 +231,7 @@ def wait_until_leave_reset(
     display_data: bool,
     display_compressed_images: bool,
 ) -> None:
+    reference_action: dict[str, float] | None = None
     while not events["stop_recording"]:
         start_loop_t = time.perf_counter()
         if events["exit_early"]:
@@ -294,7 +259,10 @@ def wait_until_leave_reset(
                 compress_images=display_compressed_images,
             )
 
-        if not near_reset(action_values, reset_action):
+        current_action = numeric_action(action_values)
+        if reference_action is None:
+            reference_action = current_action
+        elif action_distance(reference_action, current_action) > STATIONARY_ACTION_TOLERANCE:
             return
 
         dt_s = time.perf_counter() - start_loop_t
@@ -309,7 +277,6 @@ def auto_record_loop(
     teleop_action_processor: RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction],
     robot_action_processor: RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction],
     robot_observation_processor: RobotProcessorPipeline[RobotObservation, RobotObservation],
-    reset_action: dict[str, float],
     min_episode_time_s: float,
     max_episode_time_s: float,
     dataset: LeRobotDataset,
@@ -329,7 +296,8 @@ def auto_record_loop(
         preprocessor.reset()
         postprocessor.reset()
 
-    reset_near_since: float | None = None
+    stationary_since: float | None = None
+    stationary_reference: dict[str, float] | None = None
     pending_delimiter_frames: list[dict[str, Any]] = []
     start_episode_t = time.perf_counter()
 
@@ -373,22 +341,28 @@ def auto_record_loop(
             )
 
         now = time.perf_counter()
-        if near_reset(action_values, reset_action):
-            if reset_near_since is None:
-                reset_near_since = now
+        current_action = numeric_action(action_values)
+        if stationary_reference is None:
+            stationary_reference = current_action
+            stationary_since = now
+            pending_delimiter_frames.append(dataset_frame)
+        elif action_distance(stationary_reference, current_action) <= STATIONARY_ACTION_TOLERANCE:
+            if stationary_since is None:
+                stationary_since = now
             pending_delimiter_frames.append(dataset_frame)
         else:
-            reset_near_since = None
+            stationary_reference = current_action
+            stationary_since = now
             flush_pending_delimiter_frames()
             dataset.add_frame(dataset_frame)
 
         if (
             elapsed_s >= min_episode_time_s
-            and reset_near_since is not None
-            and now - reset_near_since >= RESET_HOLD_TIME_S
+            and stationary_since is not None
+            and now - stationary_since >= STATIONARY_HOLD_TIME_S
         ):
             pending_delimiter_frames.clear()
-            return "reset_action"
+            return "stationary_pose"
 
         if elapsed_s >= max_episode_time_s:
             flush_pending_delimiter_frames()
@@ -402,7 +376,6 @@ def auto_record_loop(
 def auto_record(cfg: AutoRecordConfig) -> LeRobotDataset:
     init_logging()
     logging.info(pformat(asdict(cfg)))
-    reset_action = load_reset_action(cfg.robot.id)
 
     if cfg.display_data:
         init_rerun(session_name="auto_recording", ip=cfg.display_ip, port=cfg.display_port)
@@ -490,15 +463,14 @@ def auto_record(cfg: AutoRecordConfig) -> LeRobotDataset:
         with VideoEncodingManager(dataset):
             recorded_episodes = 0
             while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
-                log_say("Move away from reset action to start the next episode", cfg.play_sounds)
-                wait_until_leave_reset(
+                log_say("Move the leader to start the next episode", cfg.play_sounds)
+                wait_until_pose_changes(
                     robot=robot,
                     events=events,
                     fps=cfg.dataset.fps,
                     teleop_action_processor=teleop_action_processor,
                     robot_action_processor=robot_action_processor,
                     robot_observation_processor=robot_observation_processor,
-                    reset_action=reset_action,
                     dataset=dataset,
                     teleop=teleop,
                     policy=policy,
@@ -519,7 +491,6 @@ def auto_record(cfg: AutoRecordConfig) -> LeRobotDataset:
                     teleop_action_processor=teleop_action_processor,
                     robot_action_processor=robot_action_processor,
                     robot_observation_processor=robot_observation_processor,
-                    reset_action=reset_action,
                     min_episode_time_s=float(cfg.min_episode_time_s),
                     max_episode_time_s=float(cfg.max_episode_time_s),
                     teleop=teleop,

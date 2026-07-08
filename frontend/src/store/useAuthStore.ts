@@ -11,6 +11,7 @@ interface AuthState {
   setAuth: (session: AuthSession) => void;
   setRole: (role: UserRole, expireAt?: string | null) => void;
   restoreFromStorage: () => boolean;
+  restoreFromDesktopBridge: () => Promise<boolean>;
   reset: () => void;
 }
 
@@ -91,24 +92,54 @@ const initialState = (): AuthPersistedState => ({
   expireAt: undefined
 });
 
+function desktopAuthBridge() {
+  if (typeof window === "undefined") return undefined;
+  return window.robotcloudDesktop?.auth;
+}
+
+function persistDesktopAuthSession(session: AuthSession): void {
+  const bridge = desktopAuthBridge();
+  if (!bridge?.setSession) return;
+  Promise.resolve(bridge.setSession(session)).catch(() => undefined);
+}
+
+function clearDesktopAuthSession(): void {
+  const bridge = desktopAuthBridge();
+  if (!bridge?.clearSession) return;
+  Promise.resolve(bridge.clearSession()).catch(() => undefined);
+}
+
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       ...initialState(),
-      setAuth: (session) =>
+      setAuth: (session) => {
         set({
           token: session.token,
           role: session.role,
           phone: session.phone,
           userId: session.userId,
           expireAt: session.expireAt
-        }),
-      setRole: (role, expireAt) =>
+        });
+        persistDesktopAuthSession(session);
+      },
+      setRole: (role, expireAt) => {
         set((state) => ({
           ...state,
           role,
           expireAt: expireAt ?? state.expireAt
-        })),
+        }));
+        const current = get();
+        if (current.token && current.phone && typeof current.userId === "number") {
+          persistDesktopAuthSession({
+            token: current.token,
+            userId: current.userId,
+            phone: current.phone,
+            role,
+            expireAt: current.expireAt ?? null
+          });
+        }
+      },
       restoreFromStorage: () => {
         const persistedAuth = readPersistedAuthState();
         if (!persistedAuth) {
@@ -117,11 +148,28 @@ export const useAuthStore = create<AuthState>()(
         set(persistedAuth);
         return true;
       },
+      restoreFromDesktopBridge: async () => {
+        const bridge = desktopAuthBridge();
+        if (!bridge?.getSession) {
+          return false;
+        }
+        try {
+          const session = await bridge.getSession();
+          if (!session) {
+            return false;
+          }
+          set(session);
+          return true;
+        } catch {
+          return false;
+        }
+      },
       reset: () => {
         set(initialState());
         if (typeof window !== "undefined" && window.localStorage) {
           window.localStorage.removeItem(STORAGE_KEY);
         }
+        clearDesktopAuthSession();
       }
     }),
     {

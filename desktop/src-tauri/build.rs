@@ -84,5 +84,24 @@ fn main() {
 
     println!("cargo:rustc-env=ROBOTCLOUD_APP_BUILD_COMMIT={commit}");
     println!("cargo:rustc-env=ROBOTCLOUD_APP_BUILD_TIME={build_time}");
+    ensure_frontend_dist_exists();
     tauri_build::build();
+}
+
+fn ensure_frontend_dist_exists() {
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"),
+    );
+    let so101_dir = manifest_dir.join("frontend-dist").join("so101");
+    let index_path = so101_dir.join("index.html");
+    if index_path.exists() {
+        return;
+    }
+
+    std::fs::create_dir_all(&so101_dir).expect("create placeholder frontend-dist/so101");
+    std::fs::write(
+        index_path,
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>RobotCloud SO101</title></head><body></body></html>",
+    )
+    .expect("write placeholder frontend-dist/so101/index.html");
 }

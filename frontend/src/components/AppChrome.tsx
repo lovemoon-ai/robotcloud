@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ComponentType, Fragment, ReactNode, useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { AnchorHTMLAttributes, ComponentType, Fragment, ReactNode, useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useAuthStore } from "@/store/useAuthStore";
 import { Logo } from "@/components/Logo";
 import { getSections } from "@/components/shell/sections";
 import { useDesktopBridgeAvailable } from "@/hooks/useDesktopBridgeAvailable";
 import { useLocaleStore } from "@/store/useLocaleStore";
+import { desktopAwareHref, isExternalHref } from "@/desktop/navigation";
 
 interface AppChromeProps {
   children: ReactNode;
@@ -16,6 +17,11 @@ interface AppChromeProps {
 type NavIconProps = {
   active: boolean;
   className?: string;
+};
+
+type RoutedLinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
+  href: string;
+  children: ReactNode;
 };
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "robotcloud-sidebar-collapsed";
@@ -31,6 +37,21 @@ const subscribeToAuthHydration = (listener: () => void) => {
 const getSidebarCollapsedSnapshot = () =>
   typeof window !== "undefined" && window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
 const getAuthHydratedSnapshot = () => useAuthStore.persist.hasHydrated();
+
+function RoutedLink({ href, children, ...props }: RoutedLinkProps) {
+  if (isExternalHref(href)) {
+    return (
+      <a href={href} {...props}>
+        {children}
+      </a>
+    );
+  }
+  return (
+    <Link href={href} {...props}>
+      {children}
+    </Link>
+  );
+}
 
 function normalizeAppPathname(pathname: string | null) {
   if (!pathname) return "/";
@@ -260,6 +281,7 @@ export function AppChrome({ children }: AppChromeProps) {
   const locale = useLocaleStore((state) => state.locale);
   const token = useAuthStore((state) => state.token);
   const restoreAuthFromStorage = useAuthStore((state) => state.restoreFromStorage);
+  const restoreAuthFromDesktopBridge = useAuthStore((state) => state.restoreFromDesktopBridge);
 
   const isZh = locale === "zh";
   const normalizedPathname = normalizeAppPathname(pathname);
@@ -268,6 +290,7 @@ export function AppChrome({ children }: AppChromeProps) {
   const isDesktopBridgeAvailable = useDesktopBridgeAvailable();
   const navItems = getSections(locale, { includeDesktopOnly: isDesktopBridgeAvailable });
   const mobileNavItems = getMobileNavEntries(navItems, pathname);
+  const homeHref = desktopAwareHref("/dashboard", isDesktopBridgeAvailable);
 
   const copy = {
     homeAria: isZh ? "RobotCloud 控制面板" : "RobotCloud workspace",
@@ -300,13 +323,19 @@ export function AppChrome({ children }: AppChromeProps) {
     let cancelled = false;
     setAuthStorageChecked(false);
     Promise.resolve(useAuthStore.persist.rehydrate())
-      .then(() => {
+      .then(async () => {
         if (!useAuthStore.getState().token) {
-          restoreAuthFromStorage();
+          const restored = restoreAuthFromStorage();
+          if (!restored) {
+            await restoreAuthFromDesktopBridge();
+          }
         }
       })
-      .catch(() => {
-        restoreAuthFromStorage();
+      .catch(async () => {
+        const restored = restoreAuthFromStorage();
+        if (!restored) {
+          await restoreAuthFromDesktopBridge();
+        }
       })
       .finally(() => {
         if (!cancelled) {
@@ -317,12 +346,17 @@ export function AppChrome({ children }: AppChromeProps) {
     return () => {
       cancelled = true;
     };
-  }, [isLoginRoute, pathname, restoreAuthFromStorage, token]);
+  }, [isLoginRoute, pathname, restoreAuthFromDesktopBridge, restoreAuthFromStorage, token]);
 
   useEffect(() => {
     if (authReady && !token && !isLoginRoute) {
       const next = pathname && pathname !== "/" ? `?next=${encodeURIComponent(pathname)}` : "";
-      router.replace(`/login${next}`);
+      const loginHref = desktopAwareHref(`/login${next}`, false);
+      if (isExternalHref(loginHref)) {
+        window.location.assign(loginHref);
+      } else {
+        router.replace(loginHref);
+      }
     }
   }, [authReady, isLoginRoute, pathname, router, token]);
 
@@ -353,8 +387,8 @@ export function AppChrome({ children }: AppChromeProps) {
           aria-label="Workspace sidebar"
         >
           <div className="group/sidebar relative flex h-16 items-center border-b border-theme px-2">
-            <Link
-              href="/dashboard"
+            <RoutedLink
+              href={homeHref}
               className={`${iconRailClassName} rounded-xl transition-opacity hover:opacity-80 ${
                 isSidebarCollapsed ? "cursor-ew-resize group-hover/sidebar:opacity-0" : ""
               }`}
@@ -362,7 +396,7 @@ export function AppChrome({ children }: AppChromeProps) {
               title={copy.homeAria}
             >
               <Logo className="h-8 w-8 shrink-0" />
-            </Link>
+            </RoutedLink>
 
             {!isSidebarCollapsed ? (
               <>
@@ -400,11 +434,12 @@ export function AppChrome({ children }: AppChromeProps) {
                 const current = isActiveRoute(pathname, item.href);
                 const active = isActiveNavItem(pathname, item);
                 const Icon = iconByHref[item.href] ?? DashboardIcon;
+                const href = desktopAwareHref(item.href, isDesktopBridgeAvailable);
 
                 return (
                   <Fragment key={item.href}>
-                    <Link
-                      href={item.href}
+                    <RoutedLink
+                      href={href}
                       aria-label={item.title}
                       aria-current={current ? "page" : undefined}
                       title={isSidebarCollapsed ? item.title : item.description}
@@ -420,16 +455,17 @@ export function AppChrome({ children }: AppChromeProps) {
                       {!isSidebarCollapsed ? (
                         <span className={`min-w-0 flex-1 truncate ${active ? "font-semibold" : "font-medium"}`}>{item.title}</span>
                       ) : null}
-                    </Link>
+                    </RoutedLink>
 
                     {!isSidebarCollapsed && item.children?.length && active ? (
                       <div className="ml-11 mt-1 space-y-1 border-l border-theme pl-3">
                         {item.children.map((child) => {
                           const childActive = isActiveRoute(pathname, child.href);
+                          const childHref = desktopAwareHref(child.href, isDesktopBridgeAvailable);
                           return (
-                            <Link
+                            <RoutedLink
                               key={child.href}
-                              href={child.href}
+                              href={childHref}
                               aria-current={childActive ? "page" : undefined}
                               title={child.description}
                               className={`block rounded-md px-3 py-2 text-sm transition focus:outline-none focus:ring-2 focus:ring-primary/30 ${
@@ -439,7 +475,7 @@ export function AppChrome({ children }: AppChromeProps) {
                               }`}
                             >
                               {child.title}
-                            </Link>
+                            </RoutedLink>
                           );
                         })}
                       </div>
@@ -470,11 +506,12 @@ export function AppChrome({ children }: AppChromeProps) {
             const isToggleLink = item.href !== item.displayItem.href;
             const linkLabel = isToggleLink ? `${copy.switchTo} ${item.targetItem.title}` : item.displayItem.title;
             const linkTitle = isToggleLink ? linkLabel : item.displayItem.description;
+            const href = desktopAwareHref(item.href, isDesktopBridgeAvailable);
 
             return (
-              <Link
+              <RoutedLink
                 key={item.key}
-                href={item.href}
+                href={href}
                 aria-label={linkLabel}
                 aria-current={targetIsCurrent ? "page" : undefined}
                 data-flipped={item.flipped ? "true" : "false"}
@@ -499,7 +536,7 @@ export function AppChrome({ children }: AppChromeProps) {
                     ) : null}
                   </span>
                 </span>
-              </Link>
+              </RoutedLink>
             );
           })}
         </div>

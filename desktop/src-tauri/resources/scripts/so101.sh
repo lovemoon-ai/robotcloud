@@ -223,10 +223,10 @@ case "${ACTION}" in
       --teleop.port="${LEADER_PORT}" \
       --teleop.id="${TELEOP_ID}"
     ;;
-  record-reset-pose)
+  save-pose|record-reset-pose)
     require_port "${FOLLOWER_PORT}" "follower port"
     require_port "${LEADER_PORT}" "leader port"
-    run_robotcloud_python robotcloud_reset_pose.py \
+    run_robotcloud_python robotcloud_save_pose.py \
       --robot.type=so101_follower \
       --robot.port="${FOLLOWER_PORT}" \
       --robot.id="${ROBOT_ID}" \

@@ -193,6 +193,7 @@ describe("SO101 terminal session", () => {
       visibility: "private",
       createdAt: "1760000000000"
     });
+    const setPreparedUpload = jest.fn().mockResolvedValue(undefined);
     const bridge: DesktopBridge = {
       isDesktop: true,
       status,
@@ -208,6 +209,7 @@ describe("SO101 terminal session", () => {
       dataset: {
         inspectUpload,
         prepareUpload,
+        setPreparedUpload,
         readPreparedUpload: jest.fn()
       },
       terminal: {
@@ -237,6 +239,7 @@ describe("SO101 terminal session", () => {
       validateCamera,
       inspectUpload,
       prepareUpload,
+      setPreparedUpload,
       emitOutput: (data: string) => outputCallback?.({ sessionId: "session-1", data }),
       emitExit: () => exitCallback?.({ sessionId: "session-1", code: 0, signal: null })
     };
@@ -419,7 +422,7 @@ describe("SO101 terminal session", () => {
     });
   });
 
-  it("blocks auto record until a reset pose is set and highlights the reset pose button", async () => {
+  it("runs auto record without requiring a saved pose first", async () => {
     const { terminalWrite } = installDesktopBridge();
 
     const view = render(<SO101Client />);
@@ -430,15 +433,25 @@ describe("SO101 terminal session", () => {
 
     // Switch the record card to the RobotCloud auto recorder (uncheck the lerobot option).
     fireEvent.click(view.getByRole("checkbox", { name: /LeRobot 原版录制工具/ }));
+    fireEvent.change(view.getByLabelText("Follower port"), { target: { value: "/dev/cu.usbmodem-follower" } });
+    fireEvent.change(view.getByLabelText("Leader port"), { target: { value: "/dev/cu.usbmodem-leader" } });
+    fireEvent.change(view.getByLabelText("Task label"), { target: { value: "Pick the cube" } });
 
     fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
     fireEvent.click(view.getByRole("button", { name: "Record" }));
 
     await waitFor(() => {
-      expect(view.getByRole("alert")).toHaveTextContent("先运行 Reset pose");
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        expect.stringContaining("python '/script/robotcloud_auto_record.py'")
+      );
     });
-    expect(view.getByRole("button", { name: "Reset pose" }).className).toContain("ring-red-500");
-    expect(terminalWrite).not.toHaveBeenCalled();
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--min_episode_time_s=2")
+    );
+    expect(view.queryByText(/请先运行/)).not.toBeInTheDocument();
+    expect(view.getByRole("button", { name: "Save pose" })).toBeInTheDocument();
   });
 
   it("places the add camera control after the camera cards", async () => {
@@ -593,7 +606,7 @@ describe("SO101 terminal session", () => {
   });
 
   it("shows recording stats before preparing an upload", async () => {
-    const { inspectUpload, prepareUpload } = installDesktopBridge();
+    const { inspectUpload, prepareUpload, setPreparedUpload } = installDesktopBridge();
 
     const view = render(<SO101Client />);
 
@@ -625,6 +638,12 @@ describe("SO101 terminal session", () => {
         task: ""
       });
     });
+    expect(setPreparedUpload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileName: "local_so101_desktop.zip",
+        name: "local/so101_desktop"
+      })
+    );
     expect(mockPush).toHaveBeenCalledWith("/datasets?source=so101");
   });
 
@@ -794,10 +813,10 @@ describe("SO101 command generation", () => {
     expect(command).not.toContain("--display_data");
   });
 
-  it("builds a reset pose command from the bundled script path", () => {
+  it("builds a save pose command from the bundled script path", () => {
     const status: DesktopStatus = { ...desktopStatus, scriptsDir: "/opt/app/resources/scripts" };
     const command = buildActionCommand(
-      "record-reset-pose",
+      "save-pose",
       {
         ...initialForm,
         followerPort: "/dev/f",
@@ -810,7 +829,7 @@ describe("SO101 command generation", () => {
     );
 
     expect(command).toBe(
-      "python '/opt/app/resources/scripts/robotcloud_reset_pose.py' " +
+      "python '/opt/app/resources/scripts/robotcloud_save_pose.py' " +
         "--robot.type=so101_follower --robot.port='/dev/f' --robot.id='so101_follower' " +
         "--robot.max_relative_target=5 --teleop.type=so101_leader --teleop.port='/dev/l' --teleop.id='so101_leader' --fps=30"
     );
