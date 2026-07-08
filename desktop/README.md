@@ -177,10 +177,13 @@ Defaults:
 
 ```text
 Python 3.12
-lerobot==0.6.0
+lerobot[dataset]==0.6.0
 feetech-servo-sdk>=1.0.0,<2.0.0
+deepdiff>=7.0.1,<9.0.0
+torchcodec>=0.10.0,<0.11.0
 torch==2.10.0
 torchvision==0.25.0
+ffmpeg from conda-forge
 CPU PyTorch wheels from https://download.pytorch.org/whl/cpu
 ```
 

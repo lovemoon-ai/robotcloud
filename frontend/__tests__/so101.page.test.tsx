@@ -1,6 +1,7 @@
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { SO101Client, so101TestExports } from "../app/so101/SO101Client";
 import { useAuthStore } from "@/store/useAuthStore";
+import { resetDesktopBridgeAvailabilityForTest } from "@/hooks/useDesktopBridgeAvailable";
 
 const mockPush = jest.fn();
 const mockReplace = jest.fn();
@@ -40,6 +41,7 @@ jest.mock("next/navigation", () => ({
 
 afterEach(() => {
   so101TestExports.resetPersistentTerminalForTest();
+  resetDesktopBridgeAvailabilityForTest();
   useAuthStore.getState().reset();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -154,6 +156,9 @@ describe("SO101 terminal session", () => {
     isDesktop: true,
     platform: "macos",
     appVersion: "test",
+    appBuildCommit: "test-commit",
+    appBuildTime: "2026-07-08T00:00:00Z",
+    lerobotVersion: "0.6.0",
     apiBaseUrl: "http://127.0.0.1:8000/api/v1",
     webUrl: "http://127.0.0.1:3000/so101/",
     runtimePath: "/runtime",
@@ -275,6 +280,7 @@ describe("SO101 terminal session", () => {
     });
 
     const secondRender = render(<SO101Client />);
+    expect(secondRender.queryByText("Starting RobotCloud Desktop")).not.toBeInTheDocument();
 
     await waitFor(() => {
       expect(secondRender.getByTestId("mock-xterm")).toHaveTextContent("output while hidden");
@@ -312,6 +318,73 @@ describe("SO101 terminal session", () => {
     expect(runtimePrepare).toHaveBeenCalledTimes(1);
     expect(status.mock.invocationCallOrder.some((order) => order > runtimePrepare.mock.invocationCallOrder[0])).toBe(true);
     expect(terminalStart).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows app build metadata without legacy action or cloud API status cards", async () => {
+    installDesktopBridge({
+      status: jest.fn().mockResolvedValue({
+        ...desktopStatus,
+        appVersion: "0.2.0",
+        appBuildCommit: "abc1234",
+        appBuildTime: "2026-07-08T01:02:03Z",
+        lerobotVersion: "0.6.0"
+      })
+    });
+
+    const view = render(<SO101Client />);
+
+    const buildInfo = await view.findByRole("region", { name: "SO101 app build information" });
+    await waitFor(() => {
+      expect(buildInfo).toHaveTextContent("Built-in LeRobot");
+      expect(buildInfo).toHaveTextContent("0.6.0");
+      expect(buildInfo).toHaveTextContent("App version");
+      expect(buildInfo).toHaveTextContent("0.2.0");
+      expect(buildInfo).toHaveTextContent("Build commit");
+      expect(buildInfo).toHaveTextContent("abc1234");
+      expect(buildInfo).toHaveTextContent("Build time");
+      expect(buildInfo).toHaveTextContent("2026-07-08T01:02:03Z");
+    });
+    expect(view.queryByText(/Action commands/i)).not.toBeInTheDocument();
+    expect(view.queryByText(/Cloud API/i)).not.toBeInTheDocument();
+  });
+
+  it("shows runtime preparation commands while waiting", async () => {
+    let progressCallback: ((event: RuntimeProgressEvent) => void) | null = null;
+    let resolvePrepare: ((value: RuntimePrepared) => void) | null = null;
+    const runtimePrepare = jest.fn(() => new Promise<RuntimePrepared>((resolve) => {
+      resolvePrepare = resolve;
+      progressCallback?.({
+        phase: "validating",
+        message: "Preparing LeRobot runtime: checking required Python modules...",
+        command: "/runtime/bin/python -c 'import deepdiff, lerobot, serial, scservo_sdk'",
+        current: null,
+        total: null
+      });
+    }));
+    installDesktopBridge({
+      runtime: {
+        prepare: runtimePrepare,
+        onProgress: jest.fn((callback) => {
+          progressCallback = callback;
+          return jest.fn();
+        })
+      }
+    });
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByText("Preparing LeRobot runtime: checking required Python modules...")).toBeInTheDocument();
+    });
+    expect(view.container).toHaveTextContent("$ /runtime/bin/python -c 'import deepdiff, lerobot, serial, scservo_sdk'");
+    expect(view.queryByTestId("mock-xterm")).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolvePrepare?.({ runtimePath: "/runtime", ready: true });
+    });
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
   });
 
   it("inserts action commands without submitting them", async () => {

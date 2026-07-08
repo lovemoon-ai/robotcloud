@@ -81,6 +81,7 @@ type TerminalStoreSnapshot = {
   phase: TerminalPhase;
   error: string | null;
   runtimeProgress: RuntimeProgressEvent | null;
+  runtimeProgressLog: string[];
 };
 type UploadReview = {
   datasetRepoId: string;
@@ -107,6 +108,7 @@ const DEFAULT_CAMERA_COUNT = 1;
 const DEFAULT_MAX_RELATIVE_TARGET = 5;
 const LEGACY_DEFAULT_EPISODES = 1;
 const LEGACY_DEFAULT_CAMERA = { width: 480, height: 640, fps: 30 };
+const MAX_RUNTIME_PROGRESS_LOG = 20;
 const MAX_CAMERAS = 3;
 const MIN_UPLOAD_EPISODES = 1;
 const MIN_UPLOAD_DURATION_SECONDS = 1;
@@ -723,6 +725,10 @@ function runtimeProgressPercent(progress: RuntimeProgressEvent | null) {
   return Math.max(0, Math.min(100, Math.round((progress.current / progress.total) * 100)));
 }
 
+function formatRuntimeProgressLogLine(progress: RuntimeProgressEvent) {
+  return progress.command ? `${progress.message}\n$ ${progress.command}` : progress.message;
+}
+
 const persistentTerminalStore: {
   term: TerminalHandle | null;
   sessionId: string | null;
@@ -730,6 +736,7 @@ const persistentTerminalStore: {
   phase: TerminalPhase;
   error: string | null;
   runtimeProgress: RuntimeProgressEvent | null;
+  runtimeProgressLog: string[];
   starting: Promise<void> | null;
   inputDisposable: TerminalDisposable | null;
   offOutput: (() => void) | null;
@@ -744,6 +751,7 @@ const persistentTerminalStore: {
   phase: "starting",
   error: null,
   runtimeProgress: null,
+  runtimeProgressLog: [],
   starting: null,
   inputDisposable: null,
   offOutput: null,
@@ -757,7 +765,8 @@ function persistentTerminalSnapshot(): TerminalStoreSnapshot {
   return {
     phase: persistentTerminalStore.phase,
     error: persistentTerminalStore.error,
-    runtimeProgress: persistentTerminalStore.runtimeProgress
+    runtimeProgress: persistentTerminalStore.runtimeProgress,
+    runtimeProgressLog: [...persistentTerminalStore.runtimeProgressLog]
   };
 }
 
@@ -775,8 +784,9 @@ function subscribePersistentTerminal(listener: () => void) {
 function setPersistentTerminalState(phase: TerminalPhase, error: string | null) {
   persistentTerminalStore.phase = phase;
   persistentTerminalStore.error = error;
-  if (phase !== "preparing") {
+  if (phase !== "preparing" && phase !== "failed") {
     persistentTerminalStore.runtimeProgress = null;
+    persistentTerminalStore.runtimeProgressLog = [];
   }
   notifyPersistentTerminalListeners();
 }
@@ -788,6 +798,16 @@ function setPersistentTerminalError(error: string | null) {
 
 function setPersistentRuntimeProgress(progress: RuntimeProgressEvent | null) {
   persistentTerminalStore.runtimeProgress = progress;
+  if (progress) {
+    const line = formatRuntimeProgressLogLine(progress);
+    const previous = persistentTerminalStore.runtimeProgressLog[persistentTerminalStore.runtimeProgressLog.length - 1];
+    if (line && line !== previous) {
+      persistentTerminalStore.runtimeProgressLog = [
+        ...persistentTerminalStore.runtimeProgressLog,
+        line
+      ].slice(-MAX_RUNTIME_PROGRESS_LOG);
+    }
+  }
   notifyPersistentTerminalListeners();
 }
 
@@ -868,6 +888,7 @@ function ensurePersistentTerminal(
   }
 
   setPersistentTerminalState("preparing", null);
+  persistentTerminalStore.runtimeProgressLog = [];
   setPersistentRuntimeProgress({
     phase: "preparing",
     message: "Preparing LeRobot runtime...",
@@ -954,6 +975,7 @@ function resetPersistentTerminalForTest() {
   persistentTerminalStore.phase = "starting";
   persistentTerminalStore.error = null;
   persistentTerminalStore.runtimeProgress = null;
+  persistentTerminalStore.runtimeProgressLog = [];
   persistentTerminalStore.starting = null;
   persistentTerminalStore.offOutput = null;
   persistentTerminalStore.offExit = null;
@@ -1018,7 +1040,9 @@ export function SO101Client() {
   const terminalPhase = terminalState.phase;
   const terminalError = terminalState.error;
   const runtimeProgress = terminalState.runtimeProgress;
+  const runtimeProgressLog = terminalState.runtimeProgressLog;
   const runtimePercent = runtimeProgressPercent(runtimeProgress);
+  const showRuntimeProgress = terminalPhase === "preparing" || (terminalPhase === "failed" && runtimeProgressLog.length > 0);
   const bridgeReady = desktopBridgeAvailability === "available";
   const registerConfigInput = (field: ConfigFieldId) => (node: HTMLInputElement | null) => {
     configInputRefs.current[field] = node;
@@ -1238,13 +1262,15 @@ export function SO101Client() {
     };
   }, [bridgeReady, refreshStatus, terminalContainerEl, token]);
 
-  const writeTerminalCommand = useCallback(async (command: string) => {
+  const writeTerminalCommand = useCallback(async (command: string, options: { focusTerminal?: boolean } = {}) => {
     const sessionId = persistentTerminalStore.sessionId;
     if (!sessionId || !window.robotcloudDesktop) {
       throw new Error("Terminal is not ready.");
     }
     await window.robotcloudDesktop.terminal.write(sessionId, `${CLEAR_CURRENT_TERMINAL_INPUT}${command}`);
-    persistentTerminalStore.term?.focus();
+    if (options.focusTerminal) {
+      persistentTerminalStore.term?.focus();
+    }
   }, []);
 
   const writeActionCommand = useCallback(async (action: ActionId, options: { force?: boolean } = {}) => {
@@ -1252,7 +1278,7 @@ export function SO101Client() {
     if (!options.force && command === lastWrittenActionCommandRef.current) return;
     lastWrittenActionCommandRef.current = command;
     try {
-      await writeTerminalCommand(command);
+      await writeTerminalCommand(command, { focusTerminal: options.force });
     } catch (error) {
       if (lastWrittenActionCommandRef.current === command) {
         lastWrittenActionCommandRef.current = null;
@@ -1415,20 +1441,19 @@ export function SO101Client() {
     }
   };
 
-  const statusCards = useMemo(
+  const runtimeStatusCards = useMemo(
     () => [
       { label: "Runtime", value: status?.runtimeReady ? "ready" : "missing", detail: status?.runtimeError ?? status?.runtimePath ?? "not found" },
-      { label: "Data folder", value: "local", detail: status?.dataDir || "pending" },
-      {
-        label: "Version",
-        value: versionText(status?.appVersion),
-        rows: [
-          { label: "App version", value: versionText(status?.appVersion) },
-          { label: "Build commit", value: versionText(status?.appBuildCommit) },
-          { label: "Build time", value: versionText(status?.appBuildTime) },
-          { label: "LeRobot", value: versionText(status?.lerobotVersion) }
-        ]
-      }
+      { label: "Data folder", value: "local", detail: status?.dataDir || "pending" }
+    ],
+    [status]
+  );
+  const buildInfoCards = useMemo(
+    () => [
+      { label: "Built-in LeRobot", value: versionText(status?.lerobotVersion) },
+      { label: "App version", value: versionText(status?.appVersion) },
+      { label: "Build commit", value: versionText(status?.appBuildCommit) },
+      { label: "Build time", value: versionText(status?.appBuildTime) }
     ],
     [status]
   );
@@ -1513,21 +1538,32 @@ export function SO101Client() {
             {actionConfigError.message}
           </p>
         ) : null}
-        {terminalPhase === "preparing" ? (
+        {showRuntimeProgress ? (
           <div className="mt-4 space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <span className="font-semibold accent-text">Preparing LeRobot runtime...</span>
-              {runtimePercent == null ? null : <span className="text-muted">{runtimePercent}%</span>}
+              <span className="font-semibold accent-text">
+                {terminalPhase === "failed" ? "LeRobot runtime preparation failed" : "Preparing LeRobot runtime..."}
+              </span>
+              {terminalPhase === "preparing" && runtimePercent != null ? <span className="text-muted">{runtimePercent}%</span> : null}
             </div>
-            <div className="h-2 overflow-hidden rounded bg-surface">
-              <div
-                className="h-full gradient-primary transition-all"
-                style={{ width: `${runtimePercent ?? 12}%` }}
-              />
-            </div>
+            {terminalPhase === "preparing" ? (
+              <div className="h-2 overflow-hidden rounded bg-surface">
+                <div
+                  className="h-full gradient-primary transition-all"
+                  style={{ width: `${runtimePercent ?? 12}%` }}
+                />
+              </div>
+            ) : null}
             <p className="text-xs text-muted">
               {runtimeProgress?.message ?? "Preparing LeRobot runtime..."}
             </p>
+            {runtimeProgressLog.length > 0 ? (
+              <div className="max-h-40 overflow-auto rounded-md border border-theme bg-[#07111f] px-3 py-2 font-mono text-[11px] leading-5 text-slate-200">
+                {runtimeProgressLog.map((entry, index) => (
+                  <pre key={`${index}-${entry.slice(0, 24)}`} className="whitespace-pre-wrap break-words">{entry}</pre>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
         <div
@@ -1910,25 +1946,23 @@ export function SO101Client() {
         </div>
       ) : null}
 
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {statusCards.map((card) => (
+      <section className="grid gap-3 md:grid-cols-2">
+        {runtimeStatusCards.map((card) => (
           <div key={card.label} className="rounded-lg border border-theme bg-card p-4">
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs uppercase tracking-wide text-muted">{card.label}</span>
               <span className="rounded border border-theme px-2 py-0.5 text-xs accent-text">{card.value}</span>
             </div>
-            {card.rows ? (
-              <dl className="mt-3 grid gap-2 text-xs">
-                {card.rows.map((row) => (
-                  <div key={row.label} className="grid grid-cols-[6rem_minmax(0,1fr)] gap-2">
-                    <dt className="text-muted">{row.label}</dt>
-                    <dd className="break-all text-body">{row.value}</dd>
-                  </div>
-                ))}
-              </dl>
-            ) : (
-              <p className="mt-2 break-all text-xs text-muted">{card.detail ?? ""}</p>
-            )}
+            <p className="mt-2 break-all text-xs text-muted">{card.detail}</p>
+          </div>
+        ))}
+      </section>
+
+      <section aria-label="SO101 app build information" className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {buildInfoCards.map((card) => (
+          <div key={card.label} className="rounded-lg border border-theme bg-card p-4">
+            <span className="text-xs uppercase tracking-wide text-muted">{card.label}</span>
+            <p className="mt-2 break-all text-sm font-semibold text-body">{card.value}</p>
           </div>
         ))}
       </section>

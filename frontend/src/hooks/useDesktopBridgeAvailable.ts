@@ -5,6 +5,23 @@ import { useEffect, useState } from "react";
 export type DesktopBridgeAvailability = "checking" | "available" | "unavailable";
 
 const DESKTOP_BRIDGE_TIMEOUT_MS = 2000;
+let cachedAvailability: DesktopBridgeAvailability = "checking";
+
+function desktopBridgeIsInjected() {
+  return typeof window !== "undefined" && Boolean(window.robotcloudDesktop?.isDesktop);
+}
+
+function initialDesktopBridgeAvailability() {
+  if (cachedAvailability === "available" && !desktopBridgeIsInjected()) {
+    return "checking";
+  }
+  return cachedAvailability;
+}
+
+function cacheAvailability(value: DesktopBridgeAvailability) {
+  cachedAvailability = value;
+  return value;
+}
 
 async function detectDesktopBridge() {
   const bridge = window.robotcloudDesktop;
@@ -21,11 +38,11 @@ async function detectDesktopBridge() {
 }
 
 export function useDesktopBridgeAvailability() {
-  const [availability, setAvailability] = useState<DesktopBridgeAvailability>("checking");
+  const [availability, setAvailability] = useState<DesktopBridgeAvailability>(initialDesktopBridgeAvailability);
 
   useEffect(() => {
     let disposed = false;
-    let hasResolvedAvailable = false;
+    let hasResolvedAvailable = cachedAvailability === "available" && desktopBridgeIsInjected();
     let unavailableTimer: number | null = null;
 
     const clearUnavailableTimer = () => {
@@ -38,12 +55,12 @@ export function useDesktopBridgeAvailability() {
     const markAvailable = () => {
       hasResolvedAvailable = true;
       clearUnavailableTimer();
-      setAvailability("available");
+      setAvailability(cacheAvailability("available"));
     };
 
     const markUnavailable = () => {
       if (!hasResolvedAvailable) {
-        setAvailability("unavailable");
+        setAvailability(cacheAvailability("unavailable"));
       }
     };
 
@@ -94,4 +111,8 @@ export function useDesktopBridgeAvailability() {
 
 export function useDesktopBridgeAvailable() {
   return useDesktopBridgeAvailability() === "available";
+}
+
+export function resetDesktopBridgeAvailabilityForTest() {
+  cachedAvailability = "checking";
 }

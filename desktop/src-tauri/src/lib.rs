@@ -25,8 +25,9 @@ const LOCAL_SO101_WEB_URL: &str = "app://local/so101/";
 const LOCAL_SO101_APP_PATH: &str = "so101/index.html";
 const MIN_DATASET_UPLOAD_EPISODES: u64 = 1;
 const MIN_DATASET_UPLOAD_DURATION_SECONDS: f64 = 1.0;
-const RUNTIME_READY_MARKER_VERSION: &str = "2";
-const WINDOWS_SHIMS_MARKER_VERSION: &str = "2";
+const RUNTIME_READY_MARKER_VERSION: &str = "4";
+const WINDOWS_SHIMS_MARKER_VERSION: &str = "3";
+const RUNTIME_IMPORT_CHECK: &str = "import datasets, deepdiff, lerobot, serial, scservo_sdk";
 
 const DEFAULT_BRIDGE_SCRIPT: &str = r#"
 (function () {
@@ -278,6 +279,7 @@ struct RuntimeManifest {
 struct RuntimeProgressEvent {
     phase: String,
     message: String,
+    command: Option<String>,
     current: Option<u64>,
     total: Option<u64>,
 }
@@ -732,9 +734,49 @@ fn emit_runtime_progress<F>(
     progress(RuntimeProgressEvent {
         phase: phase.to_string(),
         message: message.into(),
+        command: None,
         current,
         total,
     });
+}
+
+fn emit_runtime_command_progress<F>(
+    progress: &mut F,
+    phase: &str,
+    message: impl Into<String>,
+    command: impl Into<String>,
+    current: Option<u64>,
+    total: Option<u64>,
+) where
+    F: FnMut(RuntimeProgressEvent),
+{
+    progress(RuntimeProgressEvent {
+        phase: phase.to_string(),
+        message: message.into(),
+        command: Some(command.into()),
+        current,
+        total,
+    });
+}
+
+fn quote_command_part(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    if value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric()
+            || matches!(byte, b'/' | b'\\' | b'.' | b'_' | b'-' | b':' | b'+' | b'=')
+    }) {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn format_command_for_log(program: &Path, args: &[String]) -> String {
+    std::iter::once(quote_command_part(program.to_string_lossy().as_ref()))
+        .chain(args.iter().map(|arg| quote_command_part(arg)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(unix)]
@@ -874,7 +916,10 @@ fn runtime_relocation_is_done(runtime: &Path) -> bool {
     runtime_relocation_marker_path(runtime).exists()
 }
 
-fn run_runtime_relocation_fixups(runtime: &PathBuf) -> Result<(), String> {
+fn run_runtime_relocation_fixups<F>(runtime: &PathBuf, progress: &mut F) -> Result<(), String>
+where
+    F: FnMut(RuntimeProgressEvent),
+{
     if runtime_relocation_is_done(runtime) {
         return Ok(());
     }
@@ -894,13 +939,24 @@ fn run_runtime_relocation_fixups(runtime: &PathBuf) -> Result<(), String> {
     }
 
     let path_value = build_command_path(runtime, env::var_os("PATH"))?;
-    let mut command = if cfg!(target_os = "windows") {
-        Command::new(&conda_unpack)
+    let (program, args) = if cfg!(target_os = "windows") {
+        (conda_unpack.clone(), Vec::new())
     } else {
-        let mut command = Command::new(&python);
-        command.arg(&conda_unpack);
-        command
+        (
+            python.clone(),
+            vec![conda_unpack.to_string_lossy().to_string()],
+        )
     };
+    emit_runtime_command_progress(
+        progress,
+        "relocating",
+        "Preparing LeRobot runtime: running relocation command...",
+        format_command_for_log(&program, &args),
+        None,
+        None,
+    );
+    let mut command = Command::new(&program);
+    command.args(&args);
     let output = command
         .env("PATH", path_value)
         .env_remove("PYTHONHOME")
@@ -946,7 +1002,7 @@ where
 {
     if let Ok(path) = env::var("ROBOTCLOUD_LEROBOT_ENV") {
         let runtime = PathBuf::from(path);
-        if runtime_is_ready(&runtime) {
+        if runtime_validation_error_with_progress(&runtime, progress).is_none() {
             prepare_runtime_with_progress(&runtime, progress)?;
             return Ok(runtime);
         }
@@ -957,8 +1013,8 @@ where
             None,
             None,
         );
-        run_runtime_relocation_fixups(&runtime)?;
-        if runtime_is_ready(&runtime) {
+        run_runtime_relocation_fixups(&runtime, progress)?;
+        if runtime_validation_error_with_progress(&runtime, progress).is_none() {
             prepare_runtime_with_progress(&runtime, progress)?;
             return Ok(runtime);
         }
@@ -1000,8 +1056,8 @@ where
             None,
             None,
         );
-        run_runtime_relocation_fixups(&target)?;
-        if runtime_is_ready(&target) {
+        run_runtime_relocation_fixups(&target, progress)?;
+        if runtime_validation_error_with_progress(&target, progress).is_none() {
             prepare_runtime_with_progress(&target, progress)?;
             write_runtime_ready_marker(&target, archive.as_deref())?;
             emit_runtime_progress(progress, "ready", "LeRobot runtime is ready.", None, None);
@@ -1023,7 +1079,7 @@ where
         None,
         None,
     );
-    run_runtime_relocation_fixups(&target)?;
+    run_runtime_relocation_fixups(&target, progress)?;
     emit_runtime_progress(
         progress,
         "validating",
@@ -1031,7 +1087,7 @@ where
         None,
         None,
     );
-    if runtime_is_ready(&target) {
+    if runtime_validation_error_with_progress(&target, progress).is_none() {
         prepare_runtime_with_progress(&target, progress)?;
         write_runtime_ready_marker(&target, Some(&archive))?;
         emit_runtime_progress(progress, "ready", "LeRobot runtime is ready.", None, None);
@@ -1105,10 +1161,6 @@ fn runtime_entrypoint_validation_error(runtime: &Path) -> Option<String> {
     None
 }
 
-fn runtime_is_ready(runtime: &PathBuf) -> bool {
-    runtime_validation_error(runtime).is_none()
-}
-
 fn runtime_not_ready_message(runtime: &PathBuf) -> String {
     runtime_validation_error(runtime).unwrap_or_else(|| {
         format!(
@@ -1127,9 +1179,37 @@ fn runtime_validation_error(runtime: &PathBuf) -> Option<String> {
         return Some(error);
     }
 
-    let output = Command::new(&python)
+    runtime_python_validation_error(&python, runtime)
+}
+
+fn runtime_validation_error_with_progress<F>(runtime: &PathBuf, progress: &mut F) -> Option<String>
+where
+    F: FnMut(RuntimeProgressEvent),
+{
+    let python = python_path(runtime);
+    if !python.exists() {
+        return Some(format!("LeRobot runtime not found: {}", runtime.display()));
+    }
+    if let Some(error) = runtime_entrypoint_validation_error(runtime) {
+        return Some(error);
+    }
+
+    let args = vec!["-c".to_string(), RUNTIME_IMPORT_CHECK.to_string()];
+    emit_runtime_command_progress(
+        progress,
+        "validating",
+        "Preparing LeRobot runtime: checking required Python modules...",
+        format_command_for_log(&python, &args),
+        None,
+        None,
+    );
+    runtime_python_validation_error(&python, runtime)
+}
+
+fn runtime_python_validation_error(python: &Path, runtime: &PathBuf) -> Option<String> {
+    let output = Command::new(python)
         .arg("-c")
-        .arg("import lerobot, serial, scservo_sdk")
+        .arg(RUNTIME_IMPORT_CHECK)
         .env("PYTHONNOUSERSITE", "1")
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")

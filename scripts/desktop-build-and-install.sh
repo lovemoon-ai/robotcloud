@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
 DESKTOP_DIR="${PROJECT_ROOT}/desktop"
 BUNDLE_DIR="${DESKTOP_DIR}/src-tauri/target/release/bundle"
+APP_ID="top.conductor-ai.robotcloud.desktop"
 
 SKIP_BUILD=0
 SKIP_INSTALL=0
@@ -73,6 +74,52 @@ sudo_if_needed() {
   else
     sudo "$@"
   fi
+}
+
+stop_desktop_app() {
+  case "$(uname -s)" in
+    Darwin)
+      if pgrep -x robotcloud >/dev/null 2>&1 || pgrep -f '/RobotCloud\.app/Contents/MacOS/robotcloud' >/dev/null 2>&1; then
+        log "Stopping running RobotCloud desktop processes"
+        pkill -x robotcloud >/dev/null 2>&1 || true
+        pkill -f '/RobotCloud\.app/Contents/MacOS/robotcloud' >/dev/null 2>&1 || true
+        sleep 1
+      fi
+      ;;
+    Linux)
+      if pgrep -x robotcloud >/dev/null 2>&1; then
+        log "Stopping running RobotCloud desktop processes"
+        pkill -x robotcloud >/dev/null 2>&1 || true
+        sleep 1
+      fi
+      ;;
+  esac
+}
+
+remove_cache_path() {
+  local path="$1"
+  [[ -n "${path}" && -e "${path}" ]] || return 0
+  log "Removing cache: ${path}"
+  rm -rf "${path}"
+}
+
+clear_desktop_caches() {
+  stop_desktop_app
+  case "$(uname -s)" in
+    Darwin)
+      remove_cache_path "${HOME}/Library/Caches/${APP_ID}"
+      remove_cache_path "${HOME}/Library/WebKit/${APP_ID}"
+      remove_cache_path "${HOME}/Library/HTTPStorages/${APP_ID}"
+      remove_cache_path "${HOME}/Library/HTTPStorages/${APP_ID}.binarycookies"
+      remove_cache_path "${HOME}/Library/Saved Application State/${APP_ID}.savedState"
+      ;;
+    Linux)
+      local cache_home="${XDG_CACHE_HOME:-${HOME}/.cache}"
+      remove_cache_path "${cache_home}/${APP_ID}"
+      remove_cache_path "${cache_home}/tauri/${APP_ID}"
+      remove_cache_path "${cache_home}/webkitgtk/${APP_ID}"
+      ;;
+  esac
 }
 
 install_macos_app() {
@@ -266,10 +313,12 @@ done
 case "$(uname -s)" in
   Darwin)
     build_macos
+    clear_desktop_caches
     [[ "${SKIP_INSTALL}" -eq 1 ]] || install_macos
     ;;
   Linux)
     build_linux
+    clear_desktop_caches
     [[ "${SKIP_INSTALL}" -eq 1 ]] || install_linux
     ;;
   *)

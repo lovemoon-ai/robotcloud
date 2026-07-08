@@ -5,11 +5,11 @@ param(
     [string] $MicromambaExe = "",
     [string] $MicromambaUrl = "https://micro.mamba.pm/api/micromamba/win-64/latest",
     [string] $PythonVersion = "3.12",
-    [string] $LeRobotSpec = "lerobot==0.6.0",
+    [string] $LeRobotSpec = "lerobot[dataset]==0.6.0",
     [string] $TorchSpec = "torch==2.10.0",
     [string] $TorchVisionSpec = "torchvision==0.25.0",
     [string] $TorchIndexUrl = "https://download.pytorch.org/whl/cpu",
-    [string[]] $ExtraPipPackages = @("feetech-servo-sdk>=1.0.0,<2.0.0"),
+    [string[]] $ExtraPipPackages = @("feetech-servo-sdk>=1.0.0,<2.0.0", "deepdiff>=7.0.1,<9.0.0", "torchcodec>=0.10.0,<0.11.0"),
     [switch] $Force,
     [switch] $SkipSmokeTest
 )
@@ -76,6 +76,19 @@ function Assert-ChildPath {
     }
 }
 
+function Install-LeRobotPackages {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Python
+    )
+
+    $lerobotArgs = @("-m", "pip", "install", $LeRobotSpec)
+    if ($ExtraPipPackages.Count -gt 0) {
+        $lerobotArgs += $ExtraPipPackages
+    }
+    Invoke-Checked $Python $lerobotArgs
+}
+
 function Install-Micromamba {
     if (Test-Path -LiteralPath $MicromambaExe) {
         return
@@ -108,6 +121,7 @@ function New-RuntimeEnv {
     $python = Join-Path $EnvPath "python.exe"
     if ((Test-Path -LiteralPath $python) -and -not $Force) {
         Write-Host "Reusing existing runtime environment: $EnvPath"
+        Install-LeRobotPackages -Python $python
         return
     }
 
@@ -126,7 +140,8 @@ function New-RuntimeEnv {
         "-c",
         "conda-forge",
         "python=$PythonVersion",
-        "pip"
+        "pip",
+        "ffmpeg"
     )
 
     $python = Join-Path $EnvPath "python.exe"
@@ -145,11 +160,7 @@ function New-RuntimeEnv {
         $TorchVisionSpec
     )
 
-    $lerobotArgs = @("-m", "pip", "install", $LeRobotSpec)
-    if ($ExtraPipPackages.Count -gt 0) {
-        $lerobotArgs += $ExtraPipPackages
-    }
-    Invoke-Checked $python $lerobotArgs
+    Install-LeRobotPackages -Python $python
 }
 
 function Test-FileContainsText {
@@ -330,7 +341,7 @@ function Test-RuntimeEnv {
     }
 
     if (-not $SkipSmokeTest) {
-        Invoke-Checked $python @("-c", "import lerobot, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')")
+        Invoke-Checked $python @("-c", "import datasets, deepdiff, lerobot, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')")
         Invoke-Checked $lerobotInfo @()
     }
 }

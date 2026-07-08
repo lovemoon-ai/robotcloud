@@ -109,6 +109,7 @@ type TerminalStarted = {
 type RuntimeProgressEvent = {
   phase: string;
   message: string;
+  command?: string | null;
   current?: number | null;
   total?: number | null;
 };

@@ -6,6 +6,7 @@ for %%I in ("%SCRIPT_DIR%..") do set "PROJECT_ROOT=%%~fI"
 set "DESKTOP_DIR=%PROJECT_ROOT%\desktop"
 set "BUNDLE_DIR=%DESKTOP_DIR%\src-tauri\target\release\bundle"
 set "MSI_DIR=%BUNDLE_DIR%\msi"
+set "APP_ID=top.conductor-ai.robotcloud.desktop"
 
 set "SKIP_BUILD=0"
 set "SKIP_INSTALL=0"
@@ -80,6 +81,8 @@ if "%SKIP_BUILD%"=="1" (
 ) else (
   call :build_windows || goto failure
 )
+
+call :clear_desktop_caches || goto failure
 
 call :find_latest_msi
 if not defined MSI_PATH (
@@ -165,6 +168,28 @@ for /f "delims=" %%F in ('dir /b /a:-d /o:-d "%MSI_DIR%\*.msi" 2^>nul') do (
 )
 exit /b 0
 
+:stop_desktop_app
+call :log "Stopping running RobotCloud desktop processes"
+taskkill.exe /IM robotcloud.exe /F >nul 2>nul
+exit /b 0
+
+:remove_cache_dir
+if "%~1"=="" exit /b 0
+if exist "%~1" (
+  call :log "Removing cache: %~1"
+  rmdir /s /q "%~1"
+  if exist "%~1" (
+    call :die "Failed to remove cache: %~1"
+    exit /b 1
+  )
+)
+exit /b 0
+
+:clear_desktop_caches
+call :stop_desktop_app
+call :remove_cache_dir "%LOCALAPPDATA%\%APP_ID%" || exit /b 1
+exit /b 0
+
 :install_msi
 set "MSI_TO_INSTALL=%~1"
 if not exist "%MSI_TO_INSTALL%" (
@@ -172,8 +197,7 @@ if not exist "%MSI_TO_INSTALL%" (
   exit /b 1
 )
 
-call :log "Stopping running RobotCloud desktop processes"
-taskkill.exe /IM robotcloud.exe /F >nul 2>nul
+call :stop_desktop_app
 
 if defined ROBOTCLOUD_MSI_ARGS (
   call :log "Installing MSI"

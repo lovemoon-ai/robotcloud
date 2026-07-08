@@ -9,11 +9,11 @@ OUTPUT_ZIP=""
 MICROMAMBA_EXE="${MICROMAMBA_EXE:-}"
 MICROMAMBA_URL=""
 PYTHON_VERSION="3.12"
-LEROBOT_SPEC="lerobot==0.6.0"
+LEROBOT_SPEC="lerobot[dataset]==0.6.0"
 TORCH_SPEC="torch==2.10.0"
 TORCHVISION_SPEC="torchvision==0.25.0"
 TORCH_INDEX_URL=""
-EXTRA_PIP_PACKAGES=("feetech-servo-sdk>=1.0.0,<2.0.0")
+EXTRA_PIP_PACKAGES=("feetech-servo-sdk>=1.0.0,<2.0.0" "deepdiff>=7.0.1,<9.0.0" "torchcodec>=0.10.0,<0.11.0")
 CONDA_PACK_SPEC="conda-pack>=0.8.1,<1.0.0"
 FORCE=0
 SKIP_SMOKE_TEST=0
@@ -29,7 +29,7 @@ Options:
   --micromamba-exe PATH       Existing micromamba executable to use.
   --micromamba-url URL        Micromamba archive URL. Defaults to the current macOS CPU architecture.
   --python-version VERSION    Python version. Defaults to 3.12.
-  --lerobot-spec SPEC         LeRobot pip requirement. Defaults to lerobot==0.6.0.
+  --lerobot-spec SPEC         LeRobot pip requirement. Defaults to lerobot[dataset]==0.6.0.
   --torch-spec SPEC           Torch pip requirement. Defaults to torch==2.10.0.
   --torchvision-spec SPEC     TorchVision pip requirement. Defaults to torchvision==0.25.0.
   --torch-index-url URL       Optional pip index URL for Torch/TorchVision. Defaults to PyPI on macOS.
@@ -116,6 +116,15 @@ run_checked() {
   "$@"
 }
 
+install_lerobot_packages() {
+  local python="${ENV_PATH}/bin/python"
+  local lerobot_args=("-m" "pip" "install" "${LEROBOT_SPEC}")
+  if [[ "${#EXTRA_PIP_PACKAGES[@]}" -gt 0 ]]; then
+    lerobot_args+=("${EXTRA_PIP_PACKAGES[@]}")
+  fi
+  run_checked "${python}" "${lerobot_args[@]}"
+}
+
 assert_child_path() {
   local child
   local parent
@@ -159,6 +168,7 @@ new_runtime_env() {
   local python="${ENV_PATH}/bin/python"
   if [[ -x "${python}" && "${FORCE}" -ne 1 ]]; then
     echo "Reusing existing runtime environment: ${ENV_PATH}"
+    install_lerobot_packages
     return
   fi
 
@@ -168,7 +178,7 @@ new_runtime_env() {
   fi
 
   mkdir -p "${WORK_DIR}"
-  run_checked "${MICROMAMBA_EXE}" create -y -p "${ENV_PATH}" -c conda-forge "python=${PYTHON_VERSION}" pip
+  run_checked "${MICROMAMBA_EXE}" create -y -p "${ENV_PATH}" -c conda-forge "python=${PYTHON_VERSION}" pip ffmpeg
 
   if [[ ! -x "${python}" ]]; then
     echo "Python was not created at ${python}" >&2
@@ -185,11 +195,7 @@ new_runtime_env() {
   torch_args+=("${TORCH_SPEC}" "${TORCHVISION_SPEC}")
   run_checked "${python}" "${torch_args[@]}"
 
-  local lerobot_args=("-m" "pip" "install" "${LEROBOT_SPEC}")
-  if [[ "${#EXTRA_PIP_PACKAGES[@]}" -gt 0 ]]; then
-    lerobot_args+=("${EXTRA_PIP_PACKAGES[@]}")
-  fi
-  run_checked "${python}" "${lerobot_args[@]}"
+  install_lerobot_packages
 }
 
 ensure_conda_pack() {
@@ -240,6 +246,7 @@ remove_runtime_build_junk() {
   find "${ENV_PATH}" -type d -name "__pycache__" -prune -exec rm -rf {} +
   find "${ENV_PATH}" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
   find "${ENV_PATH}" -type d -name ".pytest_cache" -prune -exec rm -rf {} +
+  find "${ENV_PATH}" -type f -name "loaders.cache" -delete
 }
 
 test_runtime_env() {
@@ -255,7 +262,7 @@ test_runtime_env() {
   fi
 
   if [[ "${SKIP_SMOKE_TEST}" -ne 1 ]]; then
-    run_checked "${python}" -c "import lerobot, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')"
+    run_checked "${python}" -c "import datasets, deepdiff, lerobot, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')"
     PATH="/usr/bin:/bin" run_checked "${lerobot_info}"
   fi
 }
@@ -363,7 +370,7 @@ run_conda_unpack() {
 
 runtime_smoke_test() {
   local runtime="$1"
-  PATH="/usr/bin:/bin" "${runtime}/bin/python" -c "import lerobot, torch, torchvision, serial, scservo_sdk; print('relocated runtime imports ok')" &&
+  PATH="/usr/bin:/bin" "${runtime}/bin/python" -c "import datasets, deepdiff, lerobot, torch, torchvision, serial, scservo_sdk; print('relocated runtime imports ok')" &&
     PATH="/usr/bin:/bin" "${runtime}/bin/lerobot-info"
 }
 

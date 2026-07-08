@@ -30,3 +30,6 @@ scripts/lerobot/
 conductor.log
 conductor-terminal.log
 Makefile
+
+# ignore local lerobot-env
+desktop/src-tauri/resources/runtime/macos/
