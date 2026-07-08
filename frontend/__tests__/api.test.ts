@@ -643,6 +643,35 @@ describe("robotCloudApi", () => {
     });
   });
 
+  it("createTrainingJob posts explicit params without merging template defaults", async () => {
+    setAuthenticatedUser();
+    const params = {
+      steps: 5000,
+      batch_size: 4,
+      "policy.path": "custom/pi05",
+      rename_map: {
+        "observation.images.front": "observation.images.base_0_rgb",
+        "observation.images.left": "observation.images.left_wrist_0_rgb",
+        "observation.images.right": "observation.images.right_wrist_0_rgb"
+      }
+    };
+    const config: TrainingConfig = {
+      model: "Pi0.5",
+      datasetId: "6",
+      learningRate: 0.000025,
+      steps: 5000,
+      batchSize: 8,
+      params
+    };
+    await robotCloudApi.createTrainingJob(config);
+    const [, init] = mockedFetch.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toEqual({
+      dataset_id: 6,
+      model_type: "Pi0.5",
+      params
+    });
+  });
+
   it("deleteTrainingJob posts to delete endpoint with auth", async () => {
     setAuthenticatedUser();
     mockedFetch.mockResolvedValueOnce({

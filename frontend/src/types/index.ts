@@ -106,6 +106,7 @@ export interface TrainingConfig {
   batchSize: number;
   pi05Preset?: "memory" | "balanced" | "throughput";
   pi05TrainingScope?: "expert" | "full";
+  params?: Record<string, unknown>;
 }
 
 export interface InferenceJob {

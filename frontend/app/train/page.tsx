@@ -1,8 +1,14 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Suspense, useEffect, useState } from "react";
-import { robotCloudApi } from "@/api/client";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import {
+  buildTrainingParams,
+  isPi05TrainingModel,
+  PI05_BASE_MODEL,
+  PI05_DEFAULT_LEARNING_RATE,
+  robotCloudApi
+} from "@/api/client";
 import { Card } from "@/components/ui/Card";
 import { useForm } from "react-hook-form";
 import { TrainingConfig, TrainingJob } from "@/types";
@@ -13,16 +19,32 @@ import { useLocaleStore } from "@/store/useLocaleStore";
 import { useThemeStore } from "@/store/useThemeStore";
 
 const ACTIVE_TRAINING_STATUSES: Array<TrainingJob["status"]> = ["queued", "running"];
-const PI05_BASE_MODEL = "lerobot/pi05_base";
-const PI05_DEFAULT_LEARNING_RATE = 0.000025;
 const PI05_PRESETS = {
   memory: { batchSize: 1, gradientCheckpointing: true },
   balanced: { batchSize: 8, gradientCheckpointing: true },
   throughput: { batchSize: 16, gradientCheckpointing: false }
 } as const;
 
-function isPi05Model(model: string) {
-  return ["pi0.5", "pi05", "pi0_5", "pi0-5"].includes(model.trim().toLowerCase());
+const DEFAULT_TRAINING_VALUES: TrainingConfig = {
+  model: "ACT",
+  datasetId: "",
+  learningRate: 0.001,
+  steps: 5000,
+  batchSize: 16,
+  pi05Preset: "memory",
+  pi05TrainingScope: "expert"
+};
+
+function formatParams(params: Record<string, unknown>) {
+  return JSON.stringify(params, null, 2);
+}
+
+function parseParams(text: string): Record<string, unknown> {
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Training params must be a JSON object.");
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function TrainPageContent() {
@@ -50,22 +72,40 @@ function TrainPageContent() {
   });
   const form = useForm<TrainingConfig>({
     defaultValues: {
-      model: "ACT",
-      datasetId: initialDatasetId,
-      learningRate: 0.001,
-      steps: 5000,
-      batchSize: 16,
-      pi05Preset: "memory",
-      pi05TrainingScope: "expert"
+      ...DEFAULT_TRAINING_VALUES,
+      datasetId: initialDatasetId
     }
   });
   const selectedModel = form.watch("model");
+  const learningRate = form.watch("learningRate");
+  const steps = form.watch("steps");
+  const batchSize = form.watch("batchSize");
   const pi05Preset = form.watch("pi05Preset") ?? "memory";
   const pi05TrainingScope = form.watch("pi05TrainingScope") ?? "expert";
   const pi05PresetConfig = PI05_PRESETS[pi05Preset];
-  const isPi05Selected = isPi05Model(selectedModel);
+  const isPi05Selected = isPi05TrainingModel(selectedModel);
   const pi05EffectiveBatchSize = pi05TrainingScope === "full" ? 1 : pi05PresetConfig.batchSize;
   const pi05GradientCheckpointing = pi05TrainingScope === "full" || pi05PresetConfig.gradientCheckpointing;
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const paramsTemplate = useMemo(
+    () =>
+      formatParams(
+        buildTrainingParams({
+          ...DEFAULT_TRAINING_VALUES,
+          model: selectedModel,
+          datasetId: initialDatasetId,
+          learningRate,
+          steps,
+          batchSize,
+          pi05Preset,
+          pi05TrainingScope
+        })
+      ),
+    [batchSize, initialDatasetId, learningRate, pi05Preset, pi05TrainingScope, selectedModel, steps]
+  );
+  const [paramsText, setParamsText] = useState(paramsTemplate);
+  const [paramsDirty, setParamsDirty] = useState(false);
+  const [paramsError, setParamsError] = useState<string | null>(null);
   const isZh = locale === "zh";
   const copy = isZh
     ? {
@@ -93,6 +133,11 @@ function TrainPageContent() {
         pi05BaseLabel: "Base",
         pi05DtypeLabel: "DType",
         pi05CheckpointingLabel: "Checkpoint",
+        detailsTitle: "Details",
+        paramsLabel: "参数 JSON",
+        resetParams: "重置模板",
+        paramsJsonInvalid: "参数 JSON 必须是对象",
+        paramsJsonError: (message: string) => `参数 JSON 错误：${message}`,
         submit: "提交训练",
         submitting: "创建中...",
         queueHeading: "训练任务队列",
@@ -141,6 +186,11 @@ function TrainPageContent() {
         pi05BaseLabel: "Base",
         pi05DtypeLabel: "DType",
         pi05CheckpointingLabel: "Checkpoint",
+        detailsTitle: "Details",
+        paramsLabel: "Params JSON",
+        resetParams: "Reset template",
+        paramsJsonInvalid: "Params JSON must be an object",
+        paramsJsonError: (message: string) => `Params JSON error: ${message}`,
         submit: "Submit Training",
         submitting: "Creating...",
         queueHeading: "Training Queue",
@@ -173,6 +223,21 @@ function TrainPageContent() {
   const [isLogMaximized, setIsLogMaximized] = useState<boolean>(false);
   const [completedTaskIds, setCompletedTaskIds] = useState<Set<number>>(new Set());
   const [createError, setCreateError] = useState<string | null>(null);
+  const [paramsTemplateModel, setParamsTemplateModel] = useState(selectedModel);
+
+  useEffect(() => {
+    if (selectedModel !== paramsTemplateModel) {
+      setParamsTemplateModel(selectedModel);
+      setParamsDirty(false);
+      setParamsText(paramsTemplate);
+      setParamsError(null);
+      return;
+    }
+    if (!paramsDirty) {
+      setParamsText(paramsTemplate);
+      setParamsError(null);
+    }
+  }, [paramsDirty, paramsTemplate, paramsTemplateModel, selectedModel]);
 
   useEffect(() => {
     if (!isPi05Selected) return;
@@ -184,6 +249,7 @@ function TrainPageContent() {
     mutationFn: robotCloudApi.createTrainingJob,
     onSuccess: () => {
       setCreateError(null);
+      setParamsError(null);
       client.invalidateQueries({ queryKey: ["training-jobs"] });
     },
     onError: (err: unknown) => {
@@ -283,8 +349,20 @@ function TrainPageContent() {
       return;
     }
     setLoginNotice(null);
+    let parsedParams: Record<string, unknown>;
     try {
-      await mutation.mutateAsync(values);
+      parsedParams = parseParams(paramsText);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setParamsError(
+        message === "Training params must be a JSON object." ? copy.paramsJsonInvalid : copy.paramsJsonError(message)
+      );
+      setIsDetailsOpen(true);
+      return;
+    }
+    setParamsError(null);
+    try {
+      await mutation.mutateAsync({ ...values, params: parsedParams });
     } catch {
       // Error handled by mutation onError.
     }
@@ -388,6 +466,48 @@ function TrainPageContent() {
               className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2"
             />
           </label>
+          <div className="rounded-md border border-theme bg-surface/40">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between px-3 py-2 text-sm font-semibold accent-text"
+              onClick={() => setIsDetailsOpen((value) => !value)}
+            >
+              <span>{copy.detailsTitle}</span>
+              <span aria-hidden="true">{isDetailsOpen ? "-" : "+"}</span>
+            </button>
+            {isDetailsOpen ? (
+              <div className="space-y-2 border-t border-theme p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <label htmlFor="training-params-json" className="text-sm text-muted">
+                    {copy.paramsLabel}
+                  </label>
+                  <button
+                    type="button"
+                    className="text-xs font-semibold accent-text hover:text-primary"
+                    onClick={() => {
+                      setParamsDirty(false);
+                      setParamsText(paramsTemplate);
+                      setParamsError(null);
+                    }}
+                  >
+                    {copy.resetParams}
+                  </button>
+                </div>
+                <textarea
+                  id="training-params-json"
+                  value={paramsText}
+                  spellCheck={false}
+                  onChange={(event) => {
+                    setParamsDirty(true);
+                    setParamsText(event.target.value);
+                    setParamsError(null);
+                  }}
+                  className="h-64 w-full resize-y rounded-md border border-theme bg-card p-3 font-mono text-xs leading-relaxed text-body outline-none focus:border-primary"
+                />
+                {paramsError ? <p className="text-xs text-red-500">{paramsError}</p> : null}
+              </div>
+            ) : null}
+          </div>
           <button
             type="submit"
             className="w-full rounded-md gradient-primary py-2 font-semibold text-white transition hover:opacity-90"

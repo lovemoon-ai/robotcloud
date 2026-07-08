@@ -40,11 +40,49 @@ const runtimeConfig: RuntimeConfig | undefined = (() => {
 const RAW_API_BASE = runtimeConfig?.publicRuntimeConfig?.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
 const API_BASE = RAW_API_BASE.replace(/\/$/, "");
 const DEVICE_ID_STORAGE_KEY = "robotcloud-device-id";
+export const PI05_BASE_MODEL = "lerobot/pi05_base";
+export const PI05_DEFAULT_LEARNING_RATE = 0.000025;
+export const PI05_DEFAULT_RENAME_MAP = {
+  "observation.images.front": "observation.images.base_0_rgb",
+  "observation.images.side": "observation.images.left_wrist_0_rgb"
+} as const;
 
 type LoginDeviceType = "mobile" | "desktop";
 type LoginOptions = {
   replaceExistingDevice?: boolean;
 };
+
+export function isPi05TrainingModel(model: string) {
+  return ["pi0.5", "pi05", "pi0_5", "pi0-5"].includes(model.trim().toLowerCase());
+}
+
+export function buildTrainingParams(config: TrainingConfig): Record<string, unknown> {
+  const isPi05 = isPi05TrainingModel(config.model);
+  const pi05Preset = config.pi05Preset ?? "memory";
+  const pi05TrainingScope = config.pi05TrainingScope ?? "expert";
+  const pi05BatchByPreset = {
+    memory: 1,
+    balanced: 8,
+    throughput: 16
+  } satisfies Record<NonNullable<TrainingConfig["pi05Preset"]>, number>;
+  const params: Record<string, unknown> = {
+    learning_rate: isPi05 ? config.learningRate || PI05_DEFAULT_LEARNING_RATE : config.learningRate,
+    steps: config.steps,
+    batch_size: isPi05
+      ? pi05TrainingScope === "full"
+        ? 1
+        : config.batchSize || pi05BatchByPreset[pi05Preset]
+      : config.batchSize
+  };
+  if (isPi05) {
+    params["policy.path"] = PI05_BASE_MODEL;
+    params["policy.dtype"] = "bfloat16";
+    params["policy.train_expert_only"] = pi05TrainingScope !== "full";
+    params["policy.gradient_checkpointing"] = pi05Preset !== "throughput" || pi05TrainingScope === "full";
+    params.rename_map = { ...PI05_DEFAULT_RENAME_MAP };
+  }
+  return params;
+}
 
 function createDeviceId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
@@ -894,33 +932,7 @@ export const robotCloudApi = {
   deleteTrainingJob: async (taskId: number): Promise<{ deleted: boolean }> =>
     request<{ deleted: boolean }>(`/training/${taskId}/delete`, { method: "POST" }),
   createTrainingJob: async (config: TrainingConfig) => {
-    const isPi05 = ["pi0.5", "pi05", "pi0_5", "pi0-5"].includes(config.model.trim().toLowerCase());
-    const pi05Preset = config.pi05Preset ?? "memory";
-    const pi05TrainingScope = config.pi05TrainingScope ?? "expert";
-    const pi05BatchByPreset = {
-      memory: 1,
-      balanced: 8,
-      throughput: 16
-    } satisfies Record<NonNullable<TrainingConfig["pi05Preset"]>, number>;
-    const params: Record<string, string | number | boolean | Record<string, string>> = {
-      learning_rate: isPi05 ? config.learningRate || 0.000025 : config.learningRate,
-      steps: config.steps,
-      batch_size: isPi05
-        ? pi05TrainingScope === "full"
-          ? 1
-          : config.batchSize || pi05BatchByPreset[pi05Preset]
-        : config.batchSize
-    };
-    if (isPi05) {
-      params["policy.path"] = "lerobot/pi05_base";
-      params["policy.dtype"] = "bfloat16";
-      params["policy.train_expert_only"] = pi05TrainingScope !== "full";
-      params["policy.gradient_checkpointing"] = pi05Preset !== "throughput" || pi05TrainingScope === "full";
-      params.rename_map = {
-        "observation.images.front": "observation.images.base_0_rgb",
-        "observation.images.side": "observation.images.left_wrist_0_rgb"
-      };
-    }
+    const params = config.params ?? buildTrainingParams(config);
     const payload = {
       dataset_id: Number.parseInt(config.datasetId, 10),
       model_type: config.model,
