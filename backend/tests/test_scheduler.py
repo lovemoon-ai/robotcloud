@@ -184,3 +184,65 @@ def test_scheduler_routes_agent_stored_dataset_to_storage_node(
     )
     assert status_resp.status_code == 200
     assert status_resp.json()["data"]["assigned_node"] == "gpu-node-2"
+
+
+def test_scheduler_applies_safe_pi05_defaults(
+    client: APIClient, sms_gateway: InMemorySmsGateway, monkeypatch
+) -> None:
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13800000004")
+    dataset = Dataset.objects.get(id=dataset_id)
+    dataset.storage_backend = Dataset.STORAGE_BACKEND_AGENT
+    dataset.storage_node = "h20"
+    dataset.storage_path = "/srv/robotcloud/agent_datasets/dataset_6/train.zip"
+    dataset.save(update_fields=["storage_backend", "storage_node", "storage_path"])
+
+    register_resp = client.post(
+        "/api/v1/internal/agent/register",
+        {"node_name": "h20", "ip": "10.0.0.20", "gpu_total": 1, "version": "1.0.0", "port": 6154},
+        format="json",
+    )
+    assert register_resp.status_code == 200
+    agent_token = register_resp.json()["data"]["token"]
+
+    create_resp = client.post(
+        "/api/v1/training/create",
+        {
+            "dataset_id": dataset_id,
+            "model_type": "Pi0.5",
+            "params": {"steps": 5000, "batch_size": 32, "learning_rate": 0.001},
+        },
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert create_resp.status_code == 200
+
+    dispatched: dict = {}
+
+    def _fake_dispatch(url, json=None, headers=None, timeout=None, **kwargs):
+        assert url == "http://10.0.0.20:6154/api/v1/agent/run"
+        assert headers and headers.get("X-Agent-Token") == agent_token
+        dispatched.update(json or {})
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"status": "accepted"}
+
+        return _Response()
+
+    monkeypatch.setattr("robotcloud_backend.api.scheduler.requests.post", _fake_dispatch)
+
+    scheduler = SchedulerService(loop_interval=0.01)
+    assigned = scheduler.perform_scheduling_cycle()
+    assert assigned == 1
+
+    params = dispatched["params"]
+    assert params["policy.type"] == "pi05"
+    assert params["policy.path"] == "lerobot/pi05_base"
+    assert params["policy.dtype"] == "bfloat16"
+    assert params["policy.train_expert_only"] is True
+    assert params["policy.gradient_checkpointing"] is True
+    assert params["batch_size"] == 16
+    assert params["learning_rate"] == 2.5e-5

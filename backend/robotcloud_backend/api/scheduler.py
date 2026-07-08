@@ -16,6 +16,12 @@ from django.utils import timezone
 
 from .models import Dataset, InferenceTask, TrainTask, User, WorkerNode
 
+PI05_BASE_POLICY_PATH = "lerobot/pi05_base"
+PI05_DEFAULT_LEARNING_RATE = 2.5e-5
+PI05_DEFAULT_BATCH_SIZE = 1
+PI05_MAX_BATCH_SIZE = 16
+LEGACY_DEFAULT_LEARNING_RATE = 0.001
+
 
 def _normalize_policy_name(model_type: str) -> str:
     """Map UI model_type to training policy identifiers.
@@ -332,8 +338,18 @@ class SchedulerService:
 
         # Policy selection maps to hydra key policy.type
         normalized = _normalize_policy_name(task.model_type)
+        is_pi05 = normalized == "pi0.5"
         policy_type = {"dp": "diffusion", "pi0.5": "pi05"}.get(normalized, normalized)
         train_params["policy.type"] = policy_type
+
+        if is_pi05:
+            # Pi0.5 should default to lightweight fine-tuning from the base checkpoint.
+            # The legacy UI only submitted policy.type=pi05, which initializes a 4B
+            # trainable model from scratch and OOMs on H20.
+            original_params.setdefault("policy.path", PI05_BASE_POLICY_PATH)
+            original_params.setdefault("policy.dtype", "bfloat16")
+            original_params.setdefault("policy.train_expert_only", True)
+            original_params.setdefault("policy.gradient_checkpointing", True)
 
         # Provide a synthetic dataset repo id for traceability; can be overridden
         dataset_repo_id = f"robotcloud/dataset_{task.dataset_id}" if task.dataset_id else "robotcloud/dataset"
@@ -347,7 +363,13 @@ class SchedulerService:
         # Common tunables
         batch_size = original_params.pop("batch_size", None)
         if isinstance(batch_size, (int, float)):
-            train_params["batch_size"] = int(batch_size)
+            requested_batch_size = int(batch_size)
+            if is_pi05:
+                train_params["batch_size"] = max(1, min(requested_batch_size, PI05_MAX_BATCH_SIZE))
+            else:
+                train_params["batch_size"] = requested_batch_size
+        elif is_pi05:
+            train_params["batch_size"] = PI05_DEFAULT_BATCH_SIZE
 
         steps = original_params.pop("steps", None)
         if isinstance(steps, (int, float)):
@@ -359,6 +381,13 @@ class SchedulerService:
 
         # Carry through remaining user params as direct flags
         learning_rate = original_params.pop("learning_rate", None)
+        optimizer_lr_is_explicit = any(
+            key in original_params for key in ("optimizer.lr", "policy.optimizer_lr", "--optimizer.lr")
+        )
+        if is_pi05 and not optimizer_lr_is_explicit:
+            # Treat the old frontend's hard-coded 1e-3 as unset for Pi0.5.
+            if learning_rate is None or learning_rate == LEGACY_DEFAULT_LEARNING_RATE:
+                learning_rate = PI05_DEFAULT_LEARNING_RATE
         if learning_rate is not None:
             train_params["learning_rate"] = learning_rate
         for key, value in list(original_params.items()):

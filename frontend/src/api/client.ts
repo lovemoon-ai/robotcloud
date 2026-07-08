@@ -894,14 +894,33 @@ export const robotCloudApi = {
   deleteTrainingJob: async (taskId: number): Promise<{ deleted: boolean }> =>
     request<{ deleted: boolean }>(`/training/${taskId}/delete`, { method: "POST" }),
   createTrainingJob: async (config: TrainingConfig) => {
+    const isPi05 = ["pi0.5", "pi05", "pi0_5", "pi0-5"].includes(config.model.trim().toLowerCase());
+    const pi05Preset = config.pi05Preset ?? "memory";
+    const pi05TrainingScope = config.pi05TrainingScope ?? "expert";
+    const pi05BatchByPreset = {
+      memory: 1,
+      balanced: 8,
+      throughput: 16
+    } satisfies Record<NonNullable<TrainingConfig["pi05Preset"]>, number>;
+    const params: Record<string, string | number | boolean> = {
+      learning_rate: isPi05 ? config.learningRate || 0.000025 : config.learningRate,
+      steps: config.steps,
+      batch_size: isPi05
+        ? pi05TrainingScope === "full"
+          ? 1
+          : config.batchSize || pi05BatchByPreset[pi05Preset]
+        : config.batchSize
+    };
+    if (isPi05) {
+      params["policy.path"] = "lerobot/pi05_base";
+      params["policy.dtype"] = "bfloat16";
+      params["policy.train_expert_only"] = pi05TrainingScope !== "full";
+      params["policy.gradient_checkpointing"] = pi05Preset !== "throughput" || pi05TrainingScope === "full";
+    }
     const payload = {
       dataset_id: Number.parseInt(config.datasetId, 10),
       model_type: config.model,
-      params: {
-        learning_rate: config.learningRate,
-        steps: config.steps,
-        batch_size: config.batchSize
-      }
+      params
     };
     return request<{ task_id: number; status: string }>("/training/create", {
       method: "POST",

@@ -611,6 +611,34 @@ describe("robotCloudApi", () => {
     });
   });
 
+  it("createTrainingJob posts Pi0.5 lightweight fine-tune payload", async () => {
+    setAuthenticatedUser();
+    const config: TrainingConfig = {
+      model: "Pi0.5",
+      datasetId: "6",
+      learningRate: 0.000025,
+      steps: 5000,
+      batchSize: 16,
+      pi05Preset: "throughput",
+      pi05TrainingScope: "expert"
+    };
+    await robotCloudApi.createTrainingJob(config);
+    const [, init] = mockedFetch.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toEqual({
+      dataset_id: 6,
+      model_type: "Pi0.5",
+      params: {
+        learning_rate: 0.000025,
+        steps: 5000,
+        batch_size: 16,
+        "policy.path": "lerobot/pi05_base",
+        "policy.dtype": "bfloat16",
+        "policy.train_expert_only": true,
+        "policy.gradient_checkpointing": false
+      }
+    });
+  });
+
   it("deleteTrainingJob posts to delete endpoint with auth", async () => {
     setAuthenticatedUser();
     mockedFetch.mockResolvedValueOnce({

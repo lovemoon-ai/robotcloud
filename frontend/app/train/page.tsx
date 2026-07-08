@@ -13,6 +13,17 @@ import { useLocaleStore } from "@/store/useLocaleStore";
 import { useThemeStore } from "@/store/useThemeStore";
 
 const ACTIVE_TRAINING_STATUSES: Array<TrainingJob["status"]> = ["queued", "running"];
+const PI05_BASE_MODEL = "lerobot/pi05_base";
+const PI05_DEFAULT_LEARNING_RATE = 0.000025;
+const PI05_PRESETS = {
+  memory: { batchSize: 1, gradientCheckpointing: true },
+  balanced: { batchSize: 8, gradientCheckpointing: true },
+  throughput: { batchSize: 16, gradientCheckpointing: false }
+} as const;
+
+function isPi05Model(model: string) {
+  return ["pi0.5", "pi05", "pi0_5", "pi0-5"].includes(model.trim().toLowerCase());
+}
 
 function TrainPageContent() {
   const locale = useLocaleStore((state) => state.locale);
@@ -38,8 +49,23 @@ function TrainPageContent() {
     refetchIntervalInBackground: true
   });
   const form = useForm<TrainingConfig>({
-    defaultValues: { model: "ACT", datasetId: initialDatasetId, learningRate: 0.001, steps: 5000, batchSize: 16 }
+    defaultValues: {
+      model: "ACT",
+      datasetId: initialDatasetId,
+      learningRate: 0.001,
+      steps: 5000,
+      batchSize: 16,
+      pi05Preset: "memory",
+      pi05TrainingScope: "expert"
+    }
   });
+  const selectedModel = form.watch("model");
+  const pi05Preset = form.watch("pi05Preset") ?? "memory";
+  const pi05TrainingScope = form.watch("pi05TrainingScope") ?? "expert";
+  const pi05PresetConfig = PI05_PRESETS[pi05Preset];
+  const isPi05Selected = isPi05Model(selectedModel);
+  const pi05EffectiveBatchSize = pi05TrainingScope === "full" ? 1 : pi05PresetConfig.batchSize;
+  const pi05GradientCheckpointing = pi05TrainingScope === "full" || pi05PresetConfig.gradientCheckpointing;
   const isZh = locale === "zh";
   const copy = isZh
     ? {
@@ -52,6 +78,21 @@ function TrainPageContent() {
         learningRateLabel: "学习率",
         batchSizeLabel: "Batch Size",
         epochsLabel: "Steps",
+        pi05ModeTitle: "Pi0.5 轻量微调",
+        pi05ModeDescription: "默认基于 lerobot/pi05_base，只训练 Action Expert，避免误触发 4B 参数全量训练。",
+        pi05PresetLabel: "H20 预设",
+        pi05PresetOptions: {
+          memory: "省显存",
+          balanced: "H20 均衡",
+          throughput: "H20 吞吐"
+        },
+        pi05ScopeLabel: "训练范围",
+        pi05ScopeExpert: "只训练 Action Expert",
+        pi05ScopeFull: "全量微调",
+        pi05FullWarning: "全量微调会放开约 4B 参数，H20 96GB 也可能 OOM。请只在明确需要时使用。",
+        pi05BaseLabel: "Base",
+        pi05DtypeLabel: "DType",
+        pi05CheckpointingLabel: "Checkpoint",
         submit: "提交训练",
         submitting: "创建中...",
         queueHeading: "训练任务队列",
@@ -85,6 +126,21 @@ function TrainPageContent() {
         learningRateLabel: "Learning Rate",
         batchSizeLabel: "Batch Size",
         epochsLabel: "Steps",
+        pi05ModeTitle: "Pi0.5 lightweight fine-tuning",
+        pi05ModeDescription: "Defaults to lerobot/pi05_base and trains only the Action Expert to avoid accidental 4B full training.",
+        pi05PresetLabel: "H20 Preset",
+        pi05PresetOptions: {
+          memory: "Memory saver",
+          balanced: "H20 balanced",
+          throughput: "H20 throughput"
+        },
+        pi05ScopeLabel: "Training Scope",
+        pi05ScopeExpert: "Action Expert only",
+        pi05ScopeFull: "Full fine-tune",
+        pi05FullWarning: "Full fine-tuning opens about 4B parameters and can OOM on H20 96GB. Use only when intentional.",
+        pi05BaseLabel: "Base",
+        pi05DtypeLabel: "DType",
+        pi05CheckpointingLabel: "Checkpoint",
         submit: "Submit Training",
         submitting: "Creating...",
         queueHeading: "Training Queue",
@@ -117,6 +173,12 @@ function TrainPageContent() {
   const [isLogMaximized, setIsLogMaximized] = useState<boolean>(false);
   const [completedTaskIds, setCompletedTaskIds] = useState<Set<number>>(new Set());
   const [createError, setCreateError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isPi05Selected) return;
+    form.setValue("learningRate", PI05_DEFAULT_LEARNING_RATE, { shouldDirty: true });
+    form.setValue("batchSize", pi05EffectiveBatchSize, { shouldDirty: true });
+  }, [form, isPi05Selected, pi05EffectiveBatchSize]);
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.createTrainingJob,
@@ -247,6 +309,51 @@ function TrainPageContent() {
               <option value="SmolVLA">SmolVLA</option>
             </select>
           </label>
+          {isPi05Selected ? (
+            <div className="space-y-3 border-l-2 border-primary/60 pl-3">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold accent-text">{copy.pi05ModeTitle}</h3>
+                <p className="text-xs text-muted">{copy.pi05ModeDescription}</p>
+              </div>
+              <label className="block text-sm">
+                <span className="text-muted">{copy.pi05PresetLabel}</span>
+                <select
+                  {...form.register("pi05Preset")}
+                  className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2"
+                >
+                  <option value="memory">{copy.pi05PresetOptions.memory}</option>
+                  <option value="balanced">{copy.pi05PresetOptions.balanced}</option>
+                  <option value="throughput">{copy.pi05PresetOptions.throughput}</option>
+                </select>
+              </label>
+              <fieldset className="space-y-2 text-sm">
+                <legend className="text-muted">{copy.pi05ScopeLabel}</legend>
+                <label className="flex items-center gap-2">
+                  <input type="radio" value="expert" {...form.register("pi05TrainingScope")} />
+                  <span>{copy.pi05ScopeExpert}</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="radio" value="full" {...form.register("pi05TrainingScope")} />
+                  <span>{copy.pi05ScopeFull}</span>
+                </label>
+              </fieldset>
+              {pi05TrainingScope === "full" ? <p className="text-xs text-red-500">{copy.pi05FullWarning}</p> : null}
+              <dl className="grid grid-cols-3 gap-2 text-[11px] text-muted">
+                <div>
+                  <dt>{copy.pi05BaseLabel}</dt>
+                  <dd className="break-all text-body">{PI05_BASE_MODEL}</dd>
+                </div>
+                <div>
+                  <dt>{copy.pi05DtypeLabel}</dt>
+                  <dd className="text-body">bfloat16</dd>
+                </div>
+                <div>
+                  <dt>{copy.pi05CheckpointingLabel}</dt>
+                  <dd className="text-body">{pi05GradientCheckpointing ? "on" : "off"}</dd>
+                </div>
+              </dl>
+            </div>
+          ) : null}
           <label className="block text-sm">
             <span className="text-muted">{copy.datasetLabel}</span>
             <input
@@ -259,7 +366,7 @@ function TrainPageContent() {
               <span className="text-muted">{copy.learningRateLabel}</span>
               <input
                 type="number"
-                step="0.0001"
+                step="0.000001"
                 {...form.register("learningRate", { valueAsNumber: true })}
                 className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2"
               />

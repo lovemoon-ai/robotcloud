@@ -104,6 +104,8 @@ export interface TrainingConfig {
   learningRate: number;
   steps: number;
   batchSize: number;
+  pi05Preset?: "memory" | "balanced" | "throughput";
+  pi05TrainingScope?: "expert" | "full";
 }
 
 export interface InferenceJob {
