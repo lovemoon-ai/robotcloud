@@ -1,6 +1,7 @@
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { SO101Client, so101TestExports } from "../app/so101/SO101Client";
 import { useAuthStore } from "@/store/useAuthStore";
+import { useLocaleStore } from "@/store/useLocaleStore";
 import { resetDesktopBridgeAvailabilityForTest } from "@/hooks/useDesktopBridgeAvailable";
 
 const mockPush = jest.fn();
@@ -46,6 +47,7 @@ afterEach(() => {
   so101TestExports.resetPersistentTerminalForTest();
   resetDesktopBridgeAvailabilityForTest();
   useAuthStore.getState().reset();
+  useLocaleStore.getState().reset();
   window.localStorage.clear();
   window.sessionStorage.clear();
   mockPush.mockClear();
@@ -174,13 +176,25 @@ describe("SO101 terminal session", () => {
     dataDir: "/tmp/robotcloud data"
   };
 
-  function installDesktopBridge(options: { status?: jest.Mock; runtime?: DesktopBridge["runtime"] } = {}) {
+  function installDesktopBridge(options: {
+    status?: jest.Mock;
+    runtime?: DesktopBridge["runtime"];
+    terminalCurrent?: jest.Mock;
+    so101Settings?: string | null;
+  } = {}) {
     let outputCallback: ((event: TerminalOutputEvent) => void) | null = null;
     let exitCallback: ((event: TerminalExitEvent) => void) | null = null;
+    let persistedSettings = options.so101Settings ?? null;
     const status = options.status ?? jest.fn().mockResolvedValue(desktopStatus);
     const terminalStart = jest.fn().mockResolvedValue({ sessionId: "session-1", shell: "/bin/zsh" });
+    const terminalCurrent = options.terminalCurrent ?? jest.fn().mockResolvedValue(null);
     const terminalWrite = jest.fn().mockResolvedValue({ ok: true });
     const terminalStop = jest.fn().mockResolvedValue({ stopped: true });
+    const getSettings = jest.fn().mockImplementation(() => Promise.resolve(persistedSettings));
+    const setSettings = jest.fn().mockImplementation((settings: string) => {
+      persistedSettings = settings;
+      return Promise.resolve({ ok: true });
+    });
     const validateCamera = jest.fn();
     const inspectUpload = jest.fn().mockResolvedValue({
       datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
@@ -211,6 +225,8 @@ describe("SO101 terminal session", () => {
         validatePort: jest.fn(),
         validateCamera,
         previewCamera: jest.fn(),
+        getSettings,
+        setSettings,
         onOutput: jest.fn(() => jest.fn()),
         onExit: jest.fn(() => jest.fn())
       },
@@ -221,6 +237,7 @@ describe("SO101 terminal session", () => {
         readPreparedUpload: jest.fn()
       },
       terminal: {
+        current: terminalCurrent,
         start: terminalStart,
         write: terminalWrite,
         resize: jest.fn().mockResolvedValue({ ok: true }),
@@ -242,8 +259,11 @@ describe("SO101 terminal session", () => {
     return {
       status,
       terminalStart,
+      terminalCurrent,
       terminalWrite,
       terminalStop,
+      getSettings,
+      setSettings,
       validateCamera,
       inspectUpload,
       prepareUpload,
@@ -293,6 +313,34 @@ describe("SO101 terminal session", () => {
     expect(terminalStop).not.toHaveBeenCalled();
   });
 
+  it("reconnects to the existing desktop terminal session after a full frontend reload", async () => {
+    const terminalCurrent = jest.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        sessionId: "session-1",
+        shell: "/bin/zsh",
+        replay: "output kept by desktop\n"
+      });
+    const { terminalStart, terminalStop } = installDesktopBridge({ terminalCurrent });
+
+    const firstRender = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(firstRender.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+    firstRender.unmount();
+
+    so101TestExports.resetPersistentTerminalForTest();
+    const secondRender = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(secondRender.getByTestId("mock-xterm")).toHaveTextContent("output kept by desktop");
+    });
+    expect(terminalCurrent).toHaveBeenCalledTimes(2);
+    expect(terminalStart).toHaveBeenCalledTimes(1);
+    expect(terminalStop).not.toHaveBeenCalled();
+  });
+
   it("refreshes desktop status after preparing the runtime", async () => {
     const status = jest.fn()
       .mockResolvedValueOnce({
@@ -323,7 +371,7 @@ describe("SO101 terminal session", () => {
     expect(terminalStart).toHaveBeenCalledTimes(1);
   });
 
-  it("shows app build metadata without legacy action or cloud API status cards", async () => {
+  it("shows app version metadata in one card without legacy action or cloud API status cards", async () => {
     installDesktopBridge({
       status: jest.fn().mockResolvedValue({
         ...desktopStatus,
@@ -336,8 +384,9 @@ describe("SO101 terminal session", () => {
 
     const view = render(<SO101Client />);
 
-    const buildInfo = await view.findByRole("region", { name: "SO101 app build information" });
+    const buildInfo = await view.findByRole("region", { name: "SO101 app version information" });
     await waitFor(() => {
+      expect(buildInfo).toHaveTextContent("Version");
       expect(buildInfo).toHaveTextContent("Built-in LeRobot");
       expect(buildInfo).toHaveTextContent("0.6.0");
       expect(buildInfo).toHaveTextContent("App version");
@@ -351,6 +400,18 @@ describe("SO101 terminal session", () => {
     expect(view.queryByText(/Cloud API/i)).not.toBeInTheDocument();
   });
 
+  it("localizes the LeRobot recorder mode label", async () => {
+    useLocaleStore.getState().setLocale("zh");
+    installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+    expect(view.getByRole("checkbox", { name: /使用 LeRobot 原版录制工具/ })).toBeInTheDocument();
+  });
+
   it("shows runtime preparation commands while waiting", async () => {
     let progressCallback: ((event: RuntimeProgressEvent) => void) | null = null;
     let resolvePrepare: ((value: RuntimePrepared) => void) | null = null;
@@ -360,6 +421,8 @@ describe("SO101 terminal session", () => {
         phase: "validating",
         message: "Preparing LeRobot runtime: checking required Python modules...",
         command: "/runtime/bin/python -c 'import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk'",
+        stream: "stdout",
+        output: "runtime import check ok\n",
         current: null,
         total: null
       });
@@ -380,6 +443,8 @@ describe("SO101 terminal session", () => {
       expect(view.getByText("Preparing LeRobot runtime: checking required Python modules...")).toBeInTheDocument();
     });
     expect(view.container).toHaveTextContent("$ /runtime/bin/python -c 'import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk'");
+    expect(view.container).toHaveTextContent("[stdout]");
+    expect(view.container).toHaveTextContent("runtime import check ok");
     expect(view.queryByTestId("mock-xterm")).not.toBeInTheDocument();
 
     await act(async () => {
@@ -388,6 +453,27 @@ describe("SO101 terminal session", () => {
     await waitFor(() => {
       expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
+    expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud runtime preparation log:");
+    expect(view.getByTestId("mock-xterm")).toHaveTextContent("$ /runtime/bin/python -c 'import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk'");
+    expect(view.getByTestId("mock-xterm")).toHaveTextContent("runtime import check ok");
+  });
+
+  it("shows runtime preparation failure details", async () => {
+    const runtimePrepare = jest.fn().mockRejectedValue(new Error("LeRobot runtime archive not found for macos"));
+    const { terminalStart } = installDesktopBridge({
+      runtime: {
+        prepare: runtimePrepare,
+        onProgress: jest.fn(() => jest.fn())
+      }
+    });
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByText("LeRobot runtime preparation failed")).toBeInTheDocument();
+    });
+    expect(view.getAllByText("LeRobot runtime archive not found for macos").length).toBeGreaterThan(0);
+    expect(terminalStart).not.toHaveBeenCalled();
   });
 
   it("inserts action commands without submitting them", async () => {
@@ -547,7 +633,7 @@ describe("SO101 terminal session", () => {
     });
 
     // Switch the record card to the RobotCloud auto recorder (uncheck the lerobot option).
-    fireEvent.click(view.getByRole("checkbox", { name: /LeRobot 原版录制工具/ }));
+    fireEvent.click(view.getByRole("checkbox", { name: /original LeRobot recorder/ }));
     fireEvent.change(view.getByLabelText("Follower port"), { target: { value: "/dev/cu.usbmodem-follower" } });
     fireEvent.change(view.getByLabelText("Leader port"), { target: { value: "/dev/cu.usbmodem-leader" } });
     fireEvent.change(view.getByLabelText("Task label"), { target: { value: "Pick the cube" } });
@@ -585,9 +671,10 @@ describe("SO101 terminal session", () => {
     const connectionControls = within(connectionSection as HTMLElement);
 
     expect(cameraLabel.compareDocumentPosition(addCameraButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(connectionControls.getByLabelText("Width")).toHaveValue(640);
-    expect(connectionControls.getByLabelText("Height")).toHaveValue(480);
-    expect(connectionControls.getByLabelText("FPS")).toHaveValue(30);
+    expect(connectionControls.getByLabelText("Width")).toHaveAttribute("type", "text");
+    expect(connectionControls.getByLabelText("Width")).toHaveValue("640");
+    expect(connectionControls.getByLabelText("Height")).toHaveValue("480");
+    expect(connectionControls.getByLabelText("FPS")).toHaveValue("30");
   });
 
   it("shows direct lerobot-record parameters without an alternate script flow", async () => {
@@ -609,8 +696,11 @@ describe("SO101 terminal session", () => {
     expect(recordControls.getByLabelText("Episode seconds")).toBeInTheDocument();
     expect(recordControls.getByLabelText("Reset seconds")).toBeInTheDocument();
     expect(recordControls.queryByLabelText("Max relative target")).not.toBeInTheDocument();
-    expect(recordControls.getByLabelText("Episodes")).toHaveValue(50);
-    expect(recordControls.getByRole("checkbox", { name: /LeRobot 原版录制工具/ })).toBeChecked();
+    expect(recordControls.getByLabelText("Episodes")).toHaveAttribute("type", "text");
+    expect(recordControls.getByLabelText("Episode seconds")).toHaveAttribute("type", "text");
+    expect(recordControls.getByLabelText("Reset seconds")).toHaveAttribute("type", "text");
+    expect(recordControls.getByLabelText("Episodes")).toHaveValue("50");
+    expect(recordControls.getByRole("checkbox", { name: /original LeRobot recorder/ })).toBeChecked();
     expect(recordControls.queryByLabelText("Min episode seconds")).not.toBeInTheDocument();
     expect(recordControls.queryByLabelText("Max episode seconds")).not.toBeInTheDocument();
   });
@@ -651,19 +741,51 @@ describe("SO101 terminal session", () => {
       expect(recordControls.getByLabelText("Dataset repo id")).toHaveValue("local/persisted");
     });
     expect(recordControls.getByLabelText("Dataset root")).toHaveValue("/tmp/persisted dataset");
-    expect(recordControls.getByLabelText("Episodes")).toHaveValue(4);
-    expect(recordControls.getByLabelText("Min episode seconds")).toHaveValue(4);
-    expect(recordControls.getByLabelText("Max episode seconds")).toHaveValue(45);
+    expect(recordControls.getByLabelText("Episodes")).toHaveValue("4");
+    expect(recordControls.getByLabelText("Min episode seconds")).toHaveValue("4");
+    expect(recordControls.getByLabelText("Max episode seconds")).toHaveValue("45");
     expect(recordControls.queryByLabelText("Max relative target")).not.toBeInTheDocument();
     expect(recordControls.getByLabelText("Task label")).toHaveValue("Pick persisted cube");
     expect(recordControls.getByRole("checkbox", { name: /Display LeRobot data windows/ })).not.toBeChecked();
 
-    const lerobotRecorder = recordControls.getByRole("checkbox", { name: /LeRobot 原版录制工具/ });
+    const lerobotRecorder = recordControls.getByRole("checkbox", { name: /original LeRobot recorder/ });
     expect(lerobotRecorder).not.toBeChecked();
 
     fireEvent.click(lerobotRecorder);
-    expect(recordControls.getByLabelText("Episode seconds")).toHaveValue(12);
-    expect(recordControls.getByLabelText("Reset seconds")).toHaveValue(3);
+    expect(recordControls.getByLabelText("Episode seconds")).toHaveValue("12");
+    expect(recordControls.getByLabelText("Reset seconds")).toHaveValue("3");
+  });
+
+  it("restores SO101 settings from the desktop bridge and saves updates back to it", async () => {
+    const persistedSettings = so101TestExports.serializeConnectionSettings(
+      {
+        ...so101TestExports.initialForm,
+        followerPort: "/dev/persisted-follower",
+        leaderPort: "/dev/persisted-leader",
+        datasetRepoId: "local/desktop-persisted",
+        episodes: 6,
+        task: "Persist across desktop navigation"
+      },
+      1
+    );
+    const { getSettings, setSettings } = installDesktopBridge({ so101Settings: persistedSettings });
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByLabelText("Follower port")).toHaveValue("/dev/persisted-follower");
+    });
+    expect(getSettings).toHaveBeenCalled();
+    expect(view.getByLabelText("Leader port")).toHaveValue("/dev/persisted-leader");
+    expect(view.getByLabelText("Dataset repo id")).toHaveValue("local/desktop-persisted");
+    expect(view.getByLabelText("Episodes")).toHaveValue("6");
+
+    fireEvent.change(view.getByLabelText("Episodes"), { target: { value: "9" } });
+
+    await waitFor(() => {
+      const savedRaw = setSettings.mock.calls[setSettings.mock.calls.length - 1]?.[0];
+      expect(so101TestExports.parseConnectionSettings(savedRaw)?.episodes).toBe(9);
+    });
   });
 
   it("can start a new terminal after the previous session exits", async () => {
@@ -688,7 +810,7 @@ describe("SO101 terminal session", () => {
     expect(terminalStop).not.toHaveBeenCalled();
   });
 
-  it("fills camera width, height, and fps from a successful camera check", async () => {
+  it("validates a filled camera profile without overwriting camera fields", async () => {
     const { validateCamera } = installDesktopBridge();
     validateCamera.mockResolvedValue({
       ok: true,
@@ -711,11 +833,44 @@ describe("SO101 terminal session", () => {
     fireEvent.click(checkButton as HTMLElement);
 
     await waitFor(() => {
-      expect(validateCamera).toHaveBeenCalledWith("0", 0, 0);
+      expect(validateCamera).toHaveBeenCalledWith("0", 640, 480, 30);
     });
-    expect(view.getByLabelText("Width")).toHaveValue(1280);
-    expect(view.getByLabelText("Height")).toHaveValue(720);
-    expect(view.getByLabelText("FPS")).toHaveValue(60);
+    expect(view.getByLabelText("Width")).toHaveValue("640");
+    expect(view.getByLabelText("Height")).toHaveValue("480");
+    expect(view.getByLabelText("FPS")).toHaveValue("30");
+  });
+
+  it("fills blank camera dimensions from a successful camera check", async () => {
+    const { validateCamera } = installDesktopBridge();
+    validateCamera.mockResolvedValue({
+      ok: true,
+      message: "Camera is available: 0 (1280x720 @ 60 fps)",
+      width: 1280,
+      height: 720,
+      fps: 60
+    });
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    fireEvent.change(view.getByLabelText("Width"), { target: { value: "" } });
+    fireEvent.change(view.getByLabelText("Height"), { target: { value: "" } });
+
+    const checkButton = view
+      .getAllByRole("button", { name: "Check" })
+      .find((button) => !button.hasAttribute("disabled"));
+    expect(checkButton).toBeDefined();
+    fireEvent.click(checkButton as HTMLElement);
+
+    await waitFor(() => {
+      expect(validateCamera).toHaveBeenCalledWith("0", 0, 0, 0);
+    });
+    expect(view.getByLabelText("Width")).toHaveValue("1280");
+    expect(view.getByLabelText("Height")).toHaveValue("720");
+    expect(view.getByLabelText("FPS")).toHaveValue("30");
   });
 
   it("shows recording stats before preparing an upload", async () => {
@@ -944,7 +1099,7 @@ describe("SO101 command generation", () => {
     expect(command).toBe(
       "python '/opt/app/resources/scripts/robotcloud_save_pose.py' " +
         "--robot.type=so101_follower --robot.port='/dev/f' --robot.id='so101_follower' " +
-        "--robot.max_relative_target=5 --teleop.type=so101_leader --teleop.port='/dev/l' --teleop.id='so101_leader' --fps=30"
+        "--teleop.type=so101_leader --teleop.port='/dev/l' --teleop.id='so101_leader' --fps=30"
     );
   });
 

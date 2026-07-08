@@ -25,6 +25,8 @@ const LOCAL_SO101_WEB_URL: &str = "app://local/so101/";
 const LOCAL_SO101_APP_PATH: &str = "so101/index.html";
 const MIN_DATASET_UPLOAD_EPISODES: u64 = 1;
 const MIN_DATASET_UPLOAD_DURATION_SECONDS: f64 = 1.0;
+const TERMINAL_REPLAY_LIMIT_BYTES: usize = 200_000;
+const RUNTIME_PROGRESS_OUTPUT_LIMIT_BYTES: usize = 120_000;
 const RUNTIME_READY_MARKER_VERSION: &str = "5";
 const WINDOWS_SHIMS_MARKER_VERSION: &str = "3";
 const RUNTIME_IMPORT_CHECK: &str = "import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk";
@@ -58,8 +60,10 @@ const DEFAULT_BRIDGE_SCRIPT: &str = r#"
         run: function (config) { return core.invoke("so101_run", { config: config }); },
         stop: function (runId) { return core.invoke("so101_stop", { runId: runId }); },
         validatePort: function (value) { return core.invoke("so101_validate_port", { value: value }); },
-        validateCamera: function (cameraId, width, height) { return core.invoke("so101_validate_camera", { cameraId: cameraId, width: width, height: height }); },
+        validateCamera: function (cameraId, width, height, fps) { return core.invoke("so101_validate_camera", { cameraId: cameraId, width: width, height: height, fps: fps }); },
         previewCamera: function (cameraId, width, height, fps) { return core.invoke("so101_preview_camera", { cameraId: cameraId, width: width, height: height, fps: fps }); },
+        getSettings: function () { return core.invoke("so101_get_settings"); },
+        setSettings: function (settings) { return core.invoke("so101_set_settings", { settings: settings }); },
         onOutput: function (callback) { return listen("so101-output", callback); },
         onExit: function (callback) { return listen("so101-exit", callback); }
       },
@@ -81,6 +85,7 @@ const DEFAULT_BRIDGE_SCRIPT: &str = r#"
         onProgress: function (callback) { return listen("runtime-progress", callback); }
       },
       terminal: {
+        current: function () { return core.invoke("terminal_current"); },
         start: function () { return core.invoke("terminal_start"); },
         write: function (sessionId, data) { return core.invoke("terminal_write", { sessionId: sessionId, data: data }); },
         resize: function (sessionId, cols, rows) { return core.invoke("terminal_resize", { sessionId: sessionId, cols: cols, rows: rows }); },
@@ -179,8 +184,10 @@ const WINDOWS_BRIDGE_SCRIPT: &str = r#"
         run: function (config) { return invoke("so101_run", { config: config }); },
         stop: function (runId) { return invoke("so101_stop", { runId: runId }); },
         validatePort: function (value) { return invoke("so101_validate_port", { value: value }); },
-        validateCamera: function (cameraId, width, height) { return invoke("so101_validate_camera", { cameraId: cameraId, width: width, height: height }); },
+        validateCamera: function (cameraId, width, height, fps) { return invoke("so101_validate_camera", { cameraId: cameraId, width: width, height: height, fps: fps }); },
         previewCamera: function (cameraId, width, height, fps) { return invoke("so101_preview_camera", { cameraId: cameraId, width: width, height: height, fps: fps }); },
+        getSettings: function () { return invoke("so101_get_settings"); },
+        setSettings: function (settings) { return invoke("so101_set_settings", { settings: settings }); },
         onOutput: function (callback) { return listen("so101-output", callback); },
         onExit: function (callback) { return listen("so101-exit", callback); }
       },
@@ -202,6 +209,7 @@ const WINDOWS_BRIDGE_SCRIPT: &str = r#"
         onProgress: function (callback) { return listen("runtime-progress", callback); }
       },
       terminal: {
+        current: function () { return invoke("terminal_current"); },
         start: function () { return invoke("terminal_start"); },
         write: function (sessionId, data) { return invoke("terminal_write", { sessionId: sessionId, data: data }); },
         resize: function (sessionId, cols, rows) { return invoke("terminal_resize", { sessionId: sessionId, cols: cols, rows: rows }); },
@@ -226,6 +234,7 @@ fn bridge_script() -> &'static str {
 struct AppState {
     processes: Arc<Mutex<HashMap<String, Arc<Mutex<StdChild>>>>>,
     terminals: Arc<Mutex<HashMap<String, TerminalSession>>>,
+    current_terminal: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -233,6 +242,8 @@ struct TerminalSession {
     child: Arc<Mutex<Box<dyn PtyChild + Send + Sync>>>,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    shell: String,
+    replay: Arc<Mutex<String>>,
 }
 
 static RUNTIME_EXTRACT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -242,6 +253,7 @@ impl Default for AppState {
         Self {
             processes: Arc::new(Mutex::new(HashMap::new())),
             terminals: Arc::new(Mutex::new(HashMap::new())),
+            current_terminal: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -280,6 +292,8 @@ struct RuntimeProgressEvent {
     phase: String,
     message: String,
     command: Option<String>,
+    stream: Option<String>,
+    output: Option<String>,
     current: Option<u64>,
     total: Option<u64>,
 }
@@ -312,6 +326,7 @@ struct ProcessExitEvent {
 struct TerminalStarted {
     session_id: String,
     shell: String,
+    replay: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -429,6 +444,12 @@ struct DesktopAuthSession {
     phone: String,
     role: String,
     expire_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct So101SettingsState {
+    settings: String,
 }
 
 #[derive(Debug, Default)]
@@ -735,6 +756,8 @@ fn emit_runtime_progress<F>(
         phase: phase.to_string(),
         message: message.into(),
         command: None,
+        stream: None,
+        output: None,
         current,
         total,
     });
@@ -754,9 +777,64 @@ fn emit_runtime_command_progress<F>(
         phase: phase.to_string(),
         message: message.into(),
         command: Some(command.into()),
+        stream: None,
+        output: None,
         current,
         total,
     });
+}
+
+fn limit_runtime_progress_output(output: &str) -> String {
+    if output.len() <= RUNTIME_PROGRESS_OUTPUT_LIMIT_BYTES {
+        return output.to_string();
+    }
+    let excess = output.len() - RUNTIME_PROGRESS_OUTPUT_LIMIT_BYTES;
+    let start = output
+        .char_indices()
+        .find_map(|(index, _)| (index >= excess).then_some(index))
+        .unwrap_or(output.len());
+    format!(
+        "[output truncated to last {RUNTIME_PROGRESS_OUTPUT_LIMIT_BYTES} bytes]\n{}",
+        &output[start..]
+    )
+}
+
+fn emit_runtime_command_output<F>(
+    progress: &mut F,
+    phase: &str,
+    command: impl Into<String>,
+    stream: &str,
+    output: &str,
+) where
+    F: FnMut(RuntimeProgressEvent),
+{
+    let output = output.trim_end();
+    if output.is_empty() {
+        return;
+    }
+    progress(RuntimeProgressEvent {
+        phase: phase.to_string(),
+        message: "Runtime command output".to_string(),
+        command: Some(command.into()),
+        stream: Some(stream.to_string()),
+        output: Some(limit_runtime_progress_output(output)),
+        current: None,
+        total: None,
+    });
+}
+
+fn emit_runtime_process_output<F>(
+    progress: &mut F,
+    phase: &str,
+    command: &str,
+    output: &std::process::Output,
+) where
+    F: FnMut(RuntimeProgressEvent),
+{
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    emit_runtime_command_output(progress, phase, command.to_string(), "stdout", &stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    emit_runtime_command_output(progress, phase, command.to_string(), "stderr", &stderr);
 }
 
 fn quote_command_part(value: &str) -> String {
@@ -947,11 +1025,12 @@ where
             vec![conda_unpack.to_string_lossy().to_string()],
         )
     };
+    let command_for_log = format_command_for_log(&program, &args);
     emit_runtime_command_progress(
         progress,
         "relocating",
         "Preparing LeRobot runtime: running relocation command...",
-        format_command_for_log(&program, &args),
+        command_for_log.clone(),
         None,
         None,
     );
@@ -968,11 +1047,13 @@ where
 
     match output {
         Ok(output) if output.status.success() => {
+            emit_runtime_process_output(progress, "relocating", &command_for_log, &output);
             fs::write(runtime_relocation_marker_path(runtime), "done\n")
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
         Ok(output) => {
+            emit_runtime_process_output(progress, "relocating", &command_for_log, &output);
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let detail = if !stderr.is_empty() {
@@ -1195,26 +1276,41 @@ where
     }
 
     let args = vec!["-c".to_string(), RUNTIME_IMPORT_CHECK.to_string()];
+    let command_for_log = format_command_for_log(&python, &args);
     emit_runtime_command_progress(
         progress,
         "validating",
         "Preparing LeRobot runtime: checking required Python modules...",
-        format_command_for_log(&python, &args),
+        command_for_log.clone(),
         None,
         None,
     );
-    runtime_python_validation_error(&python, runtime)
+    let output = runtime_python_validation_output(&python);
+    if let Ok(output) = &output {
+        emit_runtime_process_output(progress, "validating", &command_for_log, output);
+    }
+    runtime_python_validation_error_from_result(output, &python, runtime)
 }
 
 fn runtime_python_validation_error(python: &Path, runtime: &PathBuf) -> Option<String> {
-    let output = Command::new(python)
+    runtime_python_validation_error_from_result(runtime_python_validation_output(python), python, runtime)
+}
+
+fn runtime_python_validation_output(python: &Path) -> std::io::Result<std::process::Output> {
+    Command::new(python)
         .arg("-c")
         .arg(RUNTIME_IMPORT_CHECK)
         .env("PYTHONNOUSERSITE", "1")
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
-        .output();
+        .output()
+}
 
+fn runtime_python_validation_error_from_result(
+    output: std::io::Result<std::process::Output>,
+    python: &Path,
+    runtime: &PathBuf,
+) -> Option<String> {
     match output {
         Ok(output) if output.status.success() => None,
         Ok(output) => {
@@ -1448,6 +1544,10 @@ fn prepared_upload_state_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn auth_session_state_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(shared_state_dir(app)?.join("auth_session.json"))
+}
+
+fn so101_settings_state_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(shared_state_dir(app)?.join("so101_settings.json"))
 }
 
 fn read_json_state<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
@@ -2300,6 +2400,73 @@ fn spawn_reader<R: Read + Send + 'static>(
     });
 }
 
+fn append_terminal_replay(replay: &Arc<Mutex<String>>, data: &str) {
+    let Ok(mut buffer) = replay.lock() else {
+        return;
+    };
+    buffer.push_str(data);
+    if buffer.len() <= TERMINAL_REPLAY_LIMIT_BYTES {
+        return;
+    }
+    let excess = buffer.len() - TERMINAL_REPLAY_LIMIT_BYTES;
+    let drain_to = buffer
+        .char_indices()
+        .find_map(|(index, _)| (index >= excess).then_some(index))
+        .unwrap_or(buffer.len());
+    buffer.drain(..drain_to);
+}
+
+fn spawn_terminal_reader<R: Read + Send + 'static>(
+    app: AppHandle,
+    session_id: String,
+    reader: R,
+    replay: Arc<Mutex<String>>,
+) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut buffer = [0_u8; 4096];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let data = String::from_utf8_lossy(&buffer[..n]).to_string();
+                    append_terminal_replay(&replay, &data);
+                    let _ = app.emit(
+                        "terminal-output",
+                        TerminalOutputEvent {
+                            session_id: session_id.clone(),
+                            data,
+                        },
+                    );
+                }
+                Err(error) => {
+                    let data = format!("read error: {error}\n");
+                    append_terminal_replay(&replay, &data);
+                    let _ = app.emit(
+                        "terminal-output",
+                        TerminalOutputEvent {
+                            session_id: session_id.clone(),
+                            data,
+                        },
+                    );
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn clear_current_terminal_if_matches(
+    current_terminal: &Arc<Mutex<Option<String>>>,
+    session_id: &str,
+) {
+    if let Ok(mut current) = current_terminal.lock() {
+        if current.as_deref() == Some(session_id) {
+            *current = None;
+        }
+    }
+}
+
 fn watch_process(
     app: AppHandle,
     state: Arc<Mutex<HashMap<String, Arc<Mutex<StdChild>>>>>,
@@ -2375,6 +2542,7 @@ fn watch_process(
 fn watch_terminal_process(
     app: AppHandle,
     state: Arc<Mutex<HashMap<String, TerminalSession>>>,
+    current_terminal: Arc<Mutex<Option<String>>>,
     id: String,
 ) {
     thread::spawn(move || loop {
@@ -2397,6 +2565,7 @@ fn watch_terminal_process(
                     let mut map = state.lock().expect("terminal map poisoned");
                     map.remove(&id);
                 }
+                clear_current_terminal_if_matches(&current_terminal, &id);
                 let _ = app.emit(
                     "terminal-exit",
                     TerminalExitEvent {
@@ -2413,6 +2582,7 @@ fn watch_terminal_process(
                     let mut map = state.lock().expect("terminal map poisoned");
                     map.remove(&id);
                 }
+                clear_current_terminal_if_matches(&current_terminal, &id);
                 let _ = app.emit(
                     "terminal-output",
                     TerminalOutputEvent {
@@ -2458,6 +2628,7 @@ import sys
 raw = sys.argv[1].strip()
 width = int(sys.argv[2])
 height = int(sys.argv[3])
+fps = int(sys.argv[4])
 
 try:
     import cv2
@@ -2476,6 +2647,8 @@ if width > 0:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
 if height > 0:
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+if fps > 0:
+    cap.set(cv2.CAP_PROP_FPS, fps)
 
 if not cap.isOpened():
     cap.release()
@@ -2504,6 +2677,15 @@ def positive_int(value):
 actual_width = positive_int(prop_width) or int(frame_width)
 actual_height = positive_int(prop_height) or int(frame_height)
 actual_fps = positive_int(prop_fps)
+unsupported = []
+if width > 0 and actual_width != width:
+    unsupported.append(f"width {width} (actual {actual_width})")
+if height > 0 and actual_height != height:
+    unsupported.append(f"height {height} (actual {actual_height})")
+if fps > 0 and actual_fps != fps:
+    unsupported.append(f"fps {fps} (actual {actual_fps if actual_fps else 'unknown'})")
+if unsupported:
+    raise SystemExit(f"Camera does not support requested profile for {raw}: " + ", ".join(unsupported))
 if actual_fps:
     message = f"Camera is available: {raw} ({actual_width}x{actual_height} @ {actual_fps} fps)"
 else:
@@ -2684,12 +2866,21 @@ fn camera_source_is_readable(
     camera_id: &str,
     width: u32,
     height: u32,
+    fps: u32,
 ) -> Result<ValidationResult, String> {
     let runtime = ensure_runtime(app)?;
     let width = width.to_string();
     let height = height.to_string();
+    let fps = fps.to_string();
     let output = Command::new(python_path(&runtime))
-        .args(["-c", CAMERA_VALIDATE_SCRIPT, camera_id, &width, &height])
+        .args([
+            "-c",
+            CAMERA_VALIDATE_SCRIPT,
+            camera_id,
+            &width,
+            &height,
+            &fps,
+        ])
         .current_dir(data_dir(app)?)
         .envs(command_env(app)?)
         .output()
@@ -2982,6 +3173,34 @@ fn desktop_clear_auth_session(app: AppHandle) -> Result<(), String> {
     clear_auth_session_state(&app)
 }
 
+fn validate_so101_settings(settings: &str) -> Result<(), String> {
+    if settings.len() > 100_000 {
+        return Err("SO101 settings payload is too large.".to_string());
+    }
+    let value = serde_json::from_str::<serde_json::Value>(settings)
+        .map_err(|error| format!("SO101 settings must be valid JSON: {error}"))?;
+    if !value.is_object() {
+        return Err("SO101 settings must be a JSON object.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn so101_get_settings(app: AppHandle) -> Result<Option<String>, String> {
+    read_json_state::<So101SettingsState>(&so101_settings_state_path(&app)?)
+        .map(|state| state.map(|state| state.settings))
+}
+
+#[tauri::command]
+fn so101_set_settings(app: AppHandle, settings: String) -> Result<serde_json::Value, String> {
+    validate_so101_settings(&settings)?;
+    write_json_state(
+        &so101_settings_state_path(&app)?,
+        &So101SettingsState { settings },
+    )?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
 #[tauri::command]
 fn runtime_prepare(app: AppHandle) -> Result<RuntimePrepared, String> {
     let progress_app = app.clone();
@@ -3136,12 +3355,13 @@ fn so101_validate_camera(
     camera_id: String,
     width: u32,
     height: u32,
+    fps: u32,
 ) -> Result<ValidationResult, String> {
     let camera_id = match trim_required(&camera_id, "camera id") {
         Ok(value) => value,
         Err(result) => return Ok(result),
     };
-    camera_source_is_readable(&app, &camera_id, width, height)
+    camera_source_is_readable(&app, &camera_id, width, height, fps)
 }
 
 #[tauri::command]
@@ -3242,26 +3462,68 @@ fn terminal_start(app: AppHandle, state: State<AppState>) -> Result<TerminalStar
     let _ = writer.write_all(terminal_startup_script());
     let _ = writer.flush();
 
-    spawn_reader(
-        app.clone(),
-        "terminal-output",
-        session_id.clone(),
-        None,
-        reader,
-    );
+    let replay = Arc::new(Mutex::new(String::new()));
+    spawn_terminal_reader(app.clone(), session_id.clone(), reader, replay.clone());
 
     let session = TerminalSession {
         child: Arc::new(Mutex::new(child)),
         master: Arc::new(Mutex::new(pair.master)),
         writer: Arc::new(Mutex::new(writer)),
+        shell: shell.clone(),
+        replay,
     };
     state
         .terminals
         .lock()
         .map_err(|error| error.to_string())?
         .insert(session_id.clone(), session);
-    watch_terminal_process(app, state.terminals.clone(), session_id.clone());
-    Ok(TerminalStarted { session_id, shell })
+    *state
+        .current_terminal
+        .lock()
+        .map_err(|error| error.to_string())? = Some(session_id.clone());
+    watch_terminal_process(
+        app,
+        state.terminals.clone(),
+        state.current_terminal.clone(),
+        session_id.clone(),
+    );
+    Ok(TerminalStarted {
+        session_id,
+        shell,
+        replay: String::new(),
+    })
+}
+
+#[tauri::command]
+fn terminal_current(state: State<AppState>) -> Result<Option<TerminalStarted>, String> {
+    let current_id = state
+        .current_terminal
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    let Some(session_id) = current_id else {
+        return Ok(None);
+    };
+    let session = state
+        .terminals
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(&session_id)
+        .cloned();
+    let Some(session) = session else {
+        clear_current_terminal_if_matches(&state.current_terminal, &session_id);
+        return Ok(None);
+    };
+    let replay = session
+        .replay
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    Ok(Some(TerminalStarted {
+        session_id,
+        shell: session.shell,
+        replay,
+    }))
 }
 
 #[tauri::command]
@@ -3325,6 +3587,7 @@ fn terminal_stop(state: State<AppState>, session_id: String) -> Result<serde_jso
         .cloned();
     if let Some(session) = session {
         kill_terminal_session(&session)?;
+        clear_current_terminal_if_matches(&state.current_terminal, &session_id);
         Ok(serde_json::json!({ "stopped": true }))
     } else {
         Ok(serde_json::json!({ "stopped": false }))
@@ -3346,11 +3609,14 @@ pub fn run() {
             desktop_get_auth_session,
             desktop_set_auth_session,
             desktop_clear_auth_session,
+            so101_get_settings,
+            so101_set_settings,
             so101_run,
             so101_stop,
             so101_validate_port,
             so101_validate_camera,
             so101_preview_camera,
+            terminal_current,
             terminal_start,
             terminal_write,
             terminal_resize,
@@ -3791,6 +4057,23 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert!(script.contains("export PATH=\"$ROBOTCLOUD_LEROBOT_ENV/bin:$PATH\""));
         assert!(script.contains("export PYTHONNOUSERSITE=1"));
         assert!(script.contains("hash -r"));
+    }
+
+    #[test]
+    fn validates_so101_settings_payload_shape() {
+        assert!(validate_so101_settings(r#"{"storageVersion":3,"episodes":4}"#).is_ok());
+        assert!(validate_so101_settings("[]").is_err());
+        assert!(validate_so101_settings("not-json").is_err());
+    }
+
+    #[test]
+    fn terminal_replay_buffer_is_bounded() {
+        let replay = Arc::new(Mutex::new(String::new()));
+        append_terminal_replay(&replay, &"x".repeat(TERMINAL_REPLAY_LIMIT_BYTES + 50));
+
+        let replay = replay.lock().unwrap();
+        assert!(replay.len() <= TERMINAL_REPLAY_LIMIT_BYTES);
+        assert!(replay.ends_with(&"x".repeat(50)));
     }
 
     #[cfg(target_os = "windows")]

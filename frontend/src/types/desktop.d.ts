@@ -104,12 +104,15 @@ type ValidationResult = {
 type TerminalStarted = {
   sessionId: string;
   shell: string;
+  replay?: string;
 };
 
 type RuntimeProgressEvent = {
   phase: string;
   message: string;
   command?: string | null;
+  stream?: string | null;
+  output?: string | null;
   current?: number | null;
   total?: number | null;
 };
@@ -137,8 +140,10 @@ type DesktopBridge = {
     run: (config: So101RunConfig) => Promise<{ runId: string }>;
     stop: (runId: string) => Promise<{ stopped: boolean }>;
     validatePort: (value: string) => Promise<ValidationResult>;
-    validateCamera: (cameraId: string, width: number, height: number) => Promise<ValidationResult>;
+    validateCamera: (cameraId: string, width: number, height: number, fps: number) => Promise<ValidationResult>;
     previewCamera: (cameraId: string, width: number, height: number, fps: number) => Promise<{ runId: string }>;
+    getSettings?: () => Promise<string | null>;
+    setSettings?: (settings: string) => Promise<{ ok: boolean }>;
     onOutput: (callback: (event: ProcessOutputEvent) => void) => () => void;
     onExit: (callback: (event: ProcessExitEvent) => void) => () => void;
   };
@@ -160,6 +165,7 @@ type DesktopBridge = {
     onProgress: (callback: (event: RuntimeProgressEvent) => void) => () => void;
   };
   terminal: {
+    current?: () => Promise<TerminalStarted | null>;
     start: () => Promise<TerminalStarted>;
     write: (sessionId: string, data: string) => Promise<{ ok: boolean }>;
     resize: (sessionId: string, cols: number, rows: number) => Promise<{ ok: boolean }>;

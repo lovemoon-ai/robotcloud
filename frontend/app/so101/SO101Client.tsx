@@ -6,6 +6,7 @@ import { writePreparedDatasetUpload } from "@/desktop/preparedDatasetUpload";
 import { isLocalDesktopFrontend, navigateToCloudPath } from "@/desktop/navigation";
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
 import { useAuthStore } from "@/store/useAuthStore";
+import { useLocaleStore } from "@/store/useLocaleStore";
 
 type CameraForm = {
   id: string;
@@ -34,6 +35,11 @@ type FormState = {
 };
 
 type PersistedSO101Settings = FormState & { cameraCount: number };
+type SO101ConnectionState = {
+  form: FormState;
+  cameraCount: number;
+  raw: string | null;
+};
 
 type TerminalPhase = "preparing" | "starting" | "ready" | "failed" | "closed";
 type CheckPhase = "idle" | "checking" | "valid" | "invalid";
@@ -108,11 +114,15 @@ const DEFAULT_CAMERA_COUNT = 1;
 const DEFAULT_MAX_RELATIVE_TARGET = 5;
 const LEGACY_DEFAULT_EPISODES = 1;
 const LEGACY_DEFAULT_CAMERA = { width: 480, height: 640, fps: 30 };
-const MAX_RUNTIME_PROGRESS_LOG = 20;
+const MAX_RUNTIME_PROGRESS_LOG = 80;
 const MAX_CAMERAS = 3;
 const MIN_UPLOAD_EPISODES = 1;
 const MIN_UPLOAD_DURATION_SECONDS = 1;
 const CLEAR_CURRENT_TERMINAL_INPUT = "\x01\x0b";
+const numericTextInputProps = {
+  type: "text",
+  inputMode: "numeric"
+} as const;
 const cameraKeys = ["front", "side", "wrist"] as const;
 const cameraLabels = ["Camera 0", "Camera 1", "Camera 2"] as const;
 
@@ -266,11 +276,17 @@ function configValidationErrorFrom(error: unknown): ActionConfigError | null {
   if (error instanceof ConfigValidationError) {
     return { field: error.field, message: error.message };
   }
-  const message = error instanceof Error ? error.message : String(error);
+  const message = messageFromUnknownError(error);
   const match = /^先配置 (.+)$/.exec(message);
   if (!match) return null;
   const field = configFieldForLabel(match[1]);
   return field ? { field, message } : null;
+}
+
+function messageFromUnknownError(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return String(error);
 }
 
 function requireValue(value: string, label: string, field = configFieldForLabel(label)) {
@@ -402,6 +418,14 @@ function toPositiveInteger(value: unknown) {
   return Math.round(numeric);
 }
 
+function hasCameraProfileValue(value: number) {
+  return toPositiveInteger(value) !== null;
+}
+
+function cameraValidationValue(value: number) {
+  return toPositiveInteger(value) ?? 0;
+}
+
 function normalizeCamera(value: unknown, index: number, migrateLegacyDefaults = false): CameraForm {
   const source = value && typeof value === "object" ? (value as Partial<CameraForm>) : {};
   const fallback = defaultCamera(index);
@@ -425,13 +449,11 @@ function normalizeCamera(value: unknown, index: number, migrateLegacyDefaults = 
 function applyDetectedCameraProfile(camera: CameraForm, result: ValidationResult): CameraForm {
   const width = toPositiveInteger(result.width);
   const height = toPositiveInteger(result.height);
-  const fps = toPositiveInteger(result.fps);
 
   return {
     ...camera,
-    width: width ?? camera.width,
-    height: height ?? camera.height,
-    fps: fps ?? camera.fps
+    width: hasCameraProfileValue(camera.width) ? camera.width : width ?? camera.width,
+    height: hasCameraProfileValue(camera.height) ? camera.height : height ?? camera.height
   };
 }
 
@@ -503,6 +525,40 @@ export function serializeConnectionSettings(form: FormState, cameraCount: number
     cameras: form.cameras,
     cameraCount: clampCameraCount(cameraCount)
   });
+}
+
+function connectionStateFromSettings(saved: PersistedSO101Settings | null, raw: string | null = null): SO101ConnectionState {
+  if (!saved) {
+    return {
+      form: initialForm,
+      cameraCount: DEFAULT_CAMERA_COUNT,
+      raw: null
+    };
+  }
+  const { cameraCount, ...form } = saved;
+  return { form, cameraCount, raw };
+}
+
+function readLocalConnectionSettings(): SO101ConnectionState {
+  if (typeof window === "undefined") {
+    return connectionStateFromSettings(null);
+  }
+  const raw = window.localStorage.getItem(CONNECTION_STORAGE_KEY);
+  return connectionStateFromSettings(parseConnectionSettings(raw), raw);
+}
+
+function writeLocalConnectionSettings(raw: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(CONNECTION_STORAGE_KEY, raw);
+}
+
+async function readDesktopConnectionSettings(bridge: DesktopBridge) {
+  const raw = await bridge.so101.getSettings?.();
+  return connectionStateFromSettings(parseConnectionSettings(raw ?? null), raw ?? null);
+}
+
+function writeDesktopConnectionSettings(raw: string) {
+  window.robotcloudDesktop?.so101.setSettings?.(raw).catch(() => undefined);
 }
 
 function cameraConfigValue(form: FormState, cameraCount: number, required = false) {
@@ -726,7 +782,25 @@ function runtimeProgressPercent(progress: RuntimeProgressEvent | null) {
 }
 
 function formatRuntimeProgressLogLine(progress: RuntimeProgressEvent) {
-  return progress.command ? `${progress.message}\n$ ${progress.command}` : progress.message;
+  const lines = [progress.message];
+  if (progress.command) {
+    lines.push(`$ ${progress.command}`);
+  }
+  const output = progress.output?.trimEnd();
+  if (output) {
+    lines.push(`[${progress.stream ?? "output"}]`);
+    lines.push(output);
+  }
+  return lines.join("\n");
+}
+
+function writeRuntimeProgressLogToTerminal(term: TerminalHandle, lines: string[]) {
+  if (lines.length === 0) return;
+  term.write("RobotCloud runtime preparation log:\r\n");
+  for (const line of lines) {
+    term.write(`${line.replace(/\r?\n/g, "\r\n")}\r\n`);
+  }
+  term.write("\r\n");
 }
 
 const persistentTerminalStore: {
@@ -908,11 +982,13 @@ function ensurePersistentTerminal(
     } finally {
       offRuntimeProgress?.();
     }
+    const runtimeStartupLog = [...persistentTerminalStore.runtimeProgressLog];
     setPersistentTerminalState("starting", null);
-    const [{ Terminal }, session] = await Promise.all([
+    const [{ Terminal }, reusableSession] = await Promise.all([
       import("@xterm/xterm"),
-      bridge.terminal.start()
+      bridge.terminal.current ? bridge.terminal.current().catch(() => null) : Promise.resolve(null)
     ]);
+    const session = reusableSession ?? await bridge.terminal.start();
     const term = new Terminal({
       cursorBlink: true,
       convertEol: true,
@@ -930,7 +1006,11 @@ function ensurePersistentTerminal(
     persistentTerminalStore.sessionId = session.sessionId;
     persistentTerminalStore.shell = session.shell;
     term.open(host);
+    writeRuntimeProgressLogToTerminal(term, runtimeStartupLog);
     term.write(`RobotCloud terminal: ${session.shell}\r\n`);
+    if (session.replay) {
+      term.write(session.replay);
+    }
     persistentTerminalStore.inputDisposable = term.onData((data) => {
       const sessionId = persistentTerminalStore.sessionId;
       if (sessionId) {
@@ -943,7 +1023,14 @@ function ensurePersistentTerminal(
     setPersistentTerminalState("ready", null);
   })()
     .catch((error) => {
-      setPersistentTerminalState("failed", String(error));
+      const message = messageFromUnknownError(error);
+      setPersistentRuntimeProgress({
+        phase: "failed",
+        message,
+        current: null,
+        total: null
+      });
+      setPersistentTerminalState("failed", message);
     })
     .finally(() => {
       persistentTerminalStore.starting = null;
@@ -1011,9 +1098,33 @@ function CheckButton({
 export function SO101Client() {
   const router = useRouter();
   const token = useAuthStore((state) => state.token);
+  const locale = useLocaleStore((state) => state.locale);
   const desktopBridgeAvailability = useDesktopBridgeAvailability();
-  const [form, setForm] = useState<FormState>(initialForm);
-  const [cameraCount, setCameraCount] = useState(DEFAULT_CAMERA_COUNT);
+  const copy = useMemo(
+    () =>
+      locale === "zh"
+        ? {
+            recorderModeLabel: "使用 LeRobot 原版录制工具（不勾选则用 RobotCloud 自动录制，姿势静止 3 秒自动切分下一条）",
+            versionTitle: "版本",
+            builtInLerobot: "内置 LeRobot",
+            appVersion: "应用版本",
+            buildCommit: "构建提交",
+            buildTime: "构建时间"
+          }
+        : {
+            recorderModeLabel:
+              "Use the original LeRobot recorder (unchecked uses RobotCloud auto recording and starts the next episode after the pose stays still for 3 seconds)",
+            versionTitle: "Version",
+            builtInLerobot: "Built-in LeRobot",
+            appVersion: "App version",
+            buildCommit: "Build commit",
+            buildTime: "Build time"
+          },
+    [locale]
+  );
+  const [initialConnection] = useState(() => readLocalConnectionSettings());
+  const [form, setForm] = useState<FormState>(initialConnection.form);
+  const [cameraCount, setCameraCount] = useState(initialConnection.cameraCount);
   const [connectionLoaded, setConnectionLoaded] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(true);
   const [selectedAction, setSelectedAction] = useState<ActionId | null>(null);
@@ -1037,6 +1148,7 @@ export function SO101Client() {
   ]);
   const [previewingCamera, setPreviewingCamera] = useState<number | null>(null);
   const lastWrittenActionCommandRef = useRef<string | null>(null);
+  const connectionDirtyRef = useRef(false);
   const terminalPhase = terminalState.phase;
   const terminalError = terminalState.error;
   const runtimeProgress = terminalState.runtimeProgress;
@@ -1131,21 +1243,40 @@ export function SO101Client() {
   }, []);
 
   useEffect(() => {
-    const saved = parseConnectionSettings(window.localStorage.getItem(CONNECTION_STORAGE_KEY));
-    if (saved) {
-      const { cameraCount: savedCameraCount, ...savedForm } = saved;
-      setForm((current) => ({ ...current, ...savedForm }));
-      setCameraCount(savedCameraCount);
+    if (bridgeReady && window.robotcloudDesktop?.so101.getSettings) {
+      let cancelled = false;
+      readDesktopConnectionSettings(window.robotcloudDesktop)
+        .then((saved) => {
+          if (cancelled) return;
+          if (saved.raw) {
+            writeLocalConnectionSettings(saved.raw);
+          }
+          if (saved.raw && !connectionDirtyRef.current) {
+            setForm(saved.form);
+            setCameraCount(saved.cameraCount);
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (!cancelled) {
+            setConnectionLoaded(true);
+          }
+        });
+      return () => {
+        cancelled = true;
+      };
     }
-    setConnectionLoaded(true);
-  }, []);
+
+    if (desktopBridgeAvailability !== "checking") {
+      setConnectionLoaded(true);
+    }
+  }, [bridgeReady, desktopBridgeAvailability]);
 
   useEffect(() => {
     if (!connectionLoaded) return;
-    window.localStorage.setItem(
-      CONNECTION_STORAGE_KEY,
-      serializeConnectionSettings(form, cameraCount)
-    );
+    const serialized = serializeConnectionSettings(form, cameraCount);
+    writeLocalConnectionSettings(serialized);
+    writeDesktopConnectionSettings(serialized);
   }, [cameraCount, connectionLoaded, form]);
 
   useEffect(() => {
@@ -1155,6 +1286,7 @@ export function SO101Client() {
   }, [desktopBridgeAvailability, router, token]);
 
   const updateField = <K extends keyof Omit<FormState, "cameras">>(key: K, value: FormState[K]) => {
+    connectionDirtyRef.current = true;
     setForm((current) => ({ ...current, [key]: value }));
     if (isConfigFieldId(String(key))) {
       clearConfigErrorForField(String(key) as ConfigFieldId);
@@ -1165,6 +1297,7 @@ export function SO101Client() {
   };
 
   const updateCamera = <K extends keyof CameraForm>(index: number, key: K, value: CameraForm[K]) => {
+    connectionDirtyRef.current = true;
     setForm((current) => {
       const cameras = [...current.cameras] as [CameraForm, CameraForm, CameraForm];
       cameras[index] = { ...cameras[index], [key]: value };
@@ -1181,6 +1314,7 @@ export function SO101Client() {
   const addCamera = () => {
     const nextCount = Math.min(MAX_CAMERAS, cameraCount + 1);
     if (nextCount === cameraCount) return;
+    connectionDirtyRef.current = true;
     const addedIndex = nextCount - 1;
     setForm((currentForm) => {
       const cameras = [...currentForm.cameras] as [CameraForm, CameraForm, CameraForm];
@@ -1194,6 +1328,7 @@ export function SO101Client() {
 
   const removeCamera = (index: number) => {
     if (index <= 0 || index >= cameraCount) return;
+    connectionDirtyRef.current = true;
     setForm((currentForm) => ({
       ...currentForm,
       cameras: removeCameraAtIndex(currentForm.cameras, index)
@@ -1246,13 +1381,13 @@ export function SO101Client() {
 
   useEffect(() => {
     if (!token || !bridgeReady) return;
-    refreshStatus().catch((error) => setPersistentTerminalError(String(error)));
+    refreshStatus().catch((error) => setPersistentTerminalError(messageFromUnknownError(error)));
   }, [bridgeReady, refreshStatus, token]);
 
   useEffect(() => {
     if (!token || !bridgeReady || !window.robotcloudDesktop || !terminalContainerEl) return;
     ensurePersistentTerminal(window.robotcloudDesktop, terminalContainerEl, {
-      onRuntimePrepared: () => refreshStatus().catch((error) => setPersistentTerminalError(String(error)))
+      onRuntimePrepared: () => refreshStatus().catch((error) => setPersistentTerminalError(messageFromUnknownError(error)))
     });
     return () => {
       if (persistentTerminalStore.host === terminalContainerEl) {
@@ -1295,7 +1430,7 @@ export function SO101Client() {
       await writeActionCommand(action, { force: true });
     } catch (error) {
       if (handleConfigValidationError(error)) return;
-      setPersistentTerminalError(String(error));
+      setPersistentTerminalError(messageFromUnknownError(error));
     }
   };
 
@@ -1304,7 +1439,7 @@ export function SO101Client() {
     let cancelled = false;
     writeActionCommand(selectedAction).catch((error) => {
       if (cancelled || configValidationErrorFrom(error)) return;
-      setPersistentTerminalError(String(error));
+      setPersistentTerminalError(messageFromUnknownError(error));
     });
     return () => {
       cancelled = true;
@@ -1336,7 +1471,7 @@ export function SO101Client() {
         issues: datasetUploadValidationIssues(stats)
       });
     } catch (error) {
-      setPersistentTerminalError(String(error));
+      setPersistentTerminalError(messageFromUnknownError(error));
     } finally {
       setUploadPreparing(false);
     }
@@ -1363,7 +1498,7 @@ export function SO101Client() {
       }
     } catch (error) {
       if (handleConfigValidationError(error)) return;
-      setPersistentTerminalError(String(error));
+      setPersistentTerminalError(messageFromUnknownError(error));
     } finally {
       setUploadPreparing(false);
     }
@@ -1381,7 +1516,7 @@ export function SO101Client() {
     } catch (error) {
       setPortChecks((current) => ({
         ...current,
-        [key]: { phase: "invalid", message: String(error) }
+        [key]: { phase: "invalid", message: messageFromUnknownError(error) }
       }));
     }
   };
@@ -1396,7 +1531,15 @@ export function SO101Client() {
       return next;
     });
     try {
-      const result = await window.robotcloudDesktop.so101.validateCamera(camera.id, 0, 0);
+      const requestedWidth = cameraValidationValue(camera.width);
+      const requestedHeight = cameraValidationValue(camera.height);
+      const requestedFps = requestedWidth > 0 && requestedHeight > 0 ? cameraValidationValue(camera.fps) : 0;
+      const result = await window.robotcloudDesktop.so101.validateCamera(
+        camera.id,
+        requestedWidth,
+        requestedHeight,
+        requestedFps
+      );
       if (result.ok) {
         setForm((current) => {
           if (current.cameras[index].id !== requestedCameraId) return current;
@@ -1413,7 +1556,7 @@ export function SO101Client() {
     } catch (error) {
       setCameraChecks((current) => {
         const next = [...current] as [CheckState, CheckState, CheckState];
-        next[index] = { phase: "invalid", message: String(error) };
+        next[index] = { phase: "invalid", message: messageFromUnknownError(error) };
         return next;
       });
     }
@@ -1433,7 +1576,7 @@ export function SO101Client() {
     } catch (error) {
       setCameraChecks((current) => {
         const next = [...current] as [CheckState, CheckState, CheckState];
-        next[index] = { phase: "invalid", message: String(error) };
+        next[index] = { phase: "invalid", message: messageFromUnknownError(error) };
         return next;
       });
     } finally {
@@ -1448,14 +1591,14 @@ export function SO101Client() {
     ],
     [status]
   );
-  const buildInfoCards = useMemo(
+  const versionDetails = useMemo(
     () => [
-      { label: "Built-in LeRobot", value: versionText(status?.lerobotVersion) },
-      { label: "App version", value: versionText(status?.appVersion) },
-      { label: "Build commit", value: versionText(status?.appBuildCommit) },
-      { label: "Build time", value: versionText(status?.appBuildTime) }
+      { label: copy.builtInLerobot, value: versionText(status?.lerobotVersion) },
+      { label: copy.appVersion, value: versionText(status?.appVersion) },
+      { label: copy.buildCommit, value: versionText(status?.appBuildCommit) },
+      { label: copy.buildTime, value: versionText(status?.appBuildTime) }
     ],
-    [status]
+    [copy.appVersion, copy.buildCommit, copy.buildTime, copy.builtInLerobot, status]
   );
 
   if (!token) {
@@ -1681,8 +1824,8 @@ export function SO101Client() {
                       Width
                       <input
                         ref={registerConfigInput(widthField)}
-                        type="number"
-                        value={camera.width}
+                        {...numericTextInputProps}
+                        value={hasCameraProfileValue(camera.width) ? camera.width : ""}
                         onChange={(event) => updateCamera(index, "width", Number(event.target.value))}
                         className={configInputClass(widthField, "bg-card")}
                         {...configInputA11y(widthField)}
@@ -1693,8 +1836,8 @@ export function SO101Client() {
                       Height
                       <input
                         ref={registerConfigInput(heightField)}
-                        type="number"
-                        value={camera.height}
+                        {...numericTextInputProps}
+                        value={hasCameraProfileValue(camera.height) ? camera.height : ""}
                         onChange={(event) => updateCamera(index, "height", Number(event.target.value))}
                         className={configInputClass(heightField, "bg-card")}
                         {...configInputA11y(heightField)}
@@ -1705,8 +1848,8 @@ export function SO101Client() {
                       FPS
                       <input
                         ref={registerConfigInput(fpsField)}
-                        type="number"
-                        value={camera.fps}
+                        {...numericTextInputProps}
+                        value={hasCameraProfileValue(camera.fps) ? camera.fps : ""}
                         onChange={(event) => updateCamera(index, "fps", Number(event.target.value))}
                         className={configInputClass(fpsField, "bg-card")}
                         {...configInputA11y(fpsField)}
@@ -1761,7 +1904,7 @@ export function SO101Client() {
                 <span className="text-muted">Episodes</span>
                 <input
                   ref={registerConfigInput("episodes")}
-                  type="number"
+                  {...numericTextInputProps}
                   value={form.episodes}
                   onChange={(event) => updateField("episodes", Number(event.target.value))}
                   className={configInputClass("episodes")}
@@ -1775,7 +1918,7 @@ export function SO101Client() {
                     <span className="text-muted">Episode seconds</span>
                     <input
                       ref={registerConfigInput("episodeTimeS")}
-                      type="number"
+                      {...numericTextInputProps}
                       value={form.episodeTimeS}
                       onChange={(event) => updateField("episodeTimeS", Number(event.target.value))}
                       className={configInputClass("episodeTimeS")}
@@ -1787,7 +1930,7 @@ export function SO101Client() {
                     <span className="text-muted">Reset seconds</span>
                     <input
                       ref={registerConfigInput("resetTimeS")}
-                      type="number"
+                      {...numericTextInputProps}
                       value={form.resetTimeS}
                       onChange={(event) => updateField("resetTimeS", Number(event.target.value))}
                       className={configInputClass("resetTimeS")}
@@ -1802,7 +1945,7 @@ export function SO101Client() {
                     <span className="text-muted">Min episode seconds</span>
                     <input
                       ref={registerConfigInput("minEpisodeTimeS")}
-                      type="number"
+                      {...numericTextInputProps}
                       value={form.minEpisodeTimeS}
                       onChange={(event) => updateField("minEpisodeTimeS", Number(event.target.value))}
                       className={configInputClass("minEpisodeTimeS")}
@@ -1814,7 +1957,7 @@ export function SO101Client() {
                     <span className="text-muted">Max episode seconds</span>
                     <input
                       ref={registerConfigInput("maxEpisodeTimeS")}
-                      type="number"
+                      {...numericTextInputProps}
                       value={form.maxEpisodeTimeS}
                       onChange={(event) => updateField("maxEpisodeTimeS", Number(event.target.value))}
                       className={configInputClass("maxEpisodeTimeS")}
@@ -1842,7 +1985,7 @@ export function SO101Client() {
                   checked={form.useLerobotRecorder}
                   onChange={(event) => updateField("useLerobotRecorder", event.target.checked)}
                 />
-                使用 LeRobot 原版录制工具（不勾选则用 RobotCloud 自动录制，姿势静止 3 秒自动切分下一条）
+                {copy.recorderModeLabel}
               </label>
               <label className="flex items-center gap-2 text-sm text-muted">
                 <input type="checkbox" checked={form.displayData} onChange={(event) => updateField("displayData", event.target.checked)} />
@@ -1958,13 +2101,18 @@ export function SO101Client() {
         ))}
       </section>
 
-      <section aria-label="SO101 app build information" className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {buildInfoCards.map((card) => (
-          <div key={card.label} className="rounded-lg border border-theme bg-card p-4">
-            <span className="text-xs uppercase tracking-wide text-muted">{card.label}</span>
-            <p className="mt-2 break-all text-sm font-semibold text-body">{card.value}</p>
-          </div>
-        ))}
+      <section aria-label="SO101 app version information">
+        <div className="rounded-lg border border-theme bg-card p-4">
+          <span className="text-xs uppercase tracking-wide text-muted">{copy.versionTitle}</span>
+          <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2 xl:grid-cols-4">
+            {versionDetails.map((detail) => (
+              <div key={detail.label} className="min-w-0">
+                <dt className="text-xs uppercase tracking-wide text-muted">{detail.label}</dt>
+                <dd className="mt-1 break-all text-sm font-semibold text-body">{detail.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
       </section>
     </main>
   );
