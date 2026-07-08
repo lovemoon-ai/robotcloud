@@ -634,7 +634,11 @@ describe("robotCloudApi", () => {
         "policy.path": "lerobot/pi05_base",
         "policy.dtype": "bfloat16",
         "policy.train_expert_only": true,
-        "policy.gradient_checkpointing": false
+        "policy.gradient_checkpointing": false,
+        rename_map: {
+          "observation.images.front": "observation.images.base_0_rgb",
+          "observation.images.side": "observation.images.left_wrist_0_rgb"
+        }
       }
     });
   });

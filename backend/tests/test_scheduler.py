@@ -249,5 +249,9 @@ def test_scheduler_applies_safe_pi05_defaults(
     assert params["policy.dtype"] == "bfloat16"
     assert params["policy.train_expert_only"] is True
     assert params["policy.gradient_checkpointing"] is True
+    assert params["rename_map"] == {
+        "observation.images.front": "observation.images.base_0_rgb",
+        "observation.images.side": "observation.images.left_wrist_0_rgb",
+    }
     assert params["batch_size"] == 16
     assert params["learning_rate"] == 2.5e-5

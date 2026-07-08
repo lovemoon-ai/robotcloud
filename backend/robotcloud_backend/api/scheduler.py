@@ -20,6 +20,10 @@ PI05_BASE_POLICY_PATH = "lerobot/pi05_base"
 PI05_DEFAULT_LEARNING_RATE = 2.5e-5
 PI05_DEFAULT_BATCH_SIZE = 1
 PI05_MAX_BATCH_SIZE = 16
+PI05_DEFAULT_RENAME_MAP = {
+    "observation.images.front": "observation.images.base_0_rgb",
+    "observation.images.side": "observation.images.left_wrist_0_rgb",
+}
 LEGACY_DEFAULT_LEARNING_RATE = 0.001
 
 
@@ -349,6 +353,7 @@ class SchedulerService:
             original_params.setdefault("policy.dtype", "bfloat16")
             original_params.setdefault("policy.train_expert_only", True)
             original_params.setdefault("policy.gradient_checkpointing", True)
+            original_params.setdefault("rename_map", PI05_DEFAULT_RENAME_MAP)
 
         uses_policy_path = any(original_params.get(key) for key in ("policy.path", "--policy.path"))
         if uses_policy_path:

@@ -902,7 +902,7 @@ export const robotCloudApi = {
       balanced: 8,
       throughput: 16
     } satisfies Record<NonNullable<TrainingConfig["pi05Preset"]>, number>;
-    const params: Record<string, string | number | boolean> = {
+    const params: Record<string, string | number | boolean | Record<string, string>> = {
       learning_rate: isPi05 ? config.learningRate || 0.000025 : config.learningRate,
       steps: config.steps,
       batch_size: isPi05
@@ -916,6 +916,10 @@ export const robotCloudApi = {
       params["policy.dtype"] = "bfloat16";
       params["policy.train_expert_only"] = pi05TrainingScope !== "full";
       params["policy.gradient_checkpointing"] = pi05Preset !== "throughput" || pi05TrainingScope === "full";
+      params.rename_map = {
+        "observation.images.front": "observation.images.base_0_rgb",
+        "observation.images.side": "observation.images.left_wrist_0_rgb"
+      };
     }
     const payload = {
       dataset_id: Number.parseInt(config.datasetId, 10),
