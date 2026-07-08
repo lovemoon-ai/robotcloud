@@ -209,7 +209,12 @@ def test_scheduler_applies_safe_pi05_defaults(
         {
             "dataset_id": dataset_id,
             "model_type": "Pi0.5",
-            "params": {"steps": 5000, "batch_size": 32, "learning_rate": 0.001},
+            "params": {
+                "steps": 5000,
+                "batch_size": 32,
+                "learning_rate": 0.001,
+                "policy.type": "pi05",
+            },
         },
         format="json",
         HTTP_AUTHORIZATION=f"Bearer {token}",
@@ -239,7 +244,7 @@ def test_scheduler_applies_safe_pi05_defaults(
     assert assigned == 1
 
     params = dispatched["params"]
-    assert params["policy.type"] == "pi05"
+    assert "policy.type" not in params
     assert params["policy.path"] == "lerobot/pi05_base"
     assert params["policy.dtype"] == "bfloat16"
     assert params["policy.train_expert_only"] is True

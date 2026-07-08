@@ -28,7 +28,7 @@ def _normalize_policy_name(model_type: str) -> str:
 
     Accepts labels like 'ACT', 'DiffusionPolicy', 'SmolVLA', 'Pi0', 'Pi0.5',
     and GR00T variants, returning one of: act, dp, smolvla, pi0, pi0.5, groot.
-    The scheduler later maps these to lerobot-train's hydra key 'policy.type'.
+    The scheduler later maps these to lerobot-train's hydra policy selection key.
     """
     key = (model_type or "").strip().lower()
     if key in {"act"}:
@@ -336,20 +336,28 @@ class SchedulerService:
         # Build direct lerobot-train parameters (forwarded by scripts/lerobot-train.sh)
         train_params: Dict[str, object] = {}
 
-        # Policy selection maps to hydra key policy.type
         normalized = _normalize_policy_name(task.model_type)
         is_pi05 = normalized == "pi0.5"
         policy_type = {"dp": "diffusion", "pi0.5": "pi05"}.get(normalized, normalized)
-        train_params["policy.type"] = policy_type
 
         if is_pi05:
             # Pi0.5 should default to lightweight fine-tuning from the base checkpoint.
             # The legacy UI only submitted policy.type=pi05, which initializes a 4B
             # trainable model from scratch and OOMs on H20.
-            original_params.setdefault("policy.path", PI05_BASE_POLICY_PATH)
+            if not any(original_params.get(key) for key in ("policy.path", "--policy.path")):
+                original_params["policy.path"] = PI05_BASE_POLICY_PATH
             original_params.setdefault("policy.dtype", "bfloat16")
             original_params.setdefault("policy.train_expert_only", True)
             original_params.setdefault("policy.gradient_checkpointing", True)
+
+        uses_policy_path = any(original_params.get(key) for key in ("policy.path", "--policy.path"))
+        if uses_policy_path:
+            # LeRobot treats policy.path as a complete policy selector and rejects
+            # commands that also pass policy.type.
+            original_params.pop("policy.type", None)
+            original_params.pop("--policy.type", None)
+        else:
+            train_params["policy.type"] = policy_type
 
         # Provide a synthetic dataset repo id for traceability; can be overridden
         dataset_repo_id = f"robotcloud/dataset_{task.dataset_id}" if task.dataset_id else "robotcloud/dataset"
