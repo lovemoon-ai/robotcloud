@@ -9,6 +9,10 @@ const frontendRoot = path.join(repoRoot, "frontend");
 const frontendOut = path.join(frontendRoot, "out");
 const desktopDist = path.join(desktopRoot, "src-tauri", "frontend-dist");
 
+function commandName(command) {
+  return process.platform === "win32" ? `${command}.cmd` : command;
+}
+
 function run(command, args, cwd, env = {}) {
   const result = spawnSync(command, args, {
     cwd,
@@ -24,11 +28,29 @@ function run(command, args, cwd, env = {}) {
   }
 }
 
-if (!fs.existsSync(path.join(frontendRoot, "node_modules", "next"))) {
-  run("npm", ["install"], frontendRoot);
+function installFrontendDependencies() {
+  for (const command of ["npm", "pnpm"]) {
+    const executable = commandName(command);
+    const result = spawnSync(executable, ["--version"], {
+      cwd: frontendRoot,
+      stdio: "ignore",
+      shell: false
+    });
+
+    if (!result.error && result.status === 0) {
+      run(executable, ["install"], frontendRoot);
+      return;
+    }
+  }
+
+  throw new Error("Frontend dependencies are missing and neither npm nor pnpm is available.");
 }
 
-run("npm", ["run", "build"], frontendRoot, {
+if (!fs.existsSync(path.join(frontendRoot, "node_modules", "next"))) {
+  installFrontendDependencies();
+}
+
+run(process.execPath, [path.join(frontendRoot, "scripts", "build-web-export.mjs")], frontendRoot, {
   ROBOTCLOUD_FRONTEND_BASE_PATH: ""
 });
 

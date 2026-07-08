@@ -176,6 +176,20 @@ function Assert-RuntimeZipPortable {
     }
 }
 
+function Invoke-CheckedNative {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FilePath,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]] $Arguments
+    )
+
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed with exit code $LASTEXITCODE`: $FilePath $($Arguments -join ' ')"
+    }
+}
+
 $RuntimeZip = Join-Path $Root "src-tauri\resources\runtime\win\lerobot-env-win.zip"
 if ($BuildRuntime -and (Test-Path $RuntimeZip) -and $ForceRuntimeBuild) {
     Remove-Item -LiteralPath $RuntimeZip -Force
@@ -198,5 +212,5 @@ if (-not (Test-Path $RuntimeZip)) {
 Repair-RuntimeZipPortable -ZipPath $RuntimeZip
 Assert-RuntimeZipPortable -ZipPath $RuntimeZip
 
-pnpm install
-pnpm tauri build --bundles msi
+Invoke-CheckedNative pnpm install
+Invoke-CheckedNative pnpm tauri build --bundles msi
