@@ -25,9 +25,9 @@ const LOCAL_SO101_WEB_URL: &str = "app://local/so101/";
 const LOCAL_SO101_APP_PATH: &str = "so101/index.html";
 const MIN_DATASET_UPLOAD_EPISODES: u64 = 1;
 const MIN_DATASET_UPLOAD_DURATION_SECONDS: f64 = 1.0;
-const RUNTIME_READY_MARKER_VERSION: &str = "4";
+const RUNTIME_READY_MARKER_VERSION: &str = "5";
 const WINDOWS_SHIMS_MARKER_VERSION: &str = "3";
-const RUNTIME_IMPORT_CHECK: &str = "import datasets, deepdiff, lerobot, serial, scservo_sdk";
+const RUNTIME_IMPORT_CHECK: &str = "import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk";
 
 const DEFAULT_BRIDGE_SCRIPT: &str = r#"
 (function () {
@@ -2171,7 +2171,7 @@ where
             push_eq_arg(&mut args, "--dataset.push_to_hub", "false");
             push_eq_arg(&mut args, "--dataset.streaming_encoding", "true");
             push_eq_arg(&mut args, "--dataset.encoder_threads", 2);
-            // push_eq_arg(&mut args, "--dataset.vcodec", "h264");
+            push_eq_arg(&mut args, "--dataset.rgb_encoder.vcodec", "h264");
             push_eq_arg(
                 &mut args,
                 "--min_episode_time_s",
@@ -2215,7 +2215,7 @@ where
             push_eq_arg(&mut args, "--dataset.push_to_hub", "false");
             push_eq_arg(&mut args, "--dataset.streaming_encoding", "true");
             push_eq_arg(&mut args, "--dataset.encoder_threads", 2);
-            // push_eq_arg(&mut args, "--dataset.vcodec", "h264");
+            push_eq_arg(&mut args, "--dataset.rgb_encoder.vcodec", "h264");
             push_eq_arg(&mut args, "--display_data", bool_arg(config.display_data));
             Ok(lerobot_python_module_args(
                 "lerobot-record",
@@ -3632,9 +3632,31 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert!(args
             .iter()
             .any(|arg| arg == "--dataset.repo_id=local/so101_desktop"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--dataset.rgb_encoder.vcodec=h264"));
         assert!(args.iter().all(|arg| !arg.contains("so101.sh")));
         assert!(args.iter().all(|arg| !arg.contains("so101.ps1")));
         assert!(args.iter().all(|arg| arg != "--action"));
+    }
+
+    #[test]
+    fn builds_record_auto_command_with_rgb_encoder_vcodec_arg() {
+        let mut config = test_config("record-auto");
+        config.follower_port = Some("/dev/cu.usbmodem-follower".to_string());
+        config.leader_port = Some("/dev/cu.usbmodem-leader".to_string());
+
+        let (program, args) = test_so101_command_args(&config).unwrap();
+
+        assert_eq!(program, "python");
+        assert!(args
+            .first()
+            .is_some_and(|arg| arg.ends_with("robotcloud_auto_record.py")));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--dataset.rgb_encoder.vcodec=h264"));
+        assert!(args.iter().all(|arg| !arg.contains("so101.sh")));
+        assert!(args.iter().all(|arg| !arg.contains("so101.ps1")));
     }
 
     #[test]

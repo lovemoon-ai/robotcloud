@@ -9,13 +9,16 @@ const mockReplace = jest.fn();
 jest.mock("@xterm/xterm", () => ({
   Terminal: class MockTerminal {
     element?: HTMLElement;
-    focus = jest.fn();
+    focus = jest.fn(() => {
+      this.element?.focus();
+    });
     resize = jest.fn();
     dispose = jest.fn();
 
     open(parent: HTMLElement) {
       this.element = document.createElement("div");
       this.element.dataset.testid = "mock-xterm";
+      this.element.tabIndex = 0;
       parent.appendChild(this.element);
     }
 
@@ -356,7 +359,7 @@ describe("SO101 terminal session", () => {
       progressCallback?.({
         phase: "validating",
         message: "Preparing LeRobot runtime: checking required Python modules...",
-        command: "/runtime/bin/python -c 'import deepdiff, lerobot, serial, scservo_sdk'",
+        command: "/runtime/bin/python -c 'import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk'",
         current: null,
         total: null
       });
@@ -376,7 +379,7 @@ describe("SO101 terminal session", () => {
     await waitFor(() => {
       expect(view.getByText("Preparing LeRobot runtime: checking required Python modules...")).toBeInTheDocument();
     });
-    expect(view.container).toHaveTextContent("$ /runtime/bin/python -c 'import deepdiff, lerobot, serial, scservo_sdk'");
+    expect(view.container).toHaveTextContent("$ /runtime/bin/python -c 'import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk'");
     expect(view.queryByTestId("mock-xterm")).not.toBeInTheDocument();
 
     await act(async () => {
@@ -396,7 +399,7 @@ describe("SO101 terminal session", () => {
       expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
 
-    fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
+    expect(view.getByRole("button", { name: "Toggle actions" })).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(view.getByRole("button", { name: "Info" }));
 
     await waitFor(() => {
@@ -427,7 +430,6 @@ describe("SO101 terminal session", () => {
       return 1;
     }) as typeof window.requestAnimationFrame;
     try {
-      fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
       fireEvent.click(view.getByRole("button", { name: "Setup follower" }));
 
       const input = view.getByLabelText("Follower port");
@@ -471,7 +473,6 @@ describe("SO101 terminal session", () => {
       expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
 
-    fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
     fireEvent.click(view.getByRole("button", { name: "Setup follower" }));
 
     expect(terminalWrite).not.toHaveBeenCalled();
@@ -495,6 +496,47 @@ describe("SO101 terminal session", () => {
     });
   });
 
+  it("keeps focus in numeric config inputs while syncing and saving the latest command", async () => {
+    const { terminalWrite } = installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    fireEvent.change(view.getByLabelText("Follower port"), { target: { value: "/dev/cu.usbmodem-follower" } });
+    fireEvent.change(view.getByLabelText("Leader port"), { target: { value: "/dev/cu.usbmodem-leader" } });
+    fireEvent.change(view.getByLabelText("Task label"), { target: { value: "Pick the cube" } });
+
+    fireEvent.click(view.getByRole("button", { name: "Record" }));
+
+    await waitFor(() => {
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        expect.stringContaining("--dataset.num_episodes=50")
+      );
+    });
+
+    const episodesInput = view.getByLabelText("Episodes");
+    episodesInput.focus();
+    expect(episodesInput).toHaveFocus();
+
+    fireEvent.change(episodesInput, { target: { value: "7" } });
+
+    await waitFor(() => {
+      expect(terminalWrite).toHaveBeenLastCalledWith(
+        "session-1",
+        expect.stringContaining("--dataset.num_episodes=7")
+      );
+    });
+    expect(episodesInput).toHaveFocus();
+
+    await waitFor(() => {
+      expect(so101TestExports.parseConnectionSettings(window.localStorage.getItem("robotcloud-so101-connection"))?.episodes).toBe(7);
+    });
+  });
+
   it("runs auto record without requiring a saved pose first", async () => {
     const { terminalWrite } = installDesktopBridge();
 
@@ -510,7 +552,6 @@ describe("SO101 terminal session", () => {
     fireEvent.change(view.getByLabelText("Leader port"), { target: { value: "/dev/cu.usbmodem-leader" } });
     fireEvent.change(view.getByLabelText("Task label"), { target: { value: "Pick the cube" } });
 
-    fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
     fireEvent.click(view.getByRole("button", { name: "Record" }));
 
     await waitFor(() => {
@@ -558,7 +599,6 @@ describe("SO101 terminal session", () => {
       expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
 
-    fireEvent.click(view.getByRole("button", { name: "Toggle actions" }));
     expect(view.queryByRole("button", { name: "Auto record" })).not.toBeInTheDocument();
 
     const recordSection = view.getByRole("heading", { name: "Record" }).closest("section");

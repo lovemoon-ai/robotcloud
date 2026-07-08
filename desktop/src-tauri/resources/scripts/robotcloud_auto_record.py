@@ -12,15 +12,24 @@ from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # no
 from lerobot.cameras.reachy2_camera.configuration_reachy2_camera import Reachy2CameraConfig  # noqa: F401
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig  # noqa: F401
 from lerobot.cameras.zmq.configuration_zmq import ZMQCameraConfig  # noqa: F401
+from lerobot.common.control_utils import (
+    predict_action,
+    sanity_check_dataset_name,
+    sanity_check_dataset_robot_compatibility,
+)
 from lerobot.configs import parser
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.configs.video import RGBEncoderConfig
 from lerobot.datasets.image_writer import safe_stop_image_writer
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
 try:
-    from lerobot.datasets.feature_utils import build_dataset_frame, combine_feature_dicts
+    from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dicts
 except ImportError:
-    from lerobot.datasets.utils import build_dataset_frame, combine_feature_dicts
+    try:
+        from lerobot.datasets.feature_utils import build_dataset_frame, combine_feature_dicts
+    except ImportError:
+        from lerobot.datasets.utils import build_dataset_frame, combine_feature_dicts
 from lerobot.datasets.video_utils import VideoEncodingManager
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
@@ -64,18 +73,12 @@ from lerobot.teleoperators import (
     unitree_g1,
 )  # noqa: F401
 from lerobot.utils.constants import ACTION, OBS_STR
-from lerobot.utils.control_utils import (
-    init_keyboard_listener,
-    is_headless,
-    predict_action,
-    sanity_check_dataset_name,
-    sanity_check_dataset_robot_compatibility,
-)
 try:
     from lerobot.utils.device_utils import get_safe_torch_device
 except ImportError:
     from lerobot.utils.utils import get_safe_torch_device
 from lerobot.utils.import_utils import register_third_party_plugins
+from lerobot.utils.keyboard_input import init_keyboard_listener, is_headless
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import init_logging, log_say
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
@@ -100,7 +103,7 @@ class DatasetAutoRecordConfig:
     num_image_writer_processes: int = 0
     num_image_writer_threads_per_camera: int = 4
     video_encoding_batch_size: int = 1
-    vcodec: str = "libsvtav1"
+    rgb_encoder: RGBEncoderConfig = field(default_factory=RGBEncoderConfig)
     rename_map: dict[str, str] = field(default_factory=dict)
     streaming_encoding: bool = False
     encoder_threads: int | None = None
@@ -412,7 +415,7 @@ def auto_record(cfg: AutoRecordConfig) -> LeRobotDataset:
                 cfg.dataset.repo_id,
                 root=cfg.dataset.root,
                 batch_encoding_size=cfg.dataset.video_encoding_batch_size,
-                vcodec=cfg.dataset.vcodec,
+                rgb_encoder=cfg.dataset.rgb_encoder,
                 streaming_encoding=cfg.dataset.streaming_encoding,
                 encoder_threads=cfg.dataset.encoder_threads,
             )
@@ -435,7 +438,7 @@ def auto_record(cfg: AutoRecordConfig) -> LeRobotDataset:
                 image_writer_processes=cfg.dataset.num_image_writer_processes,
                 image_writer_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot.cameras),
                 batch_encoding_size=cfg.dataset.video_encoding_batch_size,
-                vcodec=cfg.dataset.vcodec,
+                rgb_encoder=cfg.dataset.rgb_encoder,
                 streaming_encoding=cfg.dataset.streaming_encoding,
                 encoder_threads=cfg.dataset.encoder_threads,
             )

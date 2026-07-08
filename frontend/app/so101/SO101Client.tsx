@@ -658,7 +658,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
           "--dataset.push_to_hub=false",
           "--dataset.streaming_encoding=true",
           "--dataset.encoder_threads=2",
-          "--dataset.vcodec=h264",
+          "--dataset.rgb_encoder.vcodec=h264",
           `--min_episode_time_s=${minEpisodeTimeS}`,
           `--max_episode_time_s=${maxEpisodeTimeS}`,
           `--display_data=${form.displayData ? "true" : "false"}`
@@ -689,7 +689,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         "--dataset.push_to_hub=false",
         "--dataset.streaming_encoding=true",
         "--dataset.encoder_threads=2",
-        "--dataset.vcodec=h264",
+        "--dataset.rgb_encoder.vcodec=h264",
         `--dataset.episode_time_s=${episodeTimeS}`,
         `--dataset.reset_time_s=${resetTimeS}`,
       ];
@@ -1015,7 +1015,7 @@ export function SO101Client() {
   const [form, setForm] = useState<FormState>(initialForm);
   const [cameraCount, setCameraCount] = useState(DEFAULT_CAMERA_COUNT);
   const [connectionLoaded, setConnectionLoaded] = useState(false);
-  const [actionsOpen, setActionsOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(true);
   const [selectedAction, setSelectedAction] = useState<ActionId | null>(null);
   const [uploadPreparing, setUploadPreparing] = useState(false);
   const [actionConfigError, setActionConfigError] = useState<ActionConfigError | null>(null);

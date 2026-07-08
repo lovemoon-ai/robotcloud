@@ -5,7 +5,7 @@ param(
     [string] $MicromambaExe = "",
     [string] $MicromambaUrl = "https://micro.mamba.pm/api/micromamba/win-64/latest",
     [string] $PythonVersion = "3.12",
-    [string] $LeRobotSpec = "lerobot[dataset]==0.6.0",
+    [string] $LeRobotSpec = "lerobot[dataset,viz]==0.6.0",
     [string] $TorchSpec = "torch==2.10.0",
     [string] $TorchVisionSpec = "torchvision==0.25.0",
     [string] $TorchIndexUrl = "https://download.pytorch.org/whl/cpu",
@@ -341,7 +341,7 @@ function Test-RuntimeEnv {
     }
 
     if (-not $SkipSmokeTest) {
-        Invoke-Checked $python @("-c", "import datasets, deepdiff, lerobot, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')")
+        Invoke-Checked $python @("-c", "import datasets, deepdiff, lerobot, rerun, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')")
         Invoke-Checked $lerobotInfo @()
     }
 }
