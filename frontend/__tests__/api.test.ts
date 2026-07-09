@@ -367,6 +367,9 @@ describe("robotCloudApi", () => {
               gpu_total: 2,
               gpu_free: 1,
               gpu_busy: 1,
+              gpu_slot_total: 4,
+              gpu_slot_free: 3,
+              gpu_slot_busy: 1,
               status: "online",
               version: "1.0.0",
               public_base_url: "https://agent.example.test",
@@ -384,6 +387,9 @@ describe("robotCloudApi", () => {
     expect(result.items[0]).toMatchObject({
       nodeName: "gpu-node-1",
       publicBaseUrl: "https://agent.example.test",
+      gpuSlotTotal: 4,
+      gpuSlotFree: 3,
+      gpuSlotBusy: 1,
       canUpload: true,
       isDefault: true
     });

@@ -94,7 +94,7 @@ export default function DatasetsPage() {
           agentLabel: "上传到 GPU Agent",
           agentLoading: "正在加载 Agent...",
           noAgent: "当前没有可接收上传的 GPU Agent，请先启动 Agent 并配置公网/隧道地址。",
-          agentStatus: (free: number, total: number) => `空闲 GPU：${free}/${total}`,
+          agentStatus: (free: number, total: number) => `空闲 Slot：${free}/${total}`,
           loginNotice: "请先登录后再上传数据集，正在跳转至登录页...",
           notLoggedPrefix: "当前未登录，上传前请",
           loginLink: "前往登录",
@@ -156,7 +156,7 @@ export default function DatasetsPage() {
           agentLabel: "Upload to GPU Agent",
           agentLoading: "Loading agents...",
           noAgent: "No upload-capable GPU Agent is active. Start an Agent with a public or tunnel URL first.",
-          agentStatus: (free: number, total: number) => `Free GPUs: ${free}/${total}`,
+          agentStatus: (free: number, total: number) => `Free slots: ${free}/${total}`,
           loginNotice: "Please log in before uploading datasets. Redirecting to the login page...",
           notLoggedPrefix: "You are not logged in. Please",
           loginLink: "go to login",
@@ -457,7 +457,7 @@ export default function DatasetsPage() {
               >
                 {uploadAgents.map((agent) => (
                   <option key={agent.nodeName} value={agent.nodeName}>
-                    {agent.nodeName} · {copy.upload.agentStatus(agent.gpuFree, agent.gpuTotal)}
+                    {agent.nodeName} · {copy.upload.agentStatus(agent.gpuSlotFree, agent.gpuSlotTotal)}
                   </option>
                 ))}
               </select>

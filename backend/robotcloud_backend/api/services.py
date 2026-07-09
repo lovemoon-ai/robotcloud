@@ -253,6 +253,32 @@ class RobotCloudService:
             return max(len(payload), 0)
         return 0
 
+    def _normalize_gpu_slot_total(self, gpu_total: int, gpu_slot_total: Any = None) -> int:
+        try:
+            slot_total = int(gpu_slot_total)
+        except (TypeError, ValueError):
+            slot_total = gpu_total
+        return max(slot_total, gpu_total, 1)
+
+    def _refresh_worker_usage(self, node: WorkerNode) -> None:
+        physical_gpu_indices: set[int] = set()
+        slot_busy = 0
+        for task in TrainTask.objects.filter(assigned_node=node.node_name, status="running"):
+            gpus = self._parse_assigned_gpus(task.assigned_gpus) or [0]
+            physical_gpu_indices.update(gpus)
+            slot_busy += max(len(gpus), 1)
+        for task in InferenceTask.objects.filter(assigned_node=node.node_name, status="running"):
+            gpus = self._parse_assigned_gpus(task.assigned_gpus) or [0]
+            physical_gpu_indices.update(gpus)
+            slot_busy += max(len(gpus), 1)
+
+        node.gpu_slot_total = self._normalize_gpu_slot_total(node.gpu_total, node.gpu_slot_total)
+        node.gpu_busy = min(len(physical_gpu_indices), node.gpu_total)
+        node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
+        node.gpu_slot_busy = min(slot_busy, node.gpu_slot_total)
+        node.gpu_slot_free = max(node.gpu_slot_total - node.gpu_slot_busy, 0)
+        node.save(update_fields=["gpu_busy", "gpu_free", "gpu_slot_total", "gpu_slot_busy", "gpu_slot_free", "updated_at"])
+
     def _release_worker_slot(self, task: TrainTask) -> None:
         if not task.assigned_node:
             return
@@ -260,10 +286,7 @@ class RobotCloudService:
             node = WorkerNode.objects.get(node_name=task.assigned_node)
         except WorkerNode.DoesNotExist:
             return
-        if node.gpu_busy > 0:
-            node.gpu_busy -= 1
-        node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
-        node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+        self._refresh_worker_usage(node)
 
     def _release_inference_slot(self, task: InferenceTask) -> None:
         if not task.assigned_node:
@@ -272,10 +295,7 @@ class RobotCloudService:
             node = WorkerNode.objects.get(node_name=task.assigned_node)
         except WorkerNode.DoesNotExist:
             return
-        if node.gpu_busy > 0:
-            node.gpu_busy -= 1
-        node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
-        node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+        self._refresh_worker_usage(node)
 
     def _parse_assigned_gpus(self, value: Optional[str]) -> list[int]:
         if not value:
@@ -334,6 +354,9 @@ class RobotCloudService:
             "gpu_total": node.gpu_total,
             "gpu_free": node.gpu_free,
             "gpu_busy": node.gpu_busy,
+            "gpu_slot_total": node.gpu_slot_total or node.gpu_total,
+            "gpu_slot_free": node.gpu_slot_free if node.gpu_slot_total else node.gpu_free,
+            "gpu_slot_busy": node.gpu_slot_busy if node.gpu_slot_total else node.gpu_busy,
             "status": node.status,
             "version": node.version,
             "public_base_url": node.public_base_url,
@@ -1350,6 +1373,7 @@ class RobotCloudService:
         api_port: int,
         public_base_url: str = "",
         upload_enabled: bool = True,
+        gpu_slot_total: Optional[int] = None,
     ) -> Dict[str, Any]:
         if not node_name:
             raise ValueError("Node name required")
@@ -1360,6 +1384,7 @@ class RobotCloudService:
         if api_port <= 0:
             raise ValueError("Agent port must be positive")
         public_base_url = self._normalize_public_base_url(public_base_url)
+        slot_total = self._normalize_gpu_slot_total(gpu_total, gpu_slot_total)
         now = timezone.now()
         with transaction.atomic():
             node, created = WorkerNode.objects.select_for_update().get_or_create(
@@ -1369,6 +1394,9 @@ class RobotCloudService:
                     "gpu_total": gpu_total,
                     "gpu_busy": 0,
                     "gpu_free": gpu_total,
+                    "gpu_slot_total": slot_total,
+                    "gpu_slot_busy": 0,
+                    "gpu_slot_free": slot_total,
                     "version": version or "",
                     "auth_token": self._generate_agent_token(),
                     "status": WorkerNode.STATUS_ONLINE,
@@ -1383,6 +1411,9 @@ class RobotCloudService:
                 node.gpu_total = gpu_total
                 node.gpu_busy = min(node.gpu_busy, gpu_total)
                 node.gpu_free = max(gpu_total - node.gpu_busy, 0)
+                node.gpu_slot_total = slot_total
+                node.gpu_slot_busy = min(node.gpu_slot_busy, slot_total)
+                node.gpu_slot_free = max(slot_total - node.gpu_slot_busy, 0)
                 node.version = version or ""
                 node.status = WorkerNode.STATUS_ONLINE
                 node.last_heartbeat = now
@@ -1395,6 +1426,9 @@ class RobotCloudService:
                         "gpu_total",
                         "gpu_busy",
                         "gpu_free",
+                        "gpu_slot_total",
+                        "gpu_slot_busy",
+                        "gpu_slot_free",
                         "version",
                         "status",
                         "last_heartbeat",
@@ -1410,6 +1444,7 @@ class RobotCloudService:
                 "agent_id": node.node_name,
                 "token": token,
                 "gpu_total": node.gpu_total,
+                "gpu_slot_total": node.gpu_slot_total,
                 "api_port": node.api_port,
                 "public_base_url": node.public_base_url,
                 "upload_enabled": node.upload_enabled,
@@ -1423,25 +1458,48 @@ class RobotCloudService:
         gpu_free: Any,
         gpu_busy: Any,
         version: Optional[str] = None,
+        gpu_slot_total: Any = None,
+        gpu_slot_free: Any = None,
+        gpu_slot_busy: Any = None,
     ) -> Dict[str, Any]:
         node = self._get_worker_by_token(token)
         now = timezone.now()
         if gpu_total > 0:
             node.gpu_total = gpu_total
+        node.gpu_slot_total = self._normalize_gpu_slot_total(node.gpu_total, gpu_slot_total or node.gpu_slot_total)
         free_count = self._normalize_gpu_payload(gpu_free)
         busy_count = self._normalize_gpu_payload(gpu_busy)
         if busy_count > node.gpu_total:
             busy_count = node.gpu_total
         if free_count > node.gpu_total:
             free_count = node.gpu_total
+        slot_free_count = self._normalize_gpu_payload(gpu_slot_free)
+        slot_busy_count = busy_count if gpu_slot_busy is None else self._normalize_gpu_payload(gpu_slot_busy)
+        if slot_busy_count > node.gpu_slot_total:
+            slot_busy_count = node.gpu_slot_total
+        if slot_free_count > node.gpu_slot_total:
+            slot_free_count = node.gpu_slot_total
         node.gpu_busy = busy_count
         node.gpu_free = max(node.gpu_total - busy_count, 0) if free_count == 0 else free_count
+        node.gpu_slot_busy = slot_busy_count
+        node.gpu_slot_free = max(node.gpu_slot_total - slot_busy_count, 0) if slot_free_count == 0 else slot_free_count
         node.last_heartbeat = now
         node.status = WorkerNode.STATUS_ONLINE
         if version is not None:
             node.version = version
         node.save(
-            update_fields=["gpu_total", "gpu_busy", "gpu_free", "last_heartbeat", "status", "version", "updated_at"]
+            update_fields=[
+                "gpu_total",
+                "gpu_busy",
+                "gpu_free",
+                "gpu_slot_total",
+                "gpu_slot_busy",
+                "gpu_slot_free",
+                "last_heartbeat",
+                "status",
+                "version",
+                "updated_at",
+            ]
         )
         return self._response({"status": "ok", "node": node.node_name})
 

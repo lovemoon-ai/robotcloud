@@ -153,6 +153,9 @@ type BackendAgent = {
   gpu_total: number;
   gpu_free: number;
   gpu_busy: number;
+  gpu_slot_total?: number;
+  gpu_slot_free?: number;
+  gpu_slot_busy?: number;
   status: string;
   version: string;
   public_base_url: string;
@@ -789,6 +792,9 @@ function mapAgent(item: BackendAgent): GpuAgent {
     gpuTotal: item.gpu_total,
     gpuFree: item.gpu_free,
     gpuBusy: item.gpu_busy,
+    gpuSlotTotal: item.gpu_slot_total ?? item.gpu_total,
+    gpuSlotFree: item.gpu_slot_free ?? item.gpu_free,
+    gpuSlotBusy: item.gpu_slot_busy ?? item.gpu_busy,
     status: item.status,
     version: item.version,
     publicBaseUrl: item.public_base_url,

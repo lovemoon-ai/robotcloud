@@ -45,6 +45,7 @@ class AgentConfig:
     upload_enabled: bool
     upload_allowed_origins: tuple[str, ...]
     gpu_total: int
+    gpu_slot_total: int
     heartbeat_interval: int
     version: str
     step_delay: float
@@ -63,6 +64,8 @@ class AgentConfig:
         upload_enabled = _bool_env("AGENT_UPLOAD_ENABLED", True)
         upload_allowed_origins = _list_env("AGENT_UPLOAD_ALLOWED_ORIGINS")
         gpu_total = max(_int_env("AGENT_GPU_TOTAL", 1), 1)
+        slots_per_gpu = max(_int_env("AGENT_GPU_SLOTS_PER_GPU", 1), 1)
+        gpu_slot_total = max(_int_env("AGENT_GPU_SLOT_TOTAL", gpu_total * slots_per_gpu), gpu_total)
         heartbeat_interval = max(_int_env("AGENT_HEARTBEAT_INTERVAL", 30), 5)
         version = os.getenv("AGENT_VERSION", "1.0.0")
         step_delay = max(_float_env("AGENT_STEP_DELAY", 0.5), 0.1)
@@ -81,6 +84,7 @@ class AgentConfig:
             upload_enabled=upload_enabled,
             upload_allowed_origins=upload_allowed_origins,
             gpu_total=gpu_total,
+            gpu_slot_total=gpu_slot_total,
             heartbeat_interval=heartbeat_interval,
             version=version,
             step_delay=step_delay,

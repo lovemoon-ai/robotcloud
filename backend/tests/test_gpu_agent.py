@@ -100,6 +100,7 @@ def _agent_config(tmp_path: Path) -> AgentConfig:
         upload_enabled=True,
         upload_allowed_origins=(),
         gpu_total=1,
+        gpu_slot_total=1,
         heartbeat_interval=30,
         version="test",
         step_delay=0.1,

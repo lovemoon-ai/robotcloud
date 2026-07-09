@@ -1774,6 +1774,7 @@ class Agent:
             "node_name": self.config.node_name,
             "ip": self.config.report_ip,
             "gpu_total": self.config.gpu_total,
+            "gpu_slot_total": self.config.gpu_slot_total,
             "version": self.config.version,
             "port": self.config.api_port,
             "public_base_url": self.config.public_base_url,
@@ -1804,6 +1805,7 @@ class Agent:
                         upload_enabled=self.config.upload_enabled,
                         upload_allowed_origins=self.config.upload_allowed_origins,
                         gpu_total=gpu_total,
+                        gpu_slot_total=int(data.get("gpu_slot_total") or self.config.gpu_slot_total),
                         heartbeat_interval=self.config.heartbeat_interval,
                         version=self.config.version,
                         step_delay=self.config.step_delay,
@@ -1832,11 +1834,15 @@ class Agent:
             if not self.agent_token:
                 continue
             busy = self._busy_gpu_indices()
+            busy_slots = self._busy_gpu_slot_count()
             free = [idx for idx in range(self.config.gpu_total) if idx not in busy]
             payload = {
                 "gpu_total": self.config.gpu_total,
                 "gpu_free": free,
                 "gpu_busy": busy,
+                "gpu_slot_total": self.config.gpu_slot_total,
+                "gpu_slot_free": max(self.config.gpu_slot_total - busy_slots, 0),
+                "gpu_slot_busy": busy_slots,
                 "version": self.config.version,
             }
             url = f"{self.config.backend_base_url}/internal/agent/heartbeat"
@@ -2135,6 +2141,15 @@ class Agent:
             for job in self._inference_jobs.values():
                 indices.extend(job.gpus)
         return sorted(set(indices))
+
+    def _busy_gpu_slot_count(self) -> int:
+        with self._lock:
+            count = 0
+            for job in self._jobs.values():
+                count += max(len(job.gpus), 1)
+            for job in self._inference_jobs.values():
+                count += max(len(job.gpus), 1)
+        return min(count, self.config.gpu_slot_total)
 
     # -------------------- Log access helpers --------------------
     def _log_file_path(self, task_id: int) -> Path:

@@ -70,6 +70,9 @@ export interface GpuAgent {
   gpuTotal: number;
   gpuFree: number;
   gpuBusy: number;
+  gpuSlotTotal: number;
+  gpuSlotFree: number;
+  gpuSlotBusy: number;
   status: string;
   version: string;
   publicBaseUrl: string;

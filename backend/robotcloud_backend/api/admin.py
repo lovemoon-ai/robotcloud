@@ -51,6 +51,24 @@ class InferenceTaskAdmin(admin.ModelAdmin):
     list_select_related = ("dataset", "user")
 
 
+@admin.register(models.WorkerNode)
+class WorkerNodeAdmin(admin.ModelAdmin):
+    list_display = (
+        "node_name",
+        "status",
+        "gpu_busy",
+        "gpu_total",
+        "gpu_slot_busy",
+        "gpu_slot_total",
+        "ip",
+        "api_port",
+        "updated_at",
+    )
+    list_filter = ("status", "upload_enabled")
+    search_fields = ("node_name", "ip")
+    readonly_fields = ("created_at", "updated_at")
+
+
 @admin.register(models.SimulationTask)
 class SimulationTaskAdmin(admin.ModelAdmin):
     list_display = ("id", "user", "scene_file", "robot_type", "training_mode", "status", "created_at")
@@ -75,5 +93,4 @@ class AdminLogAdmin(admin.ModelAdmin):
     search_fields = ("admin__phone", "action", "target_type", "target_id")
     readonly_fields = ("created_at",)
     list_select_related = ("admin",)
-
 

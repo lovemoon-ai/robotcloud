@@ -415,6 +415,7 @@ class AgentRegisterView(RobotCloudAPIView):
                 int(payload.get("port", 5000) or 5000),
                 payload.get("public_base_url", "") or "",
                 self._bool_value(payload.get("upload_enabled"), True),
+                int(payload.get("gpu_slot_total", 0) or 0) or None,
             )
         )
 
@@ -466,6 +467,9 @@ class AgentHeartbeatView(RobotCloudAPIView):
                 payload.get("gpu_free"),
                 payload.get("gpu_busy"),
                 payload.get("version"),
+                payload.get("gpu_slot_total"),
+                payload.get("gpu_slot_free"),
+                payload.get("gpu_slot_busy"),
             )
         )
 

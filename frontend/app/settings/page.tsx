@@ -67,7 +67,7 @@ export default function SettingsPage() {
         uploadReady: "可接收上传",
         uploadBlocked: "未配置上传地址",
         node: {
-          gpu: (busy: number, total: number) => `GPU 使用：${busy}/${total}`,
+          gpu: (busy: number, total: number) => `GPU Slot 使用：${busy}/${total}`,
           endpoint: (value: string) => `上传地址：${value}`,
           heartbeat: (value: string) => `心跳：${value}`
         }
@@ -109,7 +109,7 @@ export default function SettingsPage() {
         uploadReady: "Upload ready",
         uploadBlocked: "Upload URL missing",
         node: {
-          gpu: (busy: number, total: number) => `GPU usage: ${busy}/${total}`,
+          gpu: (busy: number, total: number) => `GPU slot usage: ${busy}/${total}`,
           endpoint: (value: string) => `Upload URL: ${value}`,
           heartbeat: (value: string) => `Heartbeat: ${value}`
         }
@@ -296,7 +296,7 @@ export default function SettingsPage() {
               <div className="space-y-3">
                 <div className="flex flex-wrap gap-2 text-xs">
                   <span className="rounded border border-theme px-2 py-1 text-muted">
-                    {copy.node.gpu(agent.gpuBusy, agent.gpuTotal)}
+                    {copy.node.gpu(agent.gpuSlotBusy, agent.gpuSlotTotal)}
                   </span>
                   <span className="rounded border border-theme px-2 py-1 text-muted">
                     {agent.canUpload ? copy.uploadReady : copy.uploadBlocked}

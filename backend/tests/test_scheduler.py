@@ -188,14 +188,21 @@ def test_scheduler_routes_agent_stored_dataset_to_storage_node(
 
 
 @override_settings(AUTH_NO_LIMITS_WHITELIST_PHONES="13800000008")
-def test_scheduler_no_limits_user_bypasses_training_concurrency_cap(
+def test_scheduler_overcommits_training_slots_on_single_gpu_node(
     client: APIClient, sms_gateway: InMemorySmsGateway, monkeypatch
 ) -> None:
     token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13800000008")
 
     register_resp = client.post(
         "/api/v1/internal/agent/register",
-        {"node_name": "gpu-node-4", "ip": "10.0.0.14", "gpu_total": 4, "version": "1.0.0", "port": 5000},
+        {
+            "node_name": "h20",
+            "ip": "10.0.0.14",
+            "gpu_total": 1,
+            "gpu_slot_total": 4,
+            "version": "1.0.0",
+            "port": 5000,
+        },
         format="json",
     )
     assert register_resp.status_code == 200
@@ -217,6 +224,7 @@ def test_scheduler_no_limits_user_bypasses_training_concurrency_cap(
     def _fake_dispatch(url, json=None, headers=None, timeout=None, **kwargs):
         assert url == "http://10.0.0.14:5000/api/v1/agent/run"
         assert headers and headers.get("X-Agent-Token") == agent_token
+        assert json["gpus"] == [0]
         dispatched_task_ids.append(json["task_id"])
 
         class _Response:
@@ -236,6 +244,12 @@ def test_scheduler_no_limits_user_bypasses_training_concurrency_cap(
     assert assigned == 4
     assert set(dispatched_task_ids) == set(task_ids)
     assert TrainTask.objects.filter(id__in=task_ids, status="running").count() == 4
+    node = WorkerNode.objects.get(node_name="h20")
+    assert node.gpu_total == 1
+    assert node.gpu_busy == 1
+    assert node.gpu_slot_total == 4
+    assert node.gpu_slot_busy == 4
+    assert node.gpu_slot_free == 0
 
 
 def test_scheduler_applies_safe_pi05_defaults(
