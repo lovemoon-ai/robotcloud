@@ -70,6 +70,7 @@ class UserSession(models.Model):
         indexes = [
             models.Index(fields=["user", "device_type", "status"]),
             models.Index(fields=["expires_at"]),
+            models.Index(fields=["token_hash"]),
         ]
 
     def __str__(self) -> str:
