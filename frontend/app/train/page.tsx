@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   buildTrainingParams,
   isPi05TrainingModel,
@@ -320,14 +320,14 @@ function TrainPageContent() {
     openLog(parsed);
   }, [searchParams, token]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const viewport = logViewportRef.current;
     if (!viewport) return;
     viewport.scrollTop = viewport.scrollHeight;
   }, [isLogMaximized, logBuffer]);
 
-  // Poll logs while modal open. Drain several chunks per tick so completed logs
-  // do not appear stuck at the first 64KB page.
+  // Poll logs while modal open. Drain to the current EOF so completed logs
+  // load fully instead of appearing stuck on the first chunk.
   useEffect(() => {
     if (!logTaskId || !token) return;
     let aborted = false;
@@ -337,7 +337,7 @@ function TrainPageContent() {
       logFetchInFlightRef.current = true;
       setIsLogLoading(true);
       try {
-        for (let chunkIndex = 0; chunkIndex < 4; chunkIndex += 1) {
+        while (!aborted) {
           const offset = logOffsetRef.current;
           const chunk = await robotCloudApi.fetchTrainingLog({
             taskId: logTaskId,
