@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -18,6 +19,30 @@ def _create_zip_upload() -> SimpleUploadedFile:
     return SimpleUploadedFile("parking.zip", buffer.read(), content_type="application/zip")
 
 
+def _create_lerobot_zip_upload() -> SimpleUploadedFile:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "so101/meta/info.json",
+            json.dumps(
+                {
+                    "total_tasks": 1,
+                    "features": {
+                        "observation.images.head": {"dtype": "video"},
+                        "observation.images.wrist": {"dtype": "video"},
+                        "observation.state": {"dtype": "float32", "shape": [6]},
+                        "action": {"dtype": "float32", "shape": [6]},
+                        "task_index": {"dtype": "int64", "shape": [1]},
+                    },
+                }
+            ).encode("utf-8"),
+        )
+        archive.writestr("so101/meta/tasks.parquet", b"PAR1")
+        archive.writestr("so101/data/chunk-000/episode_000000.parquet", b"PAR1")
+    buffer.seek(0)
+    return SimpleUploadedFile("so101.zip", buffer.read(), content_type="application/zip")
+
+
 def _upload_dataset(client: APIClient, token: str, visibility: str = "public") -> dict:
     upload_file = _create_zip_upload()
     data = {"name": "parking", "description": "desc", "visibility": visibility, "file": upload_file}
@@ -29,6 +54,26 @@ def _upload_dataset(client: APIClient, token: str, visibility: str = "public") -
     )
     assert resp.status_code == 200
     return resp.json()["data"]
+
+
+def test_lerobot_dataset_upload_extracts_camera_and_task_metadata(client: APIClient, create_user_token) -> None:
+    token = create_user_token("13900000006", "passwd")
+    upload_file = _create_lerobot_zip_upload()
+    resp = client.post(
+        "/api/v1/dataset/upload",
+        data={"name": "so101", "description": "desc", "visibility": "private", "file": upload_file},
+        format="multipart",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+
+    assert resp.status_code == 200
+    dataset = Dataset.objects.get(id=resp.json()["data"]["dataset_id"])
+    assert dataset.metadata["lerobot_camera_keys"] == [
+        "observation.images.head",
+        "observation.images.wrist",
+    ]
+    assert dataset.metadata["lerobot_has_task"] is True
+    assert dataset.metadata["lerobot_task_count"] == 1
 
 
 def test_dataset_crud(client: APIClient, create_user_token) -> None:

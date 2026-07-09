@@ -611,6 +611,31 @@ describe("robotCloudApi", () => {
     });
   });
 
+  it("createTrainingJob includes SO101 model defaults", async () => {
+    setAuthenticatedUser();
+    const config: TrainingConfig = {
+      model: "FastWAM",
+      datasetId: "2",
+      learningRate: 0.0001,
+      steps: 100,
+      batchSize: 1
+    };
+    await robotCloudApi.createTrainingJob(config);
+    const [, init] = mockedFetch.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toEqual({
+      dataset_id: 2,
+      model_type: "FastWAM",
+      params: expect.objectContaining({
+        learning_rate: 0.0001,
+        steps: 100,
+        batch_size: 1,
+        "policy.action_dim": 6,
+        "policy.proprio_dim": 6,
+        "policy.image_size": [224, 448]
+      })
+    });
+  });
+
   it("deleteTrainingJob posts to delete endpoint with auth", async () => {
     setAuthenticatedUser();
     mockedFetch.mockResolvedValueOnce({

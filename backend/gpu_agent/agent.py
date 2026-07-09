@@ -2179,19 +2179,26 @@ class Agent:
         total_files = 0
         by_type: Dict[str, int] = {}
         preview_entries: List[Dict[str, str]] = []
+        lerobot_metadata: Dict[str, Any] = {}
         suffixes = [suffix.lower() for suffix in file_path.suffixes]
 
         if suffixes and suffixes[-1] == ".zip" and file_path.exists():
             try:
                 with zipfile.ZipFile(file_path, "r") as archive:
                     names = [item.filename for item in archive.infolist() if not item.is_dir()]
+                    lerobot_metadata = self._lerobot_metadata_from_members(names, archive.read)
             except zipfile.BadZipFile:
                 names = []
             total_files, by_type, preview_entries = self._metadata_from_names(names)
         elif file_path.exists() and (".tar" in suffixes or (suffixes and suffixes[-1] in {".gz", ".tgz"})):
             try:
                 with tarfile.open(file_path, "r:*") as archive:
-                    names = [item.name for item in archive.getmembers() if item.isfile()]
+                    members = [item for item in archive.getmembers() if item.isfile()]
+                    names = [item.name for item in members]
+                    lerobot_metadata = self._lerobot_metadata_from_members(
+                        names,
+                        lambda name: self._read_tar_member(archive, name),
+                    )
             except tarfile.TarError:
                 names = []
             total_files, by_type, preview_entries = self._metadata_from_names(names)
@@ -2202,12 +2209,64 @@ class Agent:
             by_type[file_type] = 1
             preview_entries = [{"name": file_path.name, "type": file_type}]
 
-        return {
+        metadata = {
             "file_name": file_path.name,
             "file_size": file_size,
             "total_files": total_files,
             "by_type": by_type,
             "preview": preview_entries,
+        }
+        metadata.update(lerobot_metadata)
+        return metadata
+
+    def _is_dataset_member(self, name: str, suffix: str) -> bool:
+        normalized = name.replace("\\", "/").lstrip("/")
+        return normalized == suffix or normalized.endswith(f"/{suffix}")
+
+    def _read_tar_member(self, archive: tarfile.TarFile, name: str) -> bytes:
+        member = archive.getmember(name)
+        source = archive.extractfile(member)
+        if source is None:
+            return b""
+        return source.read()
+
+    def _lerobot_metadata_from_members(self, names: List[str], read_member) -> Dict[str, Any]:
+        info_name = next((name for name in names if self._is_dataset_member(name, "meta/info.json")), None)
+        has_tasks_file = any(self._is_dataset_member(name, "meta/tasks.parquet") for name in names)
+        info: Dict[str, Any] = {}
+        if info_name:
+            try:
+                raw_info = json.loads(read_member(info_name).decode("utf-8"))
+                if isinstance(raw_info, dict):
+                    info = raw_info
+            except (OSError, KeyError, UnicodeDecodeError, json.JSONDecodeError):
+                info = {}
+
+        features_raw = info.get("features") if isinstance(info, dict) else None
+        if isinstance(features_raw, dict):
+            feature_names = sorted(str(key) for key in features_raw.keys())
+        elif isinstance(features_raw, list):
+            feature_names = sorted(str(item) for item in features_raw)
+        else:
+            feature_names = []
+
+        camera_features = sorted(
+            feature for feature in feature_names if feature.startswith("observation.images.")
+        )
+        task_count_raw = info.get("total_tasks") if isinstance(info, dict) else None
+        try:
+            task_count = int(task_count_raw) if task_count_raw is not None else 0
+        except (TypeError, ValueError):
+            task_count = 0
+
+        if not info_name and not has_tasks_file:
+            return {}
+        return {
+            "lerobot_info_present": bool(info_name),
+            "lerobot_camera_keys": camera_features,
+            "lerobot_features": feature_names,
+            "lerobot_has_task": has_tasks_file or task_count > 0,
+            "lerobot_task_count": task_count,
         }
 
     def _metadata_from_names(self, names: List[str]) -> tuple[int, Dict[str, int], List[Dict[str, str]]]:

@@ -20,6 +20,7 @@ import {
   UserSettings,
   UserRole
 } from "@/types";
+import { getTrainingModelDefaults } from "@/training/models";
 
 const DEFAULT_API_BASE = "http://localhost:6150/api/v1";
 
@@ -894,10 +895,12 @@ export const robotCloudApi = {
   deleteTrainingJob: async (taskId: number): Promise<{ deleted: boolean }> =>
     request<{ deleted: boolean }>(`/training/${taskId}/delete`, { method: "POST" }),
   createTrainingJob: async (config: TrainingConfig) => {
+    const modelDefaults = getTrainingModelDefaults(config.model);
     const payload = {
       dataset_id: Number.parseInt(config.datasetId, 10),
       model_type: config.model,
       params: {
+        ...modelDefaults.params,
         learning_rate: config.learningRate,
         steps: config.steps,
         batch_size: config.batchSize

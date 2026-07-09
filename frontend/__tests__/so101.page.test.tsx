@@ -666,15 +666,19 @@ describe("SO101 terminal session", () => {
     const connectionSection = view.getByText("Connection").closest("section");
     expect(connectionSection).not.toBeNull();
 
-    const cameraLabel = within(connectionSection as HTMLElement).getByText("Camera 0");
+    const cameraLabel = within(connectionSection as HTMLElement).getByText("Head camera");
+    expect(within(connectionSection as HTMLElement).getByText("Wrist camera")).toBeInTheDocument();
     const addCameraButton = within(connectionSection as HTMLElement).getByRole("button", { name: "Add camera" });
     const connectionControls = within(connectionSection as HTMLElement);
+    const widthInputs = connectionControls.getAllByLabelText("Width");
+    const heightInputs = connectionControls.getAllByLabelText("Height");
+    const fpsInputs = connectionControls.getAllByLabelText("FPS");
 
     expect(cameraLabel.compareDocumentPosition(addCameraButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(connectionControls.getByLabelText("Width")).toHaveAttribute("type", "text");
-    expect(connectionControls.getByLabelText("Width")).toHaveValue("640");
-    expect(connectionControls.getByLabelText("Height")).toHaveValue("480");
-    expect(connectionControls.getByLabelText("FPS")).toHaveValue("30");
+    expect(widthInputs[0]).toHaveAttribute("type", "text");
+    expect(widthInputs[0]).toHaveValue("640");
+    expect(heightInputs[0]).toHaveValue("480");
+    expect(fpsInputs[0]).toHaveValue("30");
   });
 
   it("shows direct lerobot-record parameters without an alternate script flow", async () => {
@@ -835,9 +839,9 @@ describe("SO101 terminal session", () => {
     await waitFor(() => {
       expect(validateCamera).toHaveBeenCalledWith("0", 640, 480, 30);
     });
-    expect(view.getByLabelText("Width")).toHaveValue("640");
-    expect(view.getByLabelText("Height")).toHaveValue("480");
-    expect(view.getByLabelText("FPS")).toHaveValue("30");
+    expect(view.getAllByLabelText("Width")[0]).toHaveValue("640");
+    expect(view.getAllByLabelText("Height")[0]).toHaveValue("480");
+    expect(view.getAllByLabelText("FPS")[0]).toHaveValue("30");
   });
 
   it("fills blank camera dimensions from a successful camera check", async () => {
@@ -856,8 +860,8 @@ describe("SO101 terminal session", () => {
       expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
 
-    fireEvent.change(view.getByLabelText("Width"), { target: { value: "" } });
-    fireEvent.change(view.getByLabelText("Height"), { target: { value: "" } });
+    fireEvent.change(view.getAllByLabelText("Width")[0], { target: { value: "" } });
+    fireEvent.change(view.getAllByLabelText("Height")[0], { target: { value: "" } });
 
     const checkButton = view
       .getAllByRole("button", { name: "Check" })
@@ -868,9 +872,9 @@ describe("SO101 terminal session", () => {
     await waitFor(() => {
       expect(validateCamera).toHaveBeenCalledWith("0", 0, 0, 0);
     });
-    expect(view.getByLabelText("Width")).toHaveValue("1280");
-    expect(view.getByLabelText("Height")).toHaveValue("720");
-    expect(view.getByLabelText("FPS")).toHaveValue("30");
+    expect(view.getAllByLabelText("Width")[0]).toHaveValue("1280");
+    expect(view.getAllByLabelText("Height")[0]).toHaveValue("720");
+    expect(view.getAllByLabelText("FPS")[0]).toHaveValue("30");
   });
 
   it("shows recording stats before preparing an upload", async () => {
@@ -1037,17 +1041,41 @@ describe("SO101 command generation", () => {
         task: "Pick the cube"
       },
       desktopStatus,
-      1
+      2
     );
 
     expect(command).toContain("python -m lerobot.scripts.lerobot_record");
     expect(command).not.toContain("lerobot-record");
     expect(command).not.toContain("bash '/script'");
     expect(command).not.toContain("--action");
-    expect(command).toContain("--robot.cameras='{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30} }'");
+    expect(command).toContain(
+      "--robot.cameras='{ head: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, wrist: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30} }'"
+    );
     expect(command).toContain("--dataset.episode_time_s=12");
     expect(command).toContain("--dataset.reset_time_s=3");
     expect(command).toContain("--dataset.streaming_encoding=true");
+  });
+
+  it("keeps 3 camera LeRobot feature keys in semantic order when sorted", () => {
+    const command = buildActionCommand(
+      "record",
+      {
+        ...initialForm,
+        followerPort: "/dev/cu.usbmodem-follower",
+        leaderPort: "/dev/cu.usbmodem-leader",
+        robotId: "robot-one",
+        teleopId: "leader-one",
+        datasetRepoId: "local/auto_dataset",
+        task: "Pick the cube"
+      },
+      desktopStatus,
+      3
+    );
+
+    expect(command).toContain("head:");
+    expect(command).toContain("wrist:");
+    expect(command).toContain("z_side:");
+    expect(["head", "wrist", "z_side"].sort()).toEqual(["head", "wrist", "z_side"]);
   });
 
   it("builds find-port commands through the lerobot python module", () => {
@@ -1245,6 +1273,7 @@ describe("SO101 command generation", () => {
     );
 
     expect(saved).toMatchObject({
+      cameraCount: 2,
       episodes: 50,
       cameras: [
         { id: "0", width: 640, height: 480, fps: 30 },

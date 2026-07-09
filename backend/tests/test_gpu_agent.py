@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import io
+import json
+import logging
 import tarfile
 import threading
 import zipfile
@@ -107,6 +108,36 @@ def _agent_config(tmp_path: Path) -> AgentConfig:
         work_dir=tmp_path,
         dataset_cache_dir=tmp_path / "storage" / "datasets_cache",
     )
+
+
+def test_agent_dataset_inspection_extracts_lerobot_metadata(tmp_path: Path) -> None:
+    archive_path = tmp_path / "so101.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(
+            "dataset/meta/info.json",
+            json.dumps(
+                {
+                    "total_tasks": 1,
+                    "features": {
+                        "observation.images.head": {"dtype": "video"},
+                        "observation.images.wrist": {"dtype": "video"},
+                        "observation.state": {"dtype": "float32", "shape": [6]},
+                        "action": {"dtype": "float32", "shape": [6]},
+                    },
+                }
+            ).encode("utf-8"),
+        )
+        archive.writestr("dataset/meta/tasks.parquet", b"PAR1")
+
+    agent = Agent(_agent_config(tmp_path), session=_BackendSession())  # type: ignore[arg-type]
+    metadata = agent.inspect_dataset_file(archive_path)
+
+    assert metadata["lerobot_camera_keys"] == [
+        "observation.images.head",
+        "observation.images.wrist",
+    ]
+    assert metadata["lerobot_has_task"] is True
+    assert metadata["lerobot_task_count"] == 1
 
 
 def test_agent_resumable_dataset_upload(tmp_path: Path) -> None:

@@ -2003,7 +2003,7 @@ fn camera_config_value(config: &So101RunConfig) -> String {
     }
 
     format!(
-        "{{ front: {{type: opencv, index_or_path: {}, width: {}, height: {}, fps: {}}}}}",
+        "{{ head: {{type: opencv, index_or_path: {}, width: {}, height: {}, fps: {}}}}}",
         camera_ref_for_config(config),
         config.width.unwrap_or(640),
         config.height.unwrap_or(480),

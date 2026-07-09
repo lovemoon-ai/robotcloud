@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLocaleStore } from "@/store/useLocaleStore";
 import { useThemeStore } from "@/store/useThemeStore";
+import { getTrainingModelDefaults, getTrainingModelOption, LEROBOT_TRAINING_MODELS } from "@/training/models";
 
 const ACTIVE_TRAINING_STATUSES: Array<TrainingJob["status"]> = ["queued", "running"];
 
@@ -37,9 +38,18 @@ function TrainPageContent() {
     },
     refetchIntervalInBackground: true
   });
+  const initialModelDefaults = getTrainingModelDefaults("ACT");
   const form = useForm<TrainingConfig>({
-    defaultValues: { model: "ACT", datasetId: initialDatasetId, learningRate: 0.001, steps: 5000, batchSize: 16 }
+    defaultValues: {
+      model: "ACT",
+      datasetId: initialDatasetId,
+      learningRate: initialModelDefaults.learningRate,
+      steps: initialModelDefaults.steps,
+      batchSize: initialModelDefaults.batchSize
+    }
   });
+  const selectedModelValue = form.watch("model");
+  const selectedModel = getTrainingModelOption(selectedModelValue) ?? LEROBOT_TRAINING_MODELS[0];
   const isZh = locale === "zh";
   const copy = isZh
     ? {
@@ -52,6 +62,11 @@ function TrainPageContent() {
         learningRateLabel: "学习率",
         batchSizeLabel: "Batch Size",
         epochsLabel: "Steps",
+        presetLabel: "SO101 训练预设",
+        cameraPreset: "2/3 路 RGB 相机",
+        jointPreset: "6DoF joint state/action",
+        taskRequired: "需要数据集 task 字段",
+        taskOptional: "不依赖 task 字段",
         submit: "提交训练",
         submitting: "创建中...",
         queueHeading: "训练任务队列",
@@ -85,6 +100,11 @@ function TrainPageContent() {
         learningRateLabel: "Learning Rate",
         batchSizeLabel: "Batch Size",
         epochsLabel: "Steps",
+        presetLabel: "SO101 Training Preset",
+        cameraPreset: "2/3 RGB cameras",
+        jointPreset: "6DoF joint state/action",
+        taskRequired: "Requires dataset task field",
+        taskOptional: "Does not require task field",
         submit: "Submit Training",
         submitting: "Creating...",
         queueHeading: "Training Queue",
@@ -117,6 +137,13 @@ function TrainPageContent() {
   const [isLogMaximized, setIsLogMaximized] = useState<boolean>(false);
   const [completedTaskIds, setCompletedTaskIds] = useState<Set<number>>(new Set());
   const [createError, setCreateError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const defaults = getTrainingModelDefaults(selectedModelValue);
+    form.setValue("learningRate", defaults.learningRate);
+    form.setValue("steps", defaults.steps);
+    form.setValue("batchSize", defaults.batchSize);
+  }, [form, selectedModelValue]);
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.createTrainingJob,
@@ -240,13 +267,24 @@ function TrainPageContent() {
           <label className="block text-sm">
             <span className="text-muted">{copy.modelLabel}</span>
             <select {...form.register("model")} className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2">
-              <option value="ACT">ACT</option>
-              <option value="DiffusionPolicy">DiffusionPolicy</option>
-              <option value="Pi0">Pi0</option>
-              <option value="Pi0.5">Pi0.5</option>
-              <option value="SmolVLA">SmolVLA</option>
+              {LEROBOT_TRAINING_MODELS.map((model) => (
+                <option key={model.value} value={model.value}>
+                  {model.label}
+                </option>
+              ))}
             </select>
           </label>
+          <div className="rounded-md border border-theme bg-surface/40 p-3 text-xs">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-semibold accent-text">{copy.presetLabel}</span>
+              <span className="text-muted">{selectedModel.requiresTask ? copy.taskRequired : copy.taskOptional}</span>
+            </div>
+            <p className="mt-2 text-muted">{isZh ? selectedModel.description.zh : selectedModel.description.en}</p>
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted">
+              <span className="rounded border border-theme px-2 py-1">{copy.cameraPreset}</span>
+              <span className="rounded border border-theme px-2 py-1">{copy.jointPreset}</span>
+            </div>
+          </div>
           <label className="block text-sm">
             <span className="text-muted">{copy.datasetLabel}</span>
             <input
@@ -259,7 +297,7 @@ function TrainPageContent() {
               <span className="text-muted">{copy.learningRateLabel}</span>
               <input
                 type="number"
-                step="0.0001"
+                step="0.000001"
                 {...form.register("learningRate", { valueAsNumber: true })}
                 className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2"
               />
