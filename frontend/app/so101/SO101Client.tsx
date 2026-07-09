@@ -1095,6 +1095,26 @@ function CheckButton({
   );
 }
 
+function RuntimeUpdateIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M21 12a9 9 0 0 1-15.4 6.4" />
+      <path d="M3 12A9 9 0 0 1 18.4 5.6" />
+      <path d="M18 2v4h-4" />
+      <path d="M6 22v-4h4" />
+    </svg>
+  );
+}
+
 export function SO101Client() {
   const router = useRouter();
   const token = useAuthStore((state) => state.token);
@@ -1109,7 +1129,9 @@ export function SO101Client() {
             builtInLerobot: "内置 LeRobot",
             appVersion: "应用版本",
             buildCommit: "构建提交",
-            buildTime: "构建时间"
+            buildTime: "构建时间",
+            updateRuntime: "更新 LeRobot 环境",
+            updatingRuntime: "正在更新 LeRobot 环境"
           }
         : {
             recorderModeLabel:
@@ -1118,7 +1140,9 @@ export function SO101Client() {
             builtInLerobot: "Built-in LeRobot",
             appVersion: "App version",
             buildCommit: "Build commit",
-            buildTime: "Build time"
+            buildTime: "Build time",
+            updateRuntime: "Update LeRobot runtime",
+            updatingRuntime: "Updating LeRobot runtime"
           },
     [locale]
   );
@@ -1129,6 +1153,7 @@ export function SO101Client() {
   const [actionsOpen, setActionsOpen] = useState(true);
   const [selectedAction, setSelectedAction] = useState<ActionId | null>(null);
   const [uploadPreparing, setUploadPreparing] = useState(false);
+  const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [actionConfigError, setActionConfigError] = useState<ActionConfigError | null>(null);
   const [highlightedField, setHighlightedField] = useState<ConfigFieldId | null>(null);
   const [uploadReview, setUploadReview] = useState<UploadReview | null>(null);
@@ -1363,6 +1388,8 @@ export function SO101Client() {
         appBuildCommit: "unknown",
         appBuildTime: "unknown",
         lerobotVersion: null,
+        bundledLerobotVersion: null,
+        lerobotUpdateAvailable: false,
         apiBaseUrl: "https://robotcloud.conductor-ai.top/api/v1",
         webUrl: "",
         runtimePath: null,
@@ -1378,6 +1405,35 @@ export function SO101Client() {
     }
     setStatus(await window.robotcloudDesktop.status());
   }, []);
+
+  const updateRuntime = useCallback(async () => {
+    const runtimeBridge = window.robotcloudDesktop?.runtime;
+    if (!runtimeBridge?.update) return;
+
+    setRuntimeUpdating(true);
+    setPersistentTerminalState("preparing", null);
+    setPersistentRuntimeProgress({
+      phase: "updating",
+      message: "Updating LeRobot runtime...",
+      command: null,
+      stream: null,
+      output: null,
+      current: null,
+      total: null
+    });
+    const offProgress = runtimeBridge.onProgress?.((event) => setPersistentRuntimeProgress(event));
+    try {
+      await runtimeBridge.update();
+      await refreshStatus();
+      setPersistentRuntimeProgress(null);
+      setPersistentTerminalState("ready", null);
+    } catch (error) {
+      setPersistentTerminalState("failed", messageFromUnknownError(error));
+    } finally {
+      offProgress?.();
+      setRuntimeUpdating(false);
+    }
+  }, [refreshStatus]);
 
   useEffect(() => {
     if (!token || !bridgeReady) return;
@@ -1584,12 +1640,26 @@ export function SO101Client() {
     }
   };
 
+  const runtimeUpdateAvailable = Boolean(
+    status?.lerobotUpdateAvailable &&
+    bridgeReady &&
+    typeof window !== "undefined" &&
+    window.robotcloudDesktop?.runtime?.update
+  );
+  const runtimeDetail = useMemo(() => {
+    const path = status?.runtimeError ?? status?.runtimePath ?? "not found";
+    const versions = [
+      status?.lerobotVersion ? `current ${status.lerobotVersion}` : null,
+      status?.bundledLerobotVersion ? `bundled ${status.bundledLerobotVersion}` : null
+    ].filter(Boolean);
+    return versions.length > 0 ? `${path} · ${versions.join(" · ")}` : path;
+  }, [status]);
   const runtimeStatusCards = useMemo(
     () => [
-      { label: "Runtime", value: status?.runtimeReady ? "ready" : "missing", detail: status?.runtimeError ?? status?.runtimePath ?? "not found" },
-      { label: "Data folder", value: "local", detail: status?.dataDir || "pending" }
+      { key: "runtime", label: "Runtime", value: status?.runtimeReady ? "ready" : "missing", detail: runtimeDetail },
+      { key: "data", label: "Data folder", value: "local", detail: status?.dataDir || "pending" }
     ],
-    [status]
+    [runtimeDetail, status]
   );
   const versionDetails = useMemo(
     () => [
@@ -2091,10 +2161,24 @@ export function SO101Client() {
 
       <section className="grid gap-3 md:grid-cols-2">
         {runtimeStatusCards.map((card) => (
-          <div key={card.label} className="rounded-lg border border-theme bg-card p-4">
+          <div key={card.key} className="rounded-lg border border-theme bg-card p-4">
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs uppercase tracking-wide text-muted">{card.label}</span>
-              <span className="rounded border border-theme px-2 py-0.5 text-xs accent-text">{card.value}</span>
+              <div className="flex items-center gap-2">
+                <span className="rounded border border-theme px-2 py-0.5 text-xs accent-text">{card.value}</span>
+                {card.key === "runtime" && runtimeUpdateAvailable ? (
+                  <button
+                    type="button"
+                    aria-label={runtimeUpdating ? copy.updatingRuntime : copy.updateRuntime}
+                    title={runtimeUpdating ? copy.updatingRuntime : copy.updateRuntime}
+                    onClick={updateRuntime}
+                    disabled={runtimeUpdating}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-theme accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <RuntimeUpdateIcon className={`h-4 w-4 ${runtimeUpdating ? "animate-spin" : ""}`} />
+                  </button>
+                ) : null}
+              </div>
             </div>
             <p className="mt-2 break-all text-xs text-muted">{card.detail}</p>
           </div>

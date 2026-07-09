@@ -400,6 +400,51 @@ describe("SO101 terminal session", () => {
     expect(view.queryByText(/Cloud API/i)).not.toBeInTheDocument();
   });
 
+  it("shows an icon-only runtime update button when the bundled env is newer", async () => {
+    const updateAvailableStatus: DesktopStatus = {
+      ...desktopStatus,
+      lerobotVersion: "0.5.0",
+      bundledLerobotVersion: "0.6.0",
+      lerobotUpdateAvailable: true,
+      runtimeArchivePath: "/runtime/lerobot-env-macos.zip",
+      runtimeArchiveReady: true
+    };
+    let currentStatus = updateAvailableStatus;
+    const status = jest.fn().mockImplementation(() => Promise.resolve(currentStatus));
+    const runtimePrepare = jest.fn().mockResolvedValue({ runtimePath: "/runtime", ready: true });
+    const runtimeUpdate = jest.fn().mockImplementation(() => {
+      currentStatus = {
+        ...updateAvailableStatus,
+        lerobotVersion: "0.6.0",
+        lerobotUpdateAvailable: false
+      };
+      return Promise.resolve({ runtimePath: "/runtime", ready: true });
+    });
+
+    installDesktopBridge({
+      status,
+      runtime: {
+        prepare: runtimePrepare,
+        update: runtimeUpdate,
+        onProgress: jest.fn(() => jest.fn())
+      }
+    });
+
+    const view = render(<SO101Client />);
+
+    const updateButton = await view.findByRole("button", { name: "Update LeRobot runtime" });
+    expect(updateButton).toHaveTextContent("");
+
+    fireEvent.click(updateButton);
+
+    await waitFor(() => {
+      expect(runtimeUpdate).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(view.queryByRole("button", { name: "Update LeRobot runtime" })).not.toBeInTheDocument();
+    });
+  });
+
   it("localizes the LeRobot recorder mode label", async () => {
     useLocaleStore.getState().setLocale("zh");
     installDesktopBridge();

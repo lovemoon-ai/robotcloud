@@ -9,7 +9,7 @@ OUTPUT_ZIP=""
 MICROMAMBA_EXE="${MICROMAMBA_EXE:-}"
 MICROMAMBA_URL=""
 PYTHON_VERSION="3.12"
-LEROBOT_SPEC="lerobot[dataset,viz]==0.6.0"
+LEROBOT_SPEC="lerobot[async,dataset,viz]==0.6.0"
 TORCH_SPEC="torch==2.10.0"
 TORCHVISION_SPEC="torchvision==0.25.0"
 TORCH_INDEX_URL=""
@@ -29,7 +29,7 @@ Options:
   --micromamba-exe PATH       Existing micromamba executable to use.
   --micromamba-url URL        Micromamba archive URL. Defaults to the current macOS CPU architecture.
   --python-version VERSION    Python version. Defaults to 3.12.
-  --lerobot-spec SPEC         LeRobot pip requirement. Defaults to lerobot[dataset,viz]==0.6.0.
+  --lerobot-spec SPEC         LeRobot pip requirement. Defaults to lerobot[async,dataset,viz]==0.6.0.
   --torch-spec SPEC           Torch pip requirement. Defaults to torch==2.10.0.
   --torchvision-spec SPEC     TorchVision pip requirement. Defaults to torchvision==0.25.0.
   --torch-index-url URL       Optional pip index URL for Torch/TorchVision. Defaults to PyPI on macOS.

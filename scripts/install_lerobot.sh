@@ -130,10 +130,10 @@ install_torch() {
 
 install_lerobot() {
   local py="${VENV_DIR}/bin/python"
-  local extras="feetech"
+  local extras="feetech,async"
 
   if [[ "${INSTALL_GAMEPAD_EXTRA}" == "1" ]]; then
-    extras="${extras},gamepad,async"
+    extras="${extras},gamepad"
   fi
 
   pushd "${LEROBOT_DIR}" >/dev/null

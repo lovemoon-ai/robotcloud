@@ -102,9 +102,9 @@ exit /b 0
 
 :install_lerobot
 set "PY=%VENV_DIR%\Scripts\python.exe"
-set "EXTRAS=feetech"
+set "EXTRAS=feetech,async"
 
-if "%INSTALL_GAMEPAD_EXTRA%"=="1" set "EXTRAS=feetech,gamepad"
+if "%INSTALL_GAMEPAD_EXTRA%"=="1" set "EXTRAS=feetech,async,gamepad"
 
 pushd "%LEROBOT_DIR%" >nul
 uv pip install --python "%PY%" -e ".[!EXTRAS!]"
