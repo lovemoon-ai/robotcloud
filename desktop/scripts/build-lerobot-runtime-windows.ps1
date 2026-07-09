@@ -473,12 +473,17 @@ function New-ZipFromDirectoryContents {
         Get-ChildItem -LiteralPath $sourceFull -Recurse -Force -File | ForEach-Object {
             $fileUri = [Uri]$_.FullName
             $relative = [Uri]::UnescapeDataString($sourceUri.MakeRelativeUri($fileUri).ToString())
-            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-                $zip,
-                $_.FullName,
-                $relative,
-                [System.IO.Compression.CompressionLevel]::Optimal
-            ) | Out-Null
+            if ($_.Length -eq 0) {
+                $entry = $zip.CreateEntry($relative, [System.IO.Compression.CompressionLevel]::NoCompression)
+                $entry.LastWriteTime = $_.LastWriteTime
+            } else {
+                [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                    $zip,
+                    $_.FullName,
+                    $relative,
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                ) | Out-Null
+            }
         }
     } finally {
         $zip.Dispose()

@@ -959,6 +959,19 @@ where
             }
         }
 
+        if entry.size() == 0 {
+            File::create(&outpath).map_err(|error| error.to_string())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Some(mode) = entry.unix_mode() {
+                    fs::set_permissions(&outpath, fs::Permissions::from_mode(mode))
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            continue;
+        }
+
         let mut outfile = File::create(&outpath).map_err(|error| error.to_string())?;
         std::io::copy(&mut entry, &mut outfile).map_err(|error| error.to_string())?;
 
@@ -1293,7 +1306,11 @@ where
 }
 
 fn runtime_python_validation_error(python: &Path, runtime: &PathBuf) -> Option<String> {
-    runtime_python_validation_error_from_result(runtime_python_validation_output(python), python, runtime)
+    runtime_python_validation_error_from_result(
+        runtime_python_validation_output(python),
+        python,
+        runtime,
+    )
 }
 
 fn runtime_python_validation_output(python: &Path) -> std::io::Result<std::process::Output> {
@@ -4173,6 +4190,78 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert_eq!(parts[1], runtime.join("Scripts"));
         assert_eq!(parts[2], runtime.join("Library").join("bin"));
         assert_eq!(parts[3], runtime);
+    }
+
+    #[test]
+    fn extracts_malformed_zero_length_zip_entries_as_empty_files() {
+        fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let base = env::temp_dir().join(format!("robotcloud-runtime-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&base).unwrap();
+        let archive_path = base.join("runtime.zip");
+        let target = base.join("lerobot-env");
+        let name = b"empty-file";
+
+        let mut bytes = Vec::new();
+        push_u32(&mut bytes, 0x0403_4b50);
+        push_u16(&mut bytes, 20);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 2);
+        push_u32(&mut bytes, 0);
+        push_u16(&mut bytes, name.len() as u16);
+        push_u16(&mut bytes, 0);
+        bytes.extend_from_slice(name);
+        bytes.extend_from_slice(&[0x03, 0x00]);
+
+        let central_offset = bytes.len() as u32;
+        push_u32(&mut bytes, 0x0201_4b50);
+        push_u16(&mut bytes, 20);
+        push_u16(&mut bytes, 20);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 2);
+        push_u32(&mut bytes, 0);
+        push_u16(&mut bytes, name.len() as u16);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        bytes.extend_from_slice(name);
+
+        let central_size = bytes.len() as u32 - central_offset;
+        push_u32(&mut bytes, 0x0605_4b50);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 1);
+        push_u16(&mut bytes, 1);
+        push_u32(&mut bytes, central_size);
+        push_u32(&mut bytes, central_offset);
+        push_u16(&mut bytes, 0);
+
+        fs::write(&archive_path, bytes).unwrap();
+
+        let mut progress = |_event: RuntimeProgressEvent| {};
+        extract_runtime_archive(&archive_path, &target, &mut progress).unwrap();
+
+        let extracted = target.join("empty-file");
+        assert!(extracted.exists());
+        assert_eq!(fs::metadata(extracted).unwrap().len(), 0);
+
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[cfg(unix)]
