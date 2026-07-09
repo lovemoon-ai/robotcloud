@@ -833,6 +833,10 @@ describe("SO101 terminal session", () => {
     );
     expect(terminalWrite).toHaveBeenLastCalledWith(
       "session-1",
+      expect.stringContaining("--policy_device='cuda'")
+    );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
       expect.stringContaining("--actions_per_chunk=50 --chunk_size_threshold=0.5 --aggregate_fn_name='weighted_average' --debug_visualize_queue_size=True")
     );
   });
@@ -961,6 +965,7 @@ describe("SO101 terminal session", () => {
         task: "Persist across desktop navigation",
         inferServerAddress: "custom-h20:5161",
         inferPolicyType: "pi0fast",
+        inferPolicyDevice: "mps",
         inferPretrainedNameOrPath: "/models/custom",
         inferActionsPerChunk: "25",
         inferChunkSizeThreshold: "0.25",
@@ -981,6 +986,7 @@ describe("SO101 terminal session", () => {
     expect(view.getByLabelText("Episodes")).toHaveValue("6");
     expect(view.getByLabelText("server_address")).toHaveValue("custom-h20:5161");
     expect(view.getByLabelText("policy_type")).toHaveValue("pi0fast");
+    expect(view.getByLabelText("policy_device")).toHaveValue("mps");
     expect(view.getByLabelText("pretrained_name_or_path")).toHaveValue("/models/custom");
     expect(view.getByLabelText("actions_per_chunk")).toHaveValue("25");
     expect(view.getByLabelText("chunk_size_threshold")).toHaveValue("0.25");
@@ -1342,7 +1348,7 @@ describe("SO101 command generation", () => {
         "--server_address='h20.conductor-ai.top:5161' " +
         "--robot.type=so101_follower --robot.port='/dev/tty.usbmodem58FA1019921' --robot.id='so101_follower' " +
         "--robot.cameras='{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, side: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30} }' " +
-        "--task='Put dice into the cup.' --policy_type='pi05' " +
+        "--task='Put dice into the cup.' --policy_type='pi05' --policy_device='cuda' " +
         "--pretrained_name_or_path='backend/storage/train_runs/task_14/checkpoints/last/pretrained_model' " +
         "--actions_per_chunk=50 --chunk_size_threshold=0.5 --aggregate_fn_name='weighted_average' --debug_visualize_queue_size=True"
     );
@@ -1614,6 +1620,7 @@ describe("SO101 command generation", () => {
         task: "Pick persisted cube",
         inferServerAddress: "custom-h20:5161",
         inferPolicyType: "pi0fast",
+        inferPolicyDevice: "mps",
         inferPretrainedNameOrPath: "/models/custom",
         inferActionsPerChunk: "20",
         inferChunkSizeThreshold: "0.25",
@@ -1646,6 +1653,7 @@ describe("SO101 command generation", () => {
       task: "Pick persisted cube",
       inferServerAddress: "custom-h20:5161",
       inferPolicyType: "pi0fast",
+      inferPolicyDevice: "mps",
       inferPretrainedNameOrPath: "/models/custom",
       inferActionsPerChunk: "20",
       inferChunkSizeThreshold: "0.25",

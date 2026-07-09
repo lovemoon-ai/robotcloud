@@ -43,6 +43,7 @@ type FormState = {
   task: string;
   inferServerAddress: string;
   inferPolicyType: string;
+  inferPolicyDevice: string;
   inferPretrainedNameOrPath: string;
   inferActionsPerChunk: string;
   inferChunkSizeThreshold: string;
@@ -95,6 +96,7 @@ type ConfigFieldId =
   | "task"
   | "inferServerAddress"
   | "inferPolicyType"
+  | "inferPolicyDevice"
   | "inferPretrainedNameOrPath"
   | "inferActionsPerChunk"
   | "inferChunkSizeThreshold"
@@ -197,6 +199,7 @@ const initialForm: FormState = {
   task: "",
   inferServerAddress: "h20.conductor-ai.top:5161",
   inferPolicyType: "pi05",
+  inferPolicyDevice: "cuda",
   inferPretrainedNameOrPath: "backend/storage/train_runs/task_14/checkpoints/last/pretrained_model",
   inferActionsPerChunk: "50",
   inferChunkSizeThreshold: "0.5",
@@ -235,6 +238,7 @@ const configFieldIds = new Set<string>([
   "task",
   "inferServerAddress",
   "inferPolicyType",
+  "inferPolicyDevice",
   "inferPretrainedNameOrPath",
   "inferActionsPerChunk",
   "inferChunkSizeThreshold",
@@ -273,6 +277,7 @@ const configFieldByLabel: Record<string, ConfigFieldId> = {
   "Task label": "task",
   "Server address": "inferServerAddress",
   "Policy type": "inferPolicyType",
+  "Policy device": "inferPolicyDevice",
   "Pretrained name or path": "inferPretrainedNameOrPath",
   "Actions per chunk": "inferActionsPerChunk",
   "Chunk size threshold": "inferChunkSizeThreshold",
@@ -569,6 +574,7 @@ export function parseConnectionSettings(raw: string | null) {
       task: typeof parsed.task === "string" ? parsed.task : initialForm.task,
       inferServerAddress: typeof parsed.inferServerAddress === "string" ? parsed.inferServerAddress : initialForm.inferServerAddress,
       inferPolicyType: typeof parsed.inferPolicyType === "string" ? parsed.inferPolicyType : initialForm.inferPolicyType,
+      inferPolicyDevice: typeof parsed.inferPolicyDevice === "string" ? parsed.inferPolicyDevice : initialForm.inferPolicyDevice,
       inferPretrainedNameOrPath: typeof parsed.inferPretrainedNameOrPath === "string" ? parsed.inferPretrainedNameOrPath : initialForm.inferPretrainedNameOrPath,
       inferActionsPerChunk: typeof parsed.inferActionsPerChunk === "string" ? parsed.inferActionsPerChunk : initialForm.inferActionsPerChunk,
       inferChunkSizeThreshold: typeof parsed.inferChunkSizeThreshold === "string" ? parsed.inferChunkSizeThreshold : initialForm.inferChunkSizeThreshold,
@@ -606,6 +612,7 @@ export function serializeConnectionSettings(form: FormState, cameraCount: number
     task: form.task,
     inferServerAddress: form.inferServerAddress,
     inferPolicyType: form.inferPolicyType,
+    inferPolicyDevice: form.inferPolicyDevice,
     inferPretrainedNameOrPath: form.inferPretrainedNameOrPath,
     inferActionsPerChunk: form.inferActionsPerChunk,
     inferChunkSizeThreshold: form.inferChunkSizeThreshold,
@@ -920,6 +927,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         cameraArg,
         `--task=${quote(requireValue(form.task, "Task label"))}`,
         `--policy_type=${quote(requireValue(form.inferPolicyType, "Policy type"))}`,
+        `--policy_device=${quote(requireValue(form.inferPolicyDevice, "Policy device"))}`,
         `--pretrained_name_or_path=${quote(requireValue(form.inferPretrainedNameOrPath, "Pretrained name or path"))}`,
         `--actions_per_chunk=${requireNumericText(form.inferActionsPerChunk, "Actions per chunk", { integer: true, min: 1 })}`,
         `--chunk_size_threshold=${requireNumericText(form.inferChunkSizeThreshold, "Chunk size threshold", { min: 0 })}`,
@@ -2388,6 +2396,17 @@ export function SO101Client() {
                   {...configInputA11y("inferPolicyType")}
                 />
                 {renderConfigFieldError("inferPolicyType")}
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">policy_device</span>
+                <input
+                  ref={registerConfigInput("inferPolicyDevice")}
+                  value={form.inferPolicyDevice}
+                  onChange={(event) => updateField("inferPolicyDevice", event.target.value)}
+                  className={configInputClass("inferPolicyDevice")}
+                  {...configInputA11y("inferPolicyDevice")}
+                />
+                {renderConfigFieldError("inferPolicyDevice")}
               </label>
               <label className="text-sm">
                 <span className="text-muted">pretrained_name_or_path</span>
