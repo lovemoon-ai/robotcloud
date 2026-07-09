@@ -9,6 +9,8 @@ set -euo pipefail
 VENV=$HOME/code/github/lerobot/.venv
 source $VENV/bin/activate
 
+export TQDM_DISABLE=1
+
 if ! command -v lerobot-train >/dev/null 2>&1; then
   echo "Error: lerobot-train not found in PATH" >&2
   exit 127

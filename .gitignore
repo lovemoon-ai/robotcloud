@@ -33,3 +33,6 @@ Makefile
 
 # ignore local lerobot-env
 desktop/src-tauri/resources/runtime/macos/
+
+# gpu-agent logs
+logs/
