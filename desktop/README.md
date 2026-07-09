@@ -146,11 +146,11 @@ episode ends when the current 6-joint pose remains stationary for 3 seconds;
 the standalone **Save pose** action records a specific 6-joint pose to
 `saved_poses/<robot-id>.json` for later inspection or manual workflows.
 
-Before a recorded dataset is packaged for upload, the workbench asks the desktop
-bridge to inspect the local LeRobot dataset. The review dialog shows file count,
-episode count, frames, FPS, size, and duration, and blocks upload when no
-episode is present or the recorded duration is below the minimum accepted
-length.
+When **Upload** is clicked, the workbench writes a `robotcloud-prepare-upload`
+command into the embedded terminal instead of invoking packaging work from the
+webview. The desktop shell intercepts that terminal command, validates the local
+LeRobot dataset, creates the zip on a background thread, writes the prepared
+upload state, and emits a success or failure event back to the page.
 
 Runtime zips are build artifacts and are intentionally ignored by Git because
 they exceed normal repository size limits. The Windows packaging script can
@@ -197,6 +197,8 @@ window.robotcloudDesktop.status()
 window.robotcloudDesktop.so101.run({ action: "info" })
 window.robotcloudDesktop.so101.stop(runId)
 window.robotcloudDesktop.dataset.inspectUpload({ datasetRoot, datasetRepoId })
+window.robotcloudDesktop.dataset.onPreparedUpload((prepared) => {})
+window.robotcloudDesktop.dataset.onPrepareUploadError((event) => {})
 window.robotcloudDesktop.terminal.start()
 window.robotcloudDesktop.terminal.write(sessionId, "lerobot-info\r\n")
 ```

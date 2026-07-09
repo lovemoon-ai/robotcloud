@@ -74,6 +74,10 @@ type PreparedDatasetUpload = {
   stats?: DatasetUploadInspection;
 };
 
+type DatasetPrepareUploadErrorEvent = {
+  message: string;
+};
+
 type DesktopAuthSession = {
   token: string;
   userId: number;
@@ -157,6 +161,8 @@ type DesktopBridge = {
     setPreparedUpload?: (prepared: PreparedDatasetUpload) => Promise<void>;
     clearPreparedUpload?: () => Promise<void>;
     readPreparedUpload: (filePath: string) => Promise<ArrayBuffer>;
+    onPreparedUpload?: (callback: (prepared: PreparedDatasetUpload) => void) => () => void;
+    onPrepareUploadError?: (callback: (event: DatasetPrepareUploadErrorEvent) => void) => () => void;
   };
   auth?: {
     getSession: () => Promise<DesktopAuthSession | null>;
