@@ -53,6 +53,33 @@ function normalizeLogContent(content: string) {
   return content.replace(/\r(?!\n)/g, "\n");
 }
 
+// tqdm-style progress bars (e.g. "Training:  89%|████▉ | 17863/20000 [1:22:35<09:08, 3.90step/s]")
+// are emitted many times per second and, once their carriage returns are turned
+// into newlines, flood the log with near-identical lines. Detect such lines so we
+// can keep only the most recent snapshot of each contiguous run.
+const TQDM_PROGRESS_RE = /\d{1,3}%\s*\|/;
+
+// Collapse consecutive tqdm progress lines, keeping only the last line of each run.
+// Non-progress lines (and progress bars separated by other output) are preserved,
+// so a final "100%" bar still remains visible.
+function collapseProgressLines(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (
+      TQDM_PROGRESS_RE.test(line) &&
+      lines[i + 1] !== undefined &&
+      TQDM_PROGRESS_RE.test(lines[i + 1])
+    ) {
+      // A later progress line supersedes this one; drop this intermediate snapshot.
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
 function TrainPageContent() {
   const locale = useLocaleStore((state) => state.locale);
   const theme = useThemeStore((state) => state.theme);
@@ -349,7 +376,7 @@ function TrainPageContent() {
           const rawContent = chunk.content || "";
           const newContent = normalizeLogContent(rawContent);
           if (newContent) {
-            setLogBuffer((prev) => prev + newContent);
+            setLogBuffer((prev) => collapseProgressLines(prev + newContent));
           }
 
           logOffsetRef.current = chunk.nextOffset;
