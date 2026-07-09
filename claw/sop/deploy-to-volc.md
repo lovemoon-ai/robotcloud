@@ -103,7 +103,7 @@ ssh -i "$SSH_KEY" "$SERVER" '
   sed -i "s|^NEXT_PUBLIC_API_BASE_URL=.*|NEXT_PUBLIC_API_BASE_URL=https://robotcloud.conductor-ai.top/api/v1|" .env
   sed -i "s|^PUBLIC_FRONTEND_ORIGIN=.*|PUBLIC_FRONTEND_ORIGIN=https://robotcloud.conductor-ai.top|" .env
   sed -i "s|^DJANGO_ALLOWED_HOSTS=.*|DJANGO_ALLOWED_HOSTS=robotcloud.conductor-ai.top,localhost,127.0.0.1,$SERVER_IP|" .env
-  sed -i "s|^DJANGO_CORS_ALLOWED_ORIGINS=.*|DJANGO_CORS_ALLOWED_ORIGINS=https://robotcloud.conductor-ai.top,http://robotcloud.conductor-ai.top|" .env
+  sed -i "s|^DJANGO_CORS_ALLOWED_ORIGINS=.*|DJANGO_CORS_ALLOWED_ORIGINS=https://robotcloud.conductor-ai.top,http://robotcloud.conductor-ai.top,tauri://localhost,http://tauri.localhost,https://tauri.localhost,app://local|" .env
   sed -i "s|^DJANGO_DEBUG=.*|DJANGO_DEBUG=false|" .env
   grep -q "^USE_SQLITE=" .env || printf "USE_SQLITE=1\n" >> .env
   sed -i "s|^USE_SQLITE=.*|USE_SQLITE=1|" .env

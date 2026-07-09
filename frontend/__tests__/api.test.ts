@@ -1,5 +1,5 @@
 import { waitFor } from "@testing-library/react";
-import { robotCloudApi } from "@/api/client";
+import { resetRobotCloudApiBaseUrl, robotCloudApi, setRobotCloudApiBaseUrl } from "@/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
 import {
   AdminUser,
@@ -122,6 +122,7 @@ describe("robotCloudApi", () => {
 
   afterEach(() => {
     global.fetch = originalFetch as typeof fetch;
+    resetRobotCloudApiBaseUrl();
     useAuthStore.getState().reset();
     localStorage.clear();
     lastXhr = null;
@@ -1017,6 +1018,30 @@ describe("robotCloudApi", () => {
         startedAt: "2024-01-01T00:00:05Z"
       }
     ]);
+  });
+
+  it("uses a runtime API base override for desktop requests", async () => {
+    setAuthenticatedUser();
+    setRobotCloudApiBaseUrl("http://127.0.0.1:8000/api/v1/");
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({ code: 0, data: { items: [], total: 0 } })
+    } as unknown as Response);
+
+    await robotCloudApi.fetchInferenceJobs();
+
+    const [url] = mockedFetch.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8000/api/v1/inference/list?page=1&size=20");
+  });
+
+  it("reports the API base when a network request fails", async () => {
+    setAuthenticatedUser();
+    mockedFetch.mockRejectedValueOnce(new TypeError("Load failed"));
+
+    await expect(robotCloudApi.fetchInferenceJobs()).rejects.toThrow(
+      `Cannot reach RobotCloud API at ${API_BASE}: Load failed`
+    );
   });
 
   it("runInference posts model id only", async () => {

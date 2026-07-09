@@ -38,7 +38,7 @@ const runtimeConfig: RuntimeConfig | undefined = (() => {
 })();
 
 const RAW_API_BASE = runtimeConfig?.publicRuntimeConfig?.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
-const API_BASE = RAW_API_BASE.replace(/\/$/, "");
+const CONFIGURED_API_BASE = RAW_API_BASE.replace(/\/$/, "");
 const DEVICE_ID_STORAGE_KEY = "robotcloud-device-id";
 export const PI05_BASE_MODEL = "lerobot/pi05_base";
 export const PI05_DEFAULT_LEARNING_RATE = 0.000025;
@@ -128,6 +128,21 @@ interface ApiResponse<T> {
   code: number;
   message?: string;
   data: T;
+}
+
+let apiBaseOverride: string | null = null;
+
+export function setRobotCloudApiBaseUrl(apiBaseUrl: string | null | undefined) {
+  const normalized = apiBaseUrl?.trim().replace(/\/$/, "");
+  apiBaseOverride = normalized || null;
+}
+
+export function resetRobotCloudApiBaseUrl() {
+  apiBaseOverride = null;
+}
+
+export function getRobotCloudApiBaseUrl() {
+  return apiBaseOverride ?? CONFIGURED_API_BASE;
 }
 
 type BackendDataset = {
@@ -330,6 +345,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = useAuthStore.getState().token;
   const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
   const headers = new Headers(init?.headers ?? {});
+  const apiBase = getRobotCloudApiBaseUrl();
 
   if (!isFormData && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -338,10 +354,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase}${path}`, {
+      ...init,
+      headers
+    });
+  } catch (error) {
+    const message = error instanceof Error && error.message ? error.message : "network request failed";
+    throw new Error(`Cannot reach RobotCloud API at ${apiBase}: ${message}`);
+  }
 
   if (!response.ok) {
     const raw = await response.text();
