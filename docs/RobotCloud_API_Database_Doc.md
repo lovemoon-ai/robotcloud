@@ -22,7 +22,7 @@
 -   **分页参数**：`?page=1&size=20`
 -   **认证方式**：JWT Token (`Authorization: Bearer <token>`)
 -   **权限验证**：基于用户等级（free / plus / pro）
--   **跨域配置**：默认允许 `http://localhost:3000` / `http://127.0.0.1:3000`，如需调整可设置环境变量 `DJANGO_CORS_ALLOWED_ORIGINS`
+-   **跨域配置**：默认允许 `http://localhost:3000` / `http://127.0.0.1:3000` 以及 RobotCloud Desktop 本地 origin（`tauri://localhost`、`http://tauri.localhost`、`https://tauri.localhost`、`app://local`）；如需调整可设置环境变量 `DJANGO_CORS_ALLOWED_ORIGINS`
 
 ------------------------------------------------------------------------
 

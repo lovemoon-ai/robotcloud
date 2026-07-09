@@ -39,6 +39,19 @@ def _split_env_list(value: str | None) -> list[str]:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
 
+
+DEFAULT_CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+DESKTOP_CORS_ALLOWED_ORIGINS = [
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "app://local",
+]
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -141,10 +154,8 @@ SESSION_CACHE_ALIAS = "default"
 if _env_flag("DJANGO_CORS_ALLOW_ALL"):
     CORS_ALLOW_ALL_ORIGINS = True
 else:
-    CORS_ALLOWED_ORIGINS = _split_env_list(os.getenv("DJANGO_CORS_ALLOWED_ORIGINS")) or [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+    _configured_cors_origins = _split_env_list(os.getenv("DJANGO_CORS_ALLOWED_ORIGINS")) or DEFAULT_CORS_ALLOWED_ORIGINS
+    CORS_ALLOWED_ORIGINS = list(dict.fromkeys([*_configured_cors_origins, *DESKTOP_CORS_ALLOWED_ORIGINS]))
 
 CORS_ALLOW_CREDENTIALS = True
 
