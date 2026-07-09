@@ -55,6 +55,9 @@ type SO101ConnectionState = {
   cameraCount: number;
   raw: string | null;
 };
+type PendingDatasetUpload = DatasetPrepareUploadConfig & {
+  createdAt: number;
+};
 
 type TerminalPhase = "preparing" | "starting" | "ready" | "failed" | "closed";
 type CheckPhase = "idle" | "checking" | "valid" | "invalid";
@@ -114,12 +117,6 @@ type TerminalStoreSnapshot = {
   runtimeProgress: RuntimeProgressEvent | null;
   runtimeProgressLog: string[];
 };
-type UploadReview = {
-  datasetRepoId: string;
-  datasetRoot: string;
-  stats: DatasetUploadInspection;
-  issues: string[];
-};
 type ActionId =
   | "info"
   | "find-port"
@@ -135,6 +132,8 @@ type ActionId =
 type ShellDialect = "posix" | "powershell";
 
 const CONNECTION_STORAGE_KEY = "robotcloud-so101-connection";
+const DATASET_UPLOAD_PENDING_STORAGE_KEY = "robotcloud:so101-upload-pending";
+const DATASET_UPLOAD_PENDING_TTL_MS = 6 * 60 * 60 * 1000;
 const CONNECTION_STORAGE_VERSION = 5;
 const DEFAULT_CAMERA_COUNT = 1;
 const DEFAULT_MAX_RELATIVE_TARGET = 5;
@@ -146,6 +145,7 @@ const MIN_UPLOAD_EPISODES = 1;
 const MIN_UPLOAD_DURATION_SECONDS = 1;
 const CLEAR_CURRENT_TERMINAL_INPUT = "\x01\x0b";
 const RUNTIME_UPDATE_COMMAND = "robotcloud-runtime-update";
+const PREPARE_UPLOAD_COMMAND = "robotcloud-prepare-upload";
 const numericTextInputProps = {
   type: "text",
   inputMode: "numeric"
@@ -315,6 +315,15 @@ export function shellArg(value: string, dialect: ShellDialect = "posix") {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function encodeUploadCommandPayload(config: DatasetPrepareUploadConfig) {
+  return encodeURIComponent(JSON.stringify(config));
+}
+
+export function buildPrepareUploadCommand(config: DatasetPrepareUploadConfig, status: DesktopStatus | null) {
+  const dialect = shellDialect(status);
+  return `${PREPARE_UPLOAD_COMMAND} ${shellArg(encodeUploadCommandPayload(config), dialect)}`;
+}
+
 function cameraRef(value: string) {
   const trimmed = value.trim();
   if (/^\d+$/.test(trimmed)) return trimmed;
@@ -431,26 +440,6 @@ export function resolvedDatasetRoot(form: FormState, status: DesktopStatus | nul
 
 function finiteNumber(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value);
-}
-
-function formatBytes(value: number) {
-  if (!Number.isFinite(value) || value <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let cursor = value;
-  let unitIndex = 0;
-  while (cursor >= 1024 && unitIndex < units.length - 1) {
-    cursor /= 1024;
-    unitIndex += 1;
-  }
-  return `${cursor >= 10 || unitIndex === 0 ? cursor.toFixed(0) : cursor.toFixed(1)} ${units[unitIndex]}`;
-}
-
-function formatDuration(seconds: number | null | undefined) {
-  if (!finiteNumber(seconds)) return "Unknown";
-  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = Math.round(seconds % 60).toString().padStart(2, "0");
-  return `${minutes}:${remainingSeconds}`;
 }
 
 function versionText(value: string | null | undefined) {
@@ -658,6 +647,55 @@ async function readDesktopConnectionSettings(bridge: DesktopBridge) {
 
 function writeDesktopConnectionSettings(raw: string) {
   window.robotcloudDesktop?.so101.setSettings?.(raw).catch(() => undefined);
+}
+
+function parsePendingDatasetUpload(raw: string | null): PendingDatasetUpload | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingDatasetUpload>;
+    if (
+      typeof parsed.datasetRoot !== "string" ||
+      typeof parsed.datasetRepoId !== "string" ||
+      typeof parsed.createdAt !== "number" ||
+      !Number.isFinite(parsed.createdAt)
+    ) {
+      return null;
+    }
+    const ageMs = Date.now() - parsed.createdAt;
+    if (ageMs < 0 || ageMs > DATASET_UPLOAD_PENDING_TTL_MS) {
+      return null;
+    }
+    return {
+      datasetRoot: parsed.datasetRoot,
+      datasetRepoId: parsed.datasetRepoId,
+      task: typeof parsed.task === "string" ? parsed.task : undefined,
+      createdAt: parsed.createdAt
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readPendingDatasetUpload(): PendingDatasetUpload | null {
+  if (typeof window === "undefined" || typeof sessionStorage === "undefined") return null;
+  const pending = parsePendingDatasetUpload(sessionStorage.getItem(DATASET_UPLOAD_PENDING_STORAGE_KEY));
+  if (!pending) {
+    sessionStorage.removeItem(DATASET_UPLOAD_PENDING_STORAGE_KEY);
+  }
+  return pending;
+}
+
+function writePendingDatasetUpload(config: DatasetPrepareUploadConfig): void {
+  if (typeof sessionStorage === "undefined") return;
+  sessionStorage.setItem(DATASET_UPLOAD_PENDING_STORAGE_KEY, JSON.stringify({
+    ...config,
+    createdAt: Date.now()
+  }));
+}
+
+function clearPendingDatasetUpload(): void {
+  if (typeof sessionStorage === "undefined") return;
+  sessionStorage.removeItem(DATASET_UPLOAD_PENDING_STORAGE_KEY);
 }
 
 function cameraConfigValue(form: FormState, cameraCount: number, required = false) {
@@ -899,8 +937,10 @@ export const so101TestExports = {
   removeCameraAtIndex,
   resolvedDatasetRoot,
   buildActionCommand,
+  buildPrepareUploadCommand,
   CLEAR_CURRENT_TERMINAL_INPUT,
   RUNTIME_UPDATE_COMMAND,
+  PREPARE_UPLOAD_COMMAND,
   datasetUploadValidationIssues,
   shellArg,
   resetPersistentTerminalForTest
@@ -1290,17 +1330,17 @@ export function SO101Client() {
   const [connectionLoaded, setConnectionLoaded] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(true);
   const [selectedAction, setSelectedAction] = useState<ActionId | null>(null);
-  const [uploadPreparing, setUploadPreparing] = useState(false);
+  const [uploadPreparing, setUploadPreparing] = useState(() => Boolean(readPendingDatasetUpload()));
   const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [actionConfigError, setActionConfigError] = useState<ActionConfigError | null>(null);
   const [highlightedField, setHighlightedField] = useState<ConfigFieldId | null>(null);
-  const [uploadReview, setUploadReview] = useState<UploadReview | null>(null);
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [terminalState, setTerminalState] = useState<TerminalStoreSnapshot>(() => persistentTerminalSnapshot());
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
   const configInputRefs = useRef<Partial<Record<ConfigFieldId, HTMLInputElement | null>>>({});
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runtimeUpdateProgressOffRef = useRef<(() => void) | null>(null);
+  const uploadCommandPendingRef = useRef(uploadPreparing);
   const [portChecks, setPortChecks] = useState<Record<PortKey, CheckState>>({
     followerPort: idleCheck,
     leaderPort: idleCheck
@@ -1626,6 +1666,65 @@ export function SO101Client() {
     };
   }, [bridgeReady, refreshStatus, terminalContainerEl, token]);
 
+  const finishPreparedDatasetUpload = useCallback((prepared: PreparedDatasetUpload) => {
+    if (!uploadCommandPendingRef.current && !readPendingDatasetUpload()) return;
+    uploadCommandPendingRef.current = false;
+    clearPendingDatasetUpload();
+    setUploadPreparing(false);
+    setPersistentTerminalError(null);
+    void writePreparedDatasetUpload(prepared)
+      .then(() => {
+        if (isLocalDesktopFrontend()) {
+          navigateToCloudPath("/datasets?source=so101");
+        } else {
+          router.push("/datasets?source=so101");
+        }
+      })
+      .catch((error) => {
+        setPersistentTerminalError(messageFromUnknownError(error));
+      });
+  }, [router]);
+
+  useEffect(() => {
+    if (!token || !bridgeReady) return;
+    const datasetBridge = window.robotcloudDesktop?.dataset;
+    const onPreparedUpload = datasetBridge?.onPreparedUpload;
+    const onPrepareUploadError = datasetBridge?.onPrepareUploadError;
+    if (!onPreparedUpload || !onPrepareUploadError) return;
+
+    let cancelled = false;
+    const pendingUpload = readPendingDatasetUpload();
+    uploadCommandPendingRef.current = Boolean(pendingUpload);
+    if (pendingUpload) {
+      setUploadPreparing(true);
+      datasetBridge.getPreparedUpload?.()
+        .then((prepared) => {
+          if (!cancelled && prepared) {
+            finishPreparedDatasetUpload(prepared);
+          }
+        })
+        .catch(() => undefined);
+    }
+
+    const offPreparedUpload = onPreparedUpload((prepared) => {
+      finishPreparedDatasetUpload(prepared);
+    });
+
+    const offPrepareUploadError = onPrepareUploadError((event) => {
+      if (!uploadCommandPendingRef.current && !readPendingDatasetUpload()) return;
+      uploadCommandPendingRef.current = false;
+      clearPendingDatasetUpload();
+      setUploadPreparing(false);
+      setPersistentTerminalError(event.message);
+    });
+
+    return () => {
+      cancelled = true;
+      offPreparedUpload();
+      offPrepareUploadError();
+    };
+  }, [bridgeReady, finishPreparedDatasetUpload, token]);
+
   const writeActionCommand = useCallback(async (
     action: ActionId,
     options: { force?: boolean; formOverride?: FormState } = {}
@@ -1689,61 +1788,34 @@ export function SO101Client() {
     };
   }, [selectedAction, terminalPhase, writeActionCommand]);
 
-  const requestDatasetUploadReview = async () => {
+  const startDatasetUploadFromTerminal = async () => {
     try {
-      if (!window.robotcloudDesktop?.dataset) {
+      const datasetBridge = window.robotcloudDesktop?.dataset;
+      if (!datasetBridge) {
         throw new Error("Desktop dataset bridge is not ready.");
       }
-      const inspectUpload = window.robotcloudDesktop.dataset.inspectUpload;
-      if (!inspectUpload) {
-        throw new Error("Desktop app needs to be updated before upload validation is available.");
+      if (!datasetBridge.onPreparedUpload || !datasetBridge.onPrepareUploadError) {
+        throw new Error("Desktop app needs to be updated before terminal upload is available.");
       }
       const datasetRepoId = requireValue(form.datasetRepoId, "Dataset repo id");
       const datasetRoot = requireValue(resolvedDatasetRoot(form, status), "Dataset root");
       setUploadPreparing(true);
       setActionConfigError(null);
       setPersistentTerminalError(null);
-      const stats = await inspectUpload({
+      const uploadConfig = {
         datasetRoot,
-        datasetRepoId
-      });
-      setUploadReview({
         datasetRepoId,
-        datasetRoot: stats.datasetRoot || datasetRoot,
-        stats,
-        issues: datasetUploadValidationIssues(stats)
-      });
-    } catch (error) {
-      setPersistentTerminalError(messageFromUnknownError(error));
-    } finally {
-      setUploadPreparing(false);
-    }
-  };
-
-  const prepareDatasetUpload = async () => {
-    if (!uploadReview || uploadReview.issues.length > 0) return;
-    try {
-      if (!window.robotcloudDesktop?.dataset) {
-        throw new Error("Desktop dataset bridge is not ready.");
-      }
-      setUploadPreparing(true);
-      setPersistentTerminalError(null);
-      const prepared = await window.robotcloudDesktop.dataset.prepareUpload({
-        datasetRoot: uploadReview.datasetRoot,
-        datasetRepoId: uploadReview.datasetRepoId,
         task: form.task
-      });
-      await writePreparedDatasetUpload(prepared);
-      if (isLocalDesktopFrontend()) {
-        navigateToCloudPath("/datasets?source=so101");
-      } else {
-        router.push("/datasets?source=so101");
-      }
+      };
+      writePendingDatasetUpload(uploadConfig);
+      uploadCommandPendingRef.current = true;
+      await writeTerminalCommand(buildPrepareUploadCommand(uploadConfig, status), { focusTerminal: true, submit: true });
     } catch (error) {
+      uploadCommandPendingRef.current = false;
+      clearPendingDatasetUpload();
+      setUploadPreparing(false);
       if (handleConfigValidationError(error)) return;
       setPersistentTerminalError(messageFromUnknownError(error));
-    } finally {
-      setUploadPreparing(false);
     }
   };
 
@@ -2277,11 +2349,11 @@ export function SO101Client() {
             <div className="mt-4 flex justify-end">
               <button
                 type="button"
-                onClick={requestDatasetUploadReview}
-                disabled={uploadPreparing}
+                onClick={startDatasetUploadFromTerminal}
+                disabled={uploadPreparing || terminalPhase !== "ready"}
                 className="rounded-md gradient-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {uploadPreparing ? "Checking..." : "Upload"}
+                {uploadPreparing ? "Packaging..." : "Upload"}
               </button>
             </div>
           </section>
@@ -2362,90 +2434,6 @@ export function SO101Client() {
             </div>
           </section>
       </section>
-
-      {uploadReview ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="upload-review-title"
-            className="w-full max-w-lg rounded-lg border border-theme bg-card p-5 shadow-xl"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 id="upload-review-title" className="text-lg font-semibold accent-text">Recording upload review</h2>
-                <p className="mt-1 break-all text-xs text-muted">{uploadReview.datasetRoot}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setUploadReview(null)}
-                aria-label="Close upload review"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg"
-              >
-                ×
-              </button>
-            </div>
-
-            <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">Episodes</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{uploadReview.stats.episodeCount}</dd>
-              </div>
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">Duration</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{formatDuration(uploadReview.stats.durationSeconds)}</dd>
-              </div>
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">Files</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{uploadReview.stats.fileCount}</dd>
-              </div>
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">Size</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{formatBytes(uploadReview.stats.totalBytes)}</dd>
-              </div>
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">Frames</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{finiteNumber(uploadReview.stats.totalFrames) ? uploadReview.stats.totalFrames : "Unknown"}</dd>
-              </div>
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">FPS</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{finiteNumber(uploadReview.stats.fps) ? uploadReview.stats.fps : "Unknown"}</dd>
-              </div>
-            </dl>
-
-            {uploadReview.issues.length ? (
-              <div className="mt-4 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
-                <p className="font-semibold">Upload blocked</p>
-                <ul className="mt-2 list-disc space-y-1 pl-5">
-                  {uploadReview.issues.map((issue) => (
-                    <li key={issue}>{issue}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p className="mt-4 rounded-md border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-300">Ready to upload.</p>
-            )}
-
-            <div className="mt-5 flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setUploadReview(null)}
-                className="rounded-md border border-theme px-4 py-2 text-sm font-semibold accent-text transition hover:accent-bg"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={prepareDatasetUpload}
-                disabled={uploadPreparing || uploadReview.issues.length > 0}
-                className="rounded-md gradient-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {uploadPreparing ? "Packaging..." : "Upload"}
-              </button>
-            </div>
-          </section>
-        </div>
-      ) : null}
 
       <section className="grid gap-3 md:grid-cols-2">
         {runtimeStatusCards.map((card) => (

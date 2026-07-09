@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { AppChrome } from "@/components/AppChrome";
+import { resetDesktopBridgeAvailabilityForTest } from "@/hooks/useDesktopBridgeAvailable";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
 
@@ -44,6 +45,7 @@ describe("AppChrome shell", () => {
       expireAt: null
     });
     useLocaleStore.getState().reset();
+    resetDesktopBridgeAvailabilityForTest();
     mockPathname = "/dashboard";
     delete window.robotcloudDesktop;
     window.localStorage.removeItem("robotcloud-sidebar-collapsed");

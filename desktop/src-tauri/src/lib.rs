@@ -32,6 +32,11 @@ const RUNTIME_READY_MARKER_VERSION: &str = "5";
 const WINDOWS_SHIMS_MARKER_VERSION: &str = "3";
 const RUNTIME_IMPORT_CHECK: &str = "import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk";
 const RUNTIME_UPDATE_TERMINAL_COMMAND: &str = "robotcloud-runtime-update";
+const PREPARE_UPLOAD_TERMINAL_COMMAND: &str = "robotcloud-prepare-upload";
+const PREPARE_UPLOAD_TERMINAL_BODY_PREFIX: &str = "robotcloud-prepare-upload:";
+const TERMINAL_CONTROL_PREFIX: &str = "\x1b]777;";
+const TERMINAL_CONTROL_END: &str = "\x07";
+const TERMINAL_CONTROL_MAX_BODY_BYTES: usize = 64 * 1024;
 // The terminal command emits this OSC marker; the PTY reader strips it and runs
 // the Rust updater in the background so the webview never awaits extraction.
 const RUNTIME_UPDATE_TERMINAL_CONTROL: &str = "\x1b]777;robotcloud-runtime-update\x07";
@@ -78,7 +83,9 @@ const DEFAULT_BRIDGE_SCRIPT: &str = r#"
         getPreparedUpload: function () { return core.invoke("dataset_get_prepared_upload"); },
         setPreparedUpload: function (prepared) { return core.invoke("dataset_set_prepared_upload", { prepared: prepared }); },
         clearPreparedUpload: function () { return core.invoke("dataset_clear_prepared_upload"); },
-        readPreparedUpload: function (filePath) { return core.invoke("dataset_read_prepared_upload", { filePath: filePath }); }
+        readPreparedUpload: function (filePath) { return core.invoke("dataset_read_prepared_upload", { filePath: filePath }); },
+        onPreparedUpload: function (callback) { return listen("dataset-upload-prepared", callback); },
+        onPrepareUploadError: function (callback) { return listen("dataset-upload-failed", callback); }
       },
       auth: {
         getSession: function () { return core.invoke("desktop_get_auth_session"); },
@@ -203,7 +210,9 @@ const WINDOWS_BRIDGE_SCRIPT: &str = r#"
         getPreparedUpload: function () { return invoke("dataset_get_prepared_upload"); },
         setPreparedUpload: function (prepared) { return invoke("dataset_set_prepared_upload", { prepared: prepared }); },
         clearPreparedUpload: function () { return invoke("dataset_clear_prepared_upload"); },
-        readPreparedUpload: function (filePath) { return invoke("dataset_read_prepared_upload", { filePath: filePath }); }
+        readPreparedUpload: function (filePath) { return invoke("dataset_read_prepared_upload", { filePath: filePath }); },
+        onPreparedUpload: function (callback) { return listen("dataset-upload-prepared", callback); },
+        onPrepareUploadError: function (callback) { return listen("dataset-upload-failed", callback); }
       },
       auth: {
         getSession: function () { return invoke("desktop_get_auth_session"); },
@@ -444,6 +453,12 @@ struct DatasetUploadInspection {
     fps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     duration_seconds: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DatasetUploadFailedEvent {
+    message: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2076,6 +2091,7 @@ fn terminal_startup_script() -> &'static [u8] {
             "$env:Path = \"$env:ROBOTCLOUD_LEROBOT_ENV\\robotcloud-shims;$env:ROBOTCLOUD_LEROBOT_ENV\\Scripts;$env:ROBOTCLOUD_LEROBOT_ENV\\Library\\bin;$env:ROBOTCLOUD_LEROBOT_ENV;$env:Path\"\r\n",
             "$env:PYTHONNOUSERSITE = \"1\"\r\n",
             "function robotcloud-runtime-update { [Console]::Write(\"\x1b]777;robotcloud-runtime-update\x07\") }\r\n",
+            "function robotcloud-prepare-upload { param([string]$Payload) [Console]::Write(\"\x1b]777;robotcloud-prepare-upload:$Payload\x07\") }\r\n",
             "Write-Host \"RobotCloud LeRobot runtime: $env:ROBOTCLOUD_LEROBOT_ENV\"\r\n",
         )
         .as_bytes()
@@ -2085,6 +2101,7 @@ fn terminal_startup_script() -> &'static [u8] {
             "export PATH=\"$ROBOTCLOUD_LEROBOT_ENV/bin:$PATH\"\n",
             "export PYTHONNOUSERSITE=1\n",
             "alias robotcloud-runtime-update='printf \"\\033]777;robotcloud-runtime-update\\007\"'\n",
+            "robotcloud-prepare-upload() { printf '\\033]777;robotcloud-prepare-upload:%s\\007' \"$1\"; }\n",
             "hash -r 2>/dev/null || true\n",
             "printf \"RobotCloud LeRobot runtime: %s\\n\" \"$ROBOTCLOUD_LEROBOT_ENV\"\n",
         )
@@ -2592,8 +2609,14 @@ fn emit_terminal_output(
     );
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum TerminalControlRequest {
+    RuntimeUpdate,
+    PrepareUpload(String),
+}
+
 fn terminal_control_suffix_len(data: &str) -> usize {
-    let marker = RUNTIME_UPDATE_TERMINAL_CONTROL.as_bytes();
+    let marker = TERMINAL_CONTROL_PREFIX.as_bytes();
     let bytes = data.as_bytes();
     let max_len = marker.len().min(bytes.len());
     for len in (1..=max_len).rev() {
@@ -2605,29 +2628,79 @@ fn terminal_control_suffix_len(data: &str) -> usize {
     0
 }
 
-fn consume_terminal_control_sequences(pending: &mut String, data: &str) -> (String, usize) {
+fn terminal_control_request(body: &str) -> Option<TerminalControlRequest> {
+    if body == RUNTIME_UPDATE_TERMINAL_COMMAND {
+        return Some(TerminalControlRequest::RuntimeUpdate);
+    }
+    let payload = body.strip_prefix(PREPARE_UPLOAD_TERMINAL_BODY_PREFIX)?;
+    if payload.len() > TERMINAL_CONTROL_MAX_BODY_BYTES {
+        return None;
+    }
+    Some(TerminalControlRequest::PrepareUpload(payload.to_string()))
+}
+
+fn should_buffer_terminal_control_fragment(body_fragment: &str) -> bool {
+    if body_fragment.len()
+        > PREPARE_UPLOAD_TERMINAL_BODY_PREFIX.len() + TERMINAL_CONTROL_MAX_BODY_BYTES
+    {
+        return false;
+    }
+    RUNTIME_UPDATE_TERMINAL_COMMAND.starts_with(body_fragment)
+        || PREPARE_UPLOAD_TERMINAL_BODY_PREFIX.starts_with(body_fragment)
+        || body_fragment.starts_with(PREPARE_UPLOAD_TERMINAL_BODY_PREFIX)
+}
+
+fn visible_terminal_control_fragment(fragment: &str) -> String {
+    fragment.replace('\x1b', "^[").replace('\x07', "^G")
+}
+
+fn consume_terminal_control_sequences(
+    pending: &mut String,
+    data: &str,
+) -> (String, Vec<TerminalControlRequest>) {
     pending.push_str(data);
-    let marker_len = RUNTIME_UPDATE_TERMINAL_CONTROL.len();
     let mut content = std::mem::take(pending);
     let mut visible = String::new();
-    let mut runtime_update_requests = 0;
+    let mut requests = Vec::new();
 
-    while let Some(index) = content.find(RUNTIME_UPDATE_TERMINAL_CONTROL) {
+    loop {
+        let Some(index) = content.find(TERMINAL_CONTROL_PREFIX) else {
+            let suffix_len = terminal_control_suffix_len(&content);
+            if suffix_len > 0 {
+                let visible_len = content.len() - suffix_len;
+                visible.push_str(&content[..visible_len]);
+                pending.push_str(&content[visible_len..]);
+            } else {
+                visible.push_str(&content);
+            }
+            break;
+        };
+
         visible.push_str(&content[..index]);
-        runtime_update_requests += 1;
-        content = content[index + marker_len..].to_string();
+        let body_start = index + TERMINAL_CONTROL_PREFIX.len();
+        let Some(body_end_offset) = content[body_start..].find(TERMINAL_CONTROL_END) else {
+            let body_fragment = &content[body_start..];
+            if should_buffer_terminal_control_fragment(body_fragment) {
+                pending.push_str(&content[index..]);
+            } else {
+                visible.push_str(&visible_terminal_control_fragment(&content[index..]));
+            }
+            break;
+        };
+        let body_end = body_start + body_end_offset;
+        let sequence_end = body_end + TERMINAL_CONTROL_END.len();
+        let body = &content[body_start..body_end];
+        if let Some(request) = terminal_control_request(body) {
+            requests.push(request);
+        } else {
+            visible.push_str(&visible_terminal_control_fragment(
+                &content[index..sequence_end],
+            ));
+        }
+        content = content[sequence_end..].to_string();
     }
 
-    let suffix_len = terminal_control_suffix_len(&content);
-    if suffix_len > 0 {
-        let visible_len = content.len() - suffix_len;
-        visible.push_str(&content[..visible_len]);
-        pending.push_str(&content[visible_len..]);
-    } else {
-        visible.push_str(&content);
-    }
-
-    (visible, runtime_update_requests)
+    (visible, requests)
 }
 
 fn terminal_crlf(text: &str) -> String {
@@ -2659,6 +2732,48 @@ fn runtime_progress_terminal_output(event: &RuntimeProgressEvent) -> String {
         lines.push(output.trim_end().to_string());
     }
     terminal_crlf(&format!("{}\n", lines.join("\n")))
+}
+
+fn decode_hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn percent_decode_utf8(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err("Upload command payload has an incomplete percent escape.".to_string());
+            }
+            let high = decode_hex_digit(bytes[index + 1]).ok_or_else(|| {
+                "Upload command payload has an invalid percent escape.".to_string()
+            })?;
+            let low = decode_hex_digit(bytes[index + 2]).ok_or_else(|| {
+                "Upload command payload has an invalid percent escape.".to_string()
+            })?;
+            output.push((high << 4) | low);
+            index += 3;
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(output).map_err(|error| error.to_string())
+}
+
+fn decode_dataset_prepare_upload_payload(
+    payload: &str,
+) -> Result<DatasetPrepareUploadConfig, String> {
+    let decoded = percent_decode_utf8(payload)?;
+    serde_json::from_str(&decoded)
+        .map_err(|error| format!("Upload command payload could not be parsed as JSON: {error}"))
 }
 
 fn run_runtime_update_from_terminal(
@@ -2721,6 +2836,51 @@ fn run_runtime_update_from_terminal(
     });
 }
 
+fn run_dataset_prepare_upload_from_terminal(
+    app: AppHandle,
+    session_id: String,
+    replay: Arc<Mutex<String>>,
+    payload: String,
+) {
+    thread::spawn(move || {
+        emit_terminal_output(
+            &app,
+            &session_id,
+            &replay,
+            format!("\r\n[RobotCloud] {PREPARE_UPLOAD_TERMINAL_COMMAND} started.\r\n"),
+        );
+
+        let result = decode_dataset_prepare_upload_payload(&payload)
+            .and_then(|config| prepare_dataset_upload(&app, config));
+        match result {
+            Ok(prepared) => {
+                emit_terminal_output(
+                    &app,
+                    &session_id,
+                    &replay,
+                    terminal_crlf(&format!(
+                        "[RobotCloud] Dataset upload package ready: {} ({} bytes)\n",
+                        prepared.file_path, prepared.file_size
+                    )),
+                );
+                let _ = app.emit("dataset-upload-prepared", prepared);
+            }
+            Err(error) => {
+                emit_terminal_output(
+                    &app,
+                    &session_id,
+                    &replay,
+                    terminal_crlf(&format!("[RobotCloud] Dataset upload failed: {error}\n")),
+                );
+                let _ = app.emit(
+                    "dataset-upload-failed",
+                    DatasetUploadFailedEvent { message: error },
+                );
+            }
+        }
+    });
+}
+
 fn spawn_terminal_reader<R: Read + Send + 'static>(
     app: AppHandle,
     session_id: String,
@@ -2746,15 +2906,27 @@ fn spawn_terminal_reader<R: Read + Send + 'static>(
                 }
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buffer[..n]).to_string();
-                    let (visible, runtime_update_requests) =
+                    let (visible, requests) =
                         consume_terminal_control_sequences(&mut control_pending, &data);
                     emit_terminal_output(&app, &session_id, &replay, visible);
-                    for _ in 0..runtime_update_requests {
-                        run_runtime_update_from_terminal(
-                            app.clone(),
-                            session_id.clone(),
-                            replay.clone(),
-                        );
+                    for request in requests {
+                        match request {
+                            TerminalControlRequest::RuntimeUpdate => {
+                                run_runtime_update_from_terminal(
+                                    app.clone(),
+                                    session_id.clone(),
+                                    replay.clone(),
+                                );
+                            }
+                            TerminalControlRequest::PrepareUpload(payload) => {
+                                run_dataset_prepare_upload_from_terminal(
+                                    app.clone(),
+                                    session_id.clone(),
+                                    replay.clone(),
+                                    payload,
+                                );
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -3283,17 +3455,16 @@ fn dataset_inspect_upload(
     inspect_dataset_upload_source(&source)
 }
 
-#[tauri::command]
-fn dataset_prepare_upload(
-    app: AppHandle,
+fn prepare_dataset_upload(
+    app: &AppHandle,
     config: DatasetPrepareUploadConfig,
 ) -> Result<PreparedDatasetUpload, String> {
     let dataset_repo_id = config.dataset_repo_id.trim();
-    let source = resolve_dataset_upload_source(&app, &config)?;
+    let source = resolve_dataset_upload_source(app, &config)?;
     let inspection = inspect_dataset_upload_source(&source)?;
     validate_dataset_upload_inspection(&inspection)?;
 
-    let upload_dir = prepared_upload_dir(&app)?
+    let upload_dir = prepared_upload_dir(app)?
         .canonicalize()
         .map_err(|error| error.to_string())?;
     if upload_dir.starts_with(&source) {
@@ -3355,8 +3526,16 @@ fn dataset_prepare_upload(
         created_at,
         stats: Some(inspection),
     };
-    write_prepared_upload_state(&app, &prepared)?;
+    write_prepared_upload_state(app, &prepared)?;
     Ok(prepared)
+}
+
+#[tauri::command]
+fn dataset_prepare_upload(
+    app: AppHandle,
+    config: DatasetPrepareUploadConfig,
+) -> Result<PreparedDatasetUpload, String> {
+    prepare_dataset_upload(&app, config)
 }
 
 fn prepared_upload_file(app: &AppHandle, file_path: &str) -> Result<PathBuf, String> {
@@ -4424,6 +4603,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert!(script.contains("export PATH=\"$ROBOTCLOUD_LEROBOT_ENV/bin:$PATH\""));
         assert!(script.contains("export PYTHONNOUSERSITE=1"));
         assert!(script.contains("alias robotcloud-runtime-update="));
+        assert!(script.contains("robotcloud-prepare-upload()"));
         assert!(script.contains("hash -r"));
     }
 
@@ -4453,7 +4633,64 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         );
 
         assert_eq!(visible, "beforeafter");
-        assert_eq!(requests, 1);
+        assert_eq!(requests, vec![TerminalControlRequest::RuntimeUpdate]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn terminal_prepare_upload_control_sequence_is_consumed() {
+        let mut pending = String::new();
+        let payload = "%7B%22datasetRoot%22%3A%22%2Ftmp%2Fdata%22%7D";
+        let control = format!(
+            "{TERMINAL_CONTROL_PREFIX}{PREPARE_UPLOAD_TERMINAL_BODY_PREFIX}{payload}{TERMINAL_CONTROL_END}"
+        );
+        let (visible, requests) =
+            consume_terminal_control_sequences(&mut pending, &format!("before{control}after"));
+
+        assert_eq!(visible, "beforeafter");
+        assert_eq!(
+            requests,
+            vec![TerminalControlRequest::PrepareUpload(payload.to_string())]
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decodes_dataset_prepare_upload_payload() {
+        let config = decode_dataset_prepare_upload_payload(
+            "%7B%22datasetRoot%22%3A%22%2Ftmp%2Frobotcloud%20data%22%2C%22datasetRepoId%22%3A%22local%2Fso101%22%2C%22task%22%3A%22Pick%20cube%22%7D",
+        )
+        .unwrap();
+
+        assert_eq!(config.dataset_root, "/tmp/robotcloud data");
+        assert_eq!(config.dataset_repo_id, "local/so101");
+        assert_eq!(config.task.as_deref(), Some("Pick cube"));
+    }
+
+    #[test]
+    fn unknown_terminal_control_fragment_is_not_buffered() {
+        let mut pending = String::new();
+        let data = format!("before{TERMINAL_CONTROL_PREFIX}not-robotcloud output");
+
+        let (visible, requests) = consume_terminal_control_sequences(&mut pending, &data);
+
+        assert_eq!(visible, data.replace('\x1b', "^["));
+        assert!(requests.is_empty());
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn oversized_prepare_upload_control_fragment_is_not_buffered() {
+        let mut pending = String::new();
+        let data = format!(
+            "{TERMINAL_CONTROL_PREFIX}{PREPARE_UPLOAD_TERMINAL_BODY_PREFIX}{}",
+            "x".repeat(TERMINAL_CONTROL_MAX_BODY_BYTES + 1)
+        );
+
+        let (visible, requests) = consume_terminal_control_sequences(&mut pending, &data);
+
+        assert_eq!(visible, data.replace('\x1b', "^["));
+        assert!(requests.is_empty());
         assert!(pending.is_empty());
     }
 
@@ -4467,7 +4704,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         );
 
         assert_eq!(visible, "");
-        assert_eq!(requests, 0);
+        assert!(requests.is_empty());
         assert_eq!(pending, RUNTIME_UPDATE_TERMINAL_CONTROL[..split]);
 
         let (visible, requests) = consume_terminal_control_sequences(
@@ -4476,7 +4713,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         );
 
         assert_eq!(visible, "");
-        assert_eq!(requests, 1);
+        assert_eq!(requests, vec![TerminalControlRequest::RuntimeUpdate]);
         assert!(pending.is_empty());
     }
 
@@ -4491,6 +4728,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         ));
         assert!(script.contains("$env:PYTHONNOUSERSITE = \"1\""));
         assert!(script.contains("function robotcloud-runtime-update"));
+        assert!(script.contains("function robotcloud-prepare-upload"));
     }
 
     #[cfg(target_os = "windows")]

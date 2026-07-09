@@ -186,6 +186,8 @@ describe("SO101 terminal session", () => {
   } = {}) {
     let outputCallback: ((event: TerminalOutputEvent) => void) | null = null;
     let exitCallback: ((event: TerminalExitEvent) => void) | null = null;
+    let preparedUploadCallback: ((prepared: PreparedDatasetUpload) => void) | null = null;
+    let prepareUploadErrorCallback: ((event: DatasetPrepareUploadErrorEvent) => void) | null = null;
     let persistedSettings = options.so101Settings ?? null;
     const status = options.status ?? jest.fn().mockResolvedValue(desktopStatus);
     const terminalStart = jest.fn().mockResolvedValue({ sessionId: "session-1", shell: "/bin/zsh" });
@@ -217,7 +219,12 @@ describe("SO101 terminal session", () => {
       visibility: "private",
       createdAt: "1760000000000"
     });
-    const setPreparedUpload = jest.fn().mockResolvedValue(undefined);
+    let preparedUploadState: PreparedDatasetUpload | null = null;
+    const getPreparedUpload = jest.fn().mockImplementation(() => Promise.resolve(preparedUploadState));
+    const setPreparedUpload = jest.fn().mockImplementation((prepared: PreparedDatasetUpload) => {
+      preparedUploadState = prepared;
+      return Promise.resolve(undefined);
+    });
     const bridge: DesktopBridge = {
       isDesktop: true,
       status,
@@ -235,8 +242,17 @@ describe("SO101 terminal session", () => {
       dataset: {
         inspectUpload,
         prepareUpload,
+        getPreparedUpload,
         setPreparedUpload,
-        readPreparedUpload: jest.fn()
+        readPreparedUpload: jest.fn(),
+        onPreparedUpload: jest.fn((callback) => {
+          preparedUploadCallback = callback;
+          return jest.fn();
+        }),
+        onPrepareUploadError: jest.fn((callback) => {
+          prepareUploadErrorCallback = callback;
+          return jest.fn();
+        })
       },
       terminal: {
         current: terminalCurrent,
@@ -269,9 +285,15 @@ describe("SO101 terminal session", () => {
       validateCamera,
       inspectUpload,
       prepareUpload,
+      getPreparedUpload,
       setPreparedUpload,
+      setStoredPreparedUpload: (prepared: PreparedDatasetUpload | null) => {
+        preparedUploadState = prepared;
+      },
       emitOutput: (data: string) => outputCallback?.({ sessionId: "session-1", data }),
-      emitExit: () => exitCallback?.({ sessionId: "session-1", code: 0, signal: null })
+      emitExit: () => exitCallback?.({ sessionId: "session-1", code: 0, signal: null }),
+      emitPreparedUpload: (prepared: PreparedDatasetUpload) => preparedUploadCallback?.(prepared),
+      emitPrepareUploadError: (message: string) => prepareUploadErrorCallback?.({ message })
     };
   }
 
@@ -1057,8 +1079,8 @@ describe("SO101 terminal session", () => {
     expect(view.getByLabelText("FPS")).toHaveValue("30");
   });
 
-  it("shows recording stats before preparing an upload", async () => {
-    const { inspectUpload, prepareUpload, setPreparedUpload } = installDesktopBridge();
+  it("runs dataset upload packaging through the terminal card", async () => {
+    const { inspectUpload, prepareUpload, setPreparedUpload, terminalWrite, emitPreparedUpload } = installDesktopBridge();
 
     const view = render(<SO101Client />);
 
@@ -1069,26 +1091,33 @@ describe("SO101 terminal session", () => {
     fireEvent.click(view.getByRole("button", { name: "Upload" }));
 
     await waitFor(() => {
-      expect(inspectUpload).toHaveBeenCalledWith({
-        datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
-        datasetRepoId: "local/so101_desktop"
-      });
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}${so101TestExports.PREPARE_UPLOAD_COMMAND} '${encodeURIComponent(JSON.stringify({
+          datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
+          datasetRepoId: "local/so101_desktop",
+          task: ""
+        }))}'\r`
+      );
     });
+    expect(inspectUpload).not.toHaveBeenCalled();
     expect(prepareUpload).not.toHaveBeenCalled();
 
-    const dialog = view.getByRole("dialog", { name: "Recording upload review" });
-    expect(within(dialog).getByText("Episodes")).toBeInTheDocument();
-    expect(within(dialog).getByText("Duration")).toBeInTheDocument();
-    expect(within(dialog).getByText("10s")).toBeInTheDocument();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "Upload" }));
+    act(() => {
+      emitPreparedUpload({
+        filePath: "/tmp/robotcloud data/prepared_uploads/local_so101_desktop.zip",
+        fileName: "local_so101_desktop.zip",
+        fileSize: 2048,
+        datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
+        name: "local/so101_desktop",
+        description: "SO101 Desktop recording",
+        visibility: "private",
+        createdAt: "1760000000000"
+      });
+    });
 
     await waitFor(() => {
-      expect(prepareUpload).toHaveBeenCalledWith({
-        datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
-        datasetRepoId: "local/so101_desktop",
-        task: ""
-      });
+      expect(mockPush).toHaveBeenCalledWith("/datasets?source=so101");
     });
     expect(setPreparedUpload).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1096,20 +1125,57 @@ describe("SO101 terminal session", () => {
         name: "local/so101_desktop"
       })
     );
-    expect(mockPush).toHaveBeenCalledWith("/datasets?source=so101");
   });
 
-  it("blocks upload when recorded stats do not meet the minimums", async () => {
-    const { inspectUpload, prepareUpload } = installDesktopBridge();
-    inspectUpload.mockResolvedValue({
+  it("recovers a completed terminal upload after the SO101 page remounts", async () => {
+    const {
+      getPreparedUpload,
+      prepareUpload,
+      setPreparedUpload,
+      setStoredPreparedUpload,
+      terminalWrite
+    } = installDesktopBridge();
+    const prepared: PreparedDatasetUpload = {
+      filePath: "/tmp/robotcloud data/prepared_uploads/local_so101_desktop.zip",
+      fileName: "local_so101_desktop.zip",
+      fileSize: 2048,
       datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
-      fileCount: 2,
-      totalBytes: 512,
-      episodeCount: 0,
-      totalFrames: 10,
-      fps: 30,
-      durationSeconds: 0.3
+      name: "local/so101_desktop",
+      description: "SO101 Desktop recording",
+      visibility: "private",
+      createdAt: "1760000000000"
+    };
+
+    const firstView = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(firstView.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
+    fireEvent.click(firstView.getByRole("button", { name: "Upload" }));
+    await waitFor(() => {
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        expect.stringContaining(`${so101TestExports.PREPARE_UPLOAD_COMMAND} `)
+      );
+    });
+
+    firstView.unmount();
+    setStoredPreparedUpload(prepared);
+    render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(getPreparedUpload).toHaveBeenCalled();
+      expect(mockPush).toHaveBeenCalledWith("/datasets?source=so101");
+    });
+    expect(setPreparedUpload).toHaveBeenCalledWith(expect.objectContaining({
+      fileName: "local_so101_desktop.zip",
+      name: "local/so101_desktop"
+    }));
+    expect(prepareUpload).not.toHaveBeenCalled();
+  });
+
+  it("shows terminal upload errors without invoking the blocking prepare bridge", async () => {
+    const { inspectUpload, prepareUpload, emitPrepareUploadError } = installDesktopBridge();
 
     const view = render(<SO101Client />);
 
@@ -1119,16 +1185,20 @@ describe("SO101 terminal session", () => {
 
     fireEvent.click(view.getByRole("button", { name: "Upload" }));
 
-    const dialog = await view.findByRole("dialog", { name: "Recording upload review" });
-    expect(within(dialog).getByText("Upload blocked")).toBeInTheDocument();
-    expect(within(dialog).getByText("At least 1 recorded episode is required.")).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "Upload" })).toBeDisabled();
+    act(() => {
+      emitPrepareUploadError("Upload blocked: At least 1 recorded episode is required.");
+    });
+
+    await waitFor(() => {
+      expect(view.getByText("Upload blocked: At least 1 recorded episode is required.")).toBeInTheDocument();
+    });
+    expect(inspectUpload).not.toHaveBeenCalled();
     expect(prepareUpload).not.toHaveBeenCalled();
   });
 });
 
 describe("SO101 command generation", () => {
-  const { buildActionCommand, initialForm, parseConnectionSettings, removeCameraAtIndex, resolvedDatasetRoot, serializeConnectionSettings, shellArg } = so101TestExports;
+  const { buildActionCommand, buildPrepareUploadCommand, initialForm, parseConnectionSettings, removeCameraAtIndex, resolvedDatasetRoot, serializeConnectionSettings, shellArg } = so101TestExports;
 
   const desktopStatus: DesktopStatus = {
     isDesktop: true,
@@ -1152,6 +1222,26 @@ describe("SO101 command generation", () => {
 
   it("quotes PowerShell arguments without allowing command substitution", () => {
     expect(shellArg("local/$(touch /tmp/pwn)'x", "powershell")).toBe("'local/$(touch /tmp/pwn)''x'");
+  });
+
+  it("builds upload packaging as a terminal control command", () => {
+    const command = buildPrepareUploadCommand(
+      {
+        datasetRoot: "/tmp/robotcloud data/datasets/local/so101",
+        datasetRepoId: "local/so101",
+        task: "Pick 'the' cube"
+      },
+      desktopStatus
+    );
+
+    const payload = encodeURIComponent(JSON.stringify({
+      datasetRoot: "/tmp/robotcloud data/datasets/local/so101",
+      datasetRepoId: "local/so101",
+      task: "Pick 'the' cube"
+    }));
+    expect(command).toBe(
+      `${so101TestExports.PREPARE_UPLOAD_COMMAND} ${shellArg(payload)}`
+    );
   });
 
   it("resolves default dataset roots with platform-specific path separators", () => {
