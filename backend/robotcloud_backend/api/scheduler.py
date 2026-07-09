@@ -14,6 +14,7 @@ from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
 
+from .limits import user_has_no_limits
 from .models import Dataset, InferenceTask, TrainTask, User, WorkerNode
 
 PI05_BASE_POLICY_PATH = "lerobot/pi05_base"
@@ -122,7 +123,7 @@ class SchedulerService:
 
         assignments = 0
         for task in queued_tasks:
-            max_concurrent = self._max_concurrent_for_role(task.user.role)
+            max_concurrent = self._max_concurrent_for_user(task.user, nodes)
             current_running = running_counts.get(task.user_id, 0)
             if current_running >= max_concurrent:
                 continue
@@ -609,6 +610,11 @@ class SchedulerService:
             User.ROLE_ADMIN: 4,
         }
         return mapping.get(role, 2)
+
+    def _max_concurrent_for_user(self, user: User, nodes: List[WorkerNode]) -> int:
+        if user_has_no_limits(user):
+            return max(sum(max(node.gpu_total, 0) for node in nodes), 1)
+        return self._max_concurrent_for_role(user.role)
 
     def _max_inference_concurrent_for_role(self, role: str) -> int:
         mapping = {

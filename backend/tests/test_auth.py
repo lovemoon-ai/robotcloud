@@ -170,6 +170,28 @@ def test_plus_whitelist_promotes_existing_free_user_on_login(
     assert user.expire_at is None
 
 
+def test_no_limits_whitelist_promotes_existing_free_user_on_login(
+    client: APIClient, sms_gateway: InMemorySmsGateway
+) -> None:
+    phone = "13800000040"
+    password = "pw123456"
+    register_user(client, sms_gateway, phone, password)
+    assert User.objects.get(phone=phone).role == User.ROLE_FREE
+
+    with override_settings(AUTH_NO_LIMITS_WHITELIST_PHONES=phone):
+        login_resp = client.post(
+            "/api/v1/auth/login",
+            {"phone": phone, "password": password},
+            format="json",
+        )
+
+    assert login_resp.status_code == 200
+    assert login_resp.json()["data"]["role"] == User.ROLE_PLUS
+    user = User.objects.get(phone=phone)
+    assert user.role == User.ROLE_PLUS
+    assert user.expire_at is None
+
+
 @override_settings(AUTH_PLUS_WHITELIST_PHONES="13800000038,13800000039")
 def test_plus_whitelist_does_not_downgrade_higher_roles(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
     admin_phone = "13800000038"

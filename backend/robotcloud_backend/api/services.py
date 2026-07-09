@@ -30,6 +30,7 @@ from .models import (
     UserSession,
     WorkerNode,
 )
+from .limits import phone_defaults_to_plus, user_has_no_limits
 from ..sms import SmsGateway
 from ..payment.alipay import get_alipay
 
@@ -152,14 +153,11 @@ class RobotCloudService:
     def _bypasses_single_device_limit(self, user: User) -> bool:
         return user.phone in self._single_device_bypass_phones()
 
-    def _plus_whitelist_phones(self) -> set[str]:
-        values = getattr(settings, "AUTH_PLUS_WHITELIST_PHONES", [])
-        if isinstance(values, str):
-            values = values.split(",")
-        return {str(item).strip() for item in values if str(item).strip()}
-
     def _is_plus_whitelisted(self, phone: str) -> bool:
-        return phone in self._plus_whitelist_phones()
+        return phone_defaults_to_plus(phone)
+
+    def _has_no_limits(self, user: User) -> bool:
+        return user_has_no_limits(user)
 
     def _apply_plus_whitelist(self, user: User) -> User:
         if not self._is_plus_whitelisted(user.phone):
@@ -1234,9 +1232,10 @@ class RobotCloudService:
         if not model_type:
             raise ValueError("Model type required")
         user = self._get_user_by_token(token)
-        completed_models = user.train_tasks.filter(status="completed").count()
-        if completed_models >= 5:
-            raise ValueError("Saved model limit reached (5)")
+        if not self._has_no_limits(user):
+            completed_models = user.train_tasks.filter(status="completed").count()
+            if completed_models >= 5:
+                raise ValueError("Saved model limit reached (5)")
         dataset = self._get_dataset_for_user(user, dataset_id)
         if dataset.status != Dataset.STATUS_READY:
             raise ValueError("Dataset is not ready")
@@ -1548,13 +1547,15 @@ class RobotCloudService:
     # -------------------- Inference Module --------------------
     def create_inference_task(self, token: str, model_id: int, dataset_id: Optional[int]) -> Dict[str, Any]:
         user = self._get_user_by_token(token)
-        if user.role == User.ROLE_FREE:
+        has_no_limits = self._has_no_limits(user)
+        if user.role == User.ROLE_FREE and not has_no_limits:
             raise PermissionError("Inference is not available for free users")
         if model_id is None:
             raise ValueError("model_id required")
-        queued_count = user.inference_tasks.filter(status="queued").count()
-        if queued_count >= 3:
-            raise ValueError("Queued inference task limit reached (3)")
+        if not has_no_limits:
+            queued_count = user.inference_tasks.filter(status="queued").count()
+            if queued_count >= 3:
+                raise ValueError("Queued inference task limit reached (3)")
         dataset = self._get_dataset_for_user(user, dataset_id) if dataset_id is not None else None
         train_task = self._get_train_task(int(model_id), user)
         if train_task.status != "completed":
