@@ -35,6 +35,7 @@ type FormState = {
   episodeTimeS: number;
   minEpisodeTimeS: number;
   maxEpisodeTimeS: number;
+  stationaryHoldTimeS: number;
   resetTimeS: number;
   teleopTimeS: number;
   displayData: boolean;
@@ -85,6 +86,7 @@ type ConfigFieldId =
   | "episodeTimeS"
   | "minEpisodeTimeS"
   | "maxEpisodeTimeS"
+  | "stationaryHoldTimeS"
   | "resetTimeS"
   | "teleopTimeS"
   | "task"
@@ -133,7 +135,7 @@ type ActionId =
 type ShellDialect = "posix" | "powershell";
 
 const CONNECTION_STORAGE_KEY = "robotcloud-so101-connection";
-const CONNECTION_STORAGE_VERSION = 4;
+const CONNECTION_STORAGE_VERSION = 5;
 const DEFAULT_CAMERA_COUNT = 1;
 const DEFAULT_MAX_RELATIVE_TARGET = 5;
 const LEGACY_DEFAULT_EPISODES = 1;
@@ -187,6 +189,7 @@ const initialForm: FormState = {
   episodeTimeS: 10,
   minEpisodeTimeS: 2,
   maxEpisodeTimeS: 60,
+  stationaryHoldTimeS: 2,
   resetTimeS: 2,
   teleopTimeS: 5,
   displayData: true,
@@ -226,6 +229,7 @@ const configFieldIds = new Set<string>([
   "episodeTimeS",
   "minEpisodeTimeS",
   "maxEpisodeTimeS",
+  "stationaryHoldTimeS",
   "resetTimeS",
   "teleopTimeS",
   "task",
@@ -263,6 +267,7 @@ const configFieldByLabel: Record<string, ConfigFieldId> = {
   "Episode seconds": "episodeTimeS",
   "Min episode seconds": "minEpisodeTimeS",
   "Max episode seconds": "maxEpisodeTimeS",
+  "Stationary action seconds": "stationaryHoldTimeS",
   "Reset seconds": "resetTimeS",
   "Teleop seconds": "teleopTimeS",
   "Task label": "task",
@@ -567,6 +572,7 @@ export function parseConnectionSettings(raw: string | null) {
       episodeTimeS: toFiniteNumber(parsed.episodeTimeS, initialForm.episodeTimeS),
       minEpisodeTimeS: toFiniteNumber(parsed.minEpisodeTimeS, initialForm.minEpisodeTimeS),
       maxEpisodeTimeS: toFiniteNumber(parsed.maxEpisodeTimeS, initialForm.maxEpisodeTimeS),
+      stationaryHoldTimeS: toFiniteNumber(parsed.stationaryHoldTimeS, initialForm.stationaryHoldTimeS),
       resetTimeS: toFiniteNumber(parsed.resetTimeS, initialForm.resetTimeS),
       teleopTimeS: toFiniteNumber(parsed.teleopTimeS, initialForm.teleopTimeS),
       displayData: toBoolean(parsed.displayData, initialForm.displayData),
@@ -603,6 +609,7 @@ export function serializeConnectionSettings(form: FormState, cameraCount: number
     episodeTimeS: form.episodeTimeS,
     minEpisodeTimeS: form.minEpisodeTimeS,
     maxEpisodeTimeS: form.maxEpisodeTimeS,
+    stationaryHoldTimeS: form.stationaryHoldTimeS,
     resetTimeS: form.resetTimeS,
     teleopTimeS: form.teleopTimeS,
     displayData: form.displayData,
@@ -802,9 +809,10 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
 
       if (!form.useLerobotRecorder) {
         // RobotCloud auto recorder (robotcloud_auto_record.py). Mirrors the Rust
-        // `record-auto` action: min/max episode time instead of episode/reset seconds.
+        // `record-auto` action: min/max/stationary episode time instead of episode/reset seconds.
         const minEpisodeTimeS = requireNumber(form.minEpisodeTimeS, "Min episode seconds", { min: Number.MIN_VALUE });
         const maxEpisodeTimeS = requireNumber(form.maxEpisodeTimeS, "Max episode seconds", { min: Number.MIN_VALUE });
+        const stationaryHoldTimeS = requireNumber(form.stationaryHoldTimeS, "Stationary action seconds", { min: Number.MIN_VALUE });
         const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
         if (!cameraArg) throw new Error("先配置 Camera 0");
         const parts = [
@@ -826,6 +834,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
           "--dataset.rgb_encoder.vcodec=h264",
           `--min_episode_time_s=${minEpisodeTimeS}`,
           `--max_episode_time_s=${maxEpisodeTimeS}`,
+          `--stationary_hold_time_s=${stationaryHoldTimeS}`,
           `--display_data=${form.displayData ? "true" : "false"}`
         ];
         if (datasetRoot) parts.splice(9, 0, `--dataset.root=${quote(datasetRoot)}`);
@@ -1253,7 +1262,7 @@ export function SO101Client() {
     () =>
       locale === "zh"
         ? {
-            recorderModeLabel: "使用 LeRobot 原版录制工具（不勾选则用 RobotCloud 自动录制，姿势静止 3 秒自动切分下一条）",
+            recorderModeLabel: "使用 LeRobot 原版录制工具（不勾选则用 RobotCloud 自动录制，动作静止达到设定时间后自动切分下一条）",
             versionTitle: "版本",
             builtInLerobot: "内置 LeRobot",
             appVersion: "应用版本",
@@ -1264,7 +1273,7 @@ export function SO101Client() {
           }
         : {
             recorderModeLabel:
-              "Use the original LeRobot recorder (unchecked uses RobotCloud auto recording and starts the next episode after the pose stays still for 3 seconds)",
+              "Use the original LeRobot recorder (unchecked uses RobotCloud auto recording and starts the next episode after the action stays still for the configured time)",
             versionTitle: "Version",
             builtInLerobot: "Built-in LeRobot",
             appVersion: "App version",
@@ -2225,6 +2234,18 @@ export function SO101Client() {
                       {...configInputA11y("maxEpisodeTimeS")}
                     />
                     {renderConfigFieldError("maxEpisodeTimeS")}
+                  </label>
+                  <label className="text-sm">
+                    <span className="text-muted">Stationary action seconds</span>
+                    <input
+                      ref={registerConfigInput("stationaryHoldTimeS")}
+                      {...numericTextInputProps}
+                      value={form.stationaryHoldTimeS}
+                      onChange={(event) => updateField("stationaryHoldTimeS", Number(event.target.value))}
+                      className={configInputClass("stationaryHoldTimeS")}
+                      {...configInputA11y("stationaryHoldTimeS")}
+                    />
+                    {renderConfigFieldError("stationaryHoldTimeS")}
                   </label>
                 </>
               )}

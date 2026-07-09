@@ -401,6 +401,7 @@ struct So101RunConfig {
     episode_time_s: Option<f64>,
     min_episode_time_s: Option<f64>,
     max_episode_time_s: Option<f64>,
+    stationary_hold_time_s: Option<f64>,
     reset_time_s: Option<f64>,
     task: Option<String>,
     teleop_time_s: Option<f64>,
@@ -2433,6 +2434,11 @@ where
                 "--max_episode_time_s",
                 config.max_episode_time_s.unwrap_or(60.0),
             );
+            push_eq_arg(
+                &mut args,
+                "--stationary_hold_time_s",
+                config.stationary_hold_time_s.unwrap_or(2.0),
+            );
             push_eq_arg(&mut args, "--display_data", bool_arg(config.display_data));
             python_script_args("robotcloud_auto_record.py", &script_path, args)
         }
@@ -4270,6 +4276,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         let mut config = test_config("record-auto");
         config.follower_port = Some("/dev/cu.usbmodem-follower".to_string());
         config.leader_port = Some("/dev/cu.usbmodem-leader".to_string());
+        config.stationary_hold_time_s = Some(5.0);
 
         let (program, args) = test_so101_command_args(&config).unwrap();
 
@@ -4280,6 +4287,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert!(args
             .iter()
             .any(|arg| arg == "--dataset.rgb_encoder.vcodec=h264"));
+        assert!(args.iter().any(|arg| arg == "--stationary_hold_time_s=5"));
         assert!(args.iter().all(|arg| !arg.contains("so101.sh")));
         assert!(args.iter().all(|arg| !arg.contains("so101.ps1")));
     }

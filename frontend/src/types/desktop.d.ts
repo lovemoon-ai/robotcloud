@@ -38,6 +38,7 @@ type So101RunConfig = {
   episodeTimeS?: number;
   minEpisodeTimeS?: number;
   maxEpisodeTimeS?: number;
+  stationaryHoldTimeS?: number;
   resetTimeS?: number;
   task?: string;
   teleopTimeS?: number;

@@ -720,6 +720,10 @@ describe("SO101 terminal session", () => {
       "session-1",
       expect.stringContaining("--min_episode_time_s=2")
     );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--stationary_hold_time_s=2")
+    );
     expect(view.queryByText(/请先运行/)).not.toBeInTheDocument();
     expect(view.getByRole("button", { name: "Save pose" })).toBeInTheDocument();
   });
@@ -868,6 +872,7 @@ describe("SO101 terminal session", () => {
     expect(recordControls.getByRole("checkbox", { name: /original LeRobot recorder/ })).toBeChecked();
     expect(recordControls.queryByLabelText("Min episode seconds")).not.toBeInTheDocument();
     expect(recordControls.queryByLabelText("Max episode seconds")).not.toBeInTheDocument();
+    expect(recordControls.queryByLabelText("Stationary action seconds")).not.toBeInTheDocument();
   });
 
   it("restores persisted record card settings from local storage", async () => {
@@ -883,6 +888,7 @@ describe("SO101 terminal session", () => {
           episodeTimeS: 12,
           minEpisodeTimeS: 4,
           maxEpisodeTimeS: 45,
+          stationaryHoldTimeS: 5,
           resetTimeS: 3,
           task: "Pick persisted cube",
           useLerobotRecorder: false,
@@ -909,6 +915,7 @@ describe("SO101 terminal session", () => {
     expect(recordControls.getByLabelText("Episodes")).toHaveValue("4");
     expect(recordControls.getByLabelText("Min episode seconds")).toHaveValue("4");
     expect(recordControls.getByLabelText("Max episode seconds")).toHaveValue("45");
+    expect(recordControls.getByLabelText("Stationary action seconds")).toHaveValue("5");
     expect(recordControls.queryByLabelText("Max relative target")).not.toBeInTheDocument();
     expect(recordControls.getByLabelText("Task label")).toHaveValue("Pick persisted cube");
     expect(recordControls.getByRole("checkbox", { name: /Display LeRobot data windows/ })).not.toBeChecked();
@@ -1338,7 +1345,8 @@ describe("SO101 command generation", () => {
         datasetRepoId: "local/auto",
         task: "Pick",
         minEpisodeTimeS: 3,
-        maxEpisodeTimeS: 45
+        maxEpisodeTimeS: 45,
+        stationaryHoldTimeS: 6
       },
       status,
       1
@@ -1347,6 +1355,7 @@ describe("SO101 command generation", () => {
     expect(command).toContain("python '/opt/app/resources/scripts/robotcloud_auto_record.py'");
     expect(command).toContain("--min_episode_time_s=3");
     expect(command).toContain("--max_episode_time_s=45");
+    expect(command).toContain("--stationary_hold_time_s=6");
     expect(command).toContain("--robot.cameras=");
     expect(command).not.toContain("--dataset.episode_time_s");
     expect(command).not.toContain("--dataset.reset_time_s");
@@ -1430,6 +1439,22 @@ describe("SO101 command generation", () => {
         1
       )
     ).toThrow("先配置 Reset seconds");
+
+    expect(() =>
+      buildActionCommand(
+        "record",
+        {
+          ...initialForm,
+          useLerobotRecorder: false,
+          followerPort: "/dev/cu.usbmodem-follower",
+          leaderPort: "/dev/cu.usbmodem-leader",
+          task: "Pick",
+          stationaryHoldTimeS: 0
+        },
+        desktopStatus,
+        1
+      )
+    ).toThrow("先配置 Stationary action seconds");
   });
 
   it("normalizes saved connection settings from local storage payloads", () => {
@@ -1492,6 +1517,7 @@ describe("SO101 command generation", () => {
         episodeTimeS: 12,
         minEpisodeTimeS: 4,
         maxEpisodeTimeS: 45,
+        stationaryHoldTimeS: 5,
         resetTimeS: 3,
         displayData: false,
         useLerobotRecorder: false,
@@ -1523,6 +1549,7 @@ describe("SO101 command generation", () => {
       episodeTimeS: 12,
       minEpisodeTimeS: 4,
       maxEpisodeTimeS: 45,
+      stationaryHoldTimeS: 5,
       resetTimeS: 3,
       displayData: false,
       useLerobotRecorder: false,
