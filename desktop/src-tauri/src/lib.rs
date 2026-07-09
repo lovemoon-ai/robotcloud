@@ -1,6 +1,7 @@
 use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
+    cmp::Ordering,
     collections::HashMap,
     env,
     fs::{self, File},
@@ -82,6 +83,7 @@ const DEFAULT_BRIDGE_SCRIPT: &str = r#"
       },
       runtime: {
         prepare: function () { return core.invoke("runtime_prepare"); },
+        update: function () { return core.invoke("runtime_update"); },
         onProgress: function (callback) { return listen("runtime-progress", callback); }
       },
       terminal: {
@@ -206,6 +208,7 @@ const WINDOWS_BRIDGE_SCRIPT: &str = r#"
       },
       runtime: {
         prepare: function () { return invoke("runtime_prepare"); },
+        update: function () { return invoke("runtime_update"); },
         onProgress: function (callback) { return listen("runtime-progress", callback); }
       },
       terminal: {
@@ -267,6 +270,8 @@ struct DesktopStatus {
     app_build_commit: String,
     app_build_time: String,
     lerobot_version: Option<String>,
+    bundled_lerobot_version: Option<String>,
+    lerobot_update_available: bool,
     api_base_url: String,
     web_url: String,
     runtime_path: Option<String>,
@@ -616,11 +621,25 @@ fn runtime_manifest_path(runtime: &Path) -> PathBuf {
 
 fn lerobot_version_from_spec(spec: &str) -> Option<String> {
     let trimmed = spec.trim();
-    trimmed
-        .strip_prefix("lerobot==")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
+    let (name, version) = trimmed.split_once("==")?;
+    let package = name
+        .split_once('[')
+        .map(|(plain, _)| plain)
+        .unwrap_or(name)
+        .trim();
+    if !package.eq_ignore_ascii_case("lerobot") {
+        return None;
+    }
+    let version = version
+        .split_once(';')
+        .map(|(plain, _)| plain)
+        .unwrap_or(version)
+        .trim();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
 }
 
 fn lerobot_version_from_manifest(content: &str) -> Option<String> {
@@ -675,17 +694,12 @@ fn lerobot_version_from_python(runtime: &Path) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn lerobot_runtime_version(
-    runtime: &Path,
-    archive: Option<&Path>,
-    runtime_ready: bool,
-) -> Option<String> {
+fn lerobot_runtime_version(runtime: &Path, runtime_ready: bool) -> Option<String> {
     env::var("ROBOTCLOUD_LEROBOT_VERSION")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .or_else(|| lerobot_version_from_runtime_manifest(runtime))
-        .or_else(|| archive.and_then(lerobot_version_from_archive))
         .or_else(|| {
             if runtime_ready {
                 lerobot_version_from_python(runtime)
@@ -693,6 +707,66 @@ fn lerobot_runtime_version(
                 None
             }
         })
+}
+
+fn runtime_uses_external_env() -> bool {
+    env::var("ROBOTCLOUD_LEROBOT_ENV")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn version_release_numbers(version: &str) -> Vec<u64> {
+    let public_version = version
+        .split_once('+')
+        .map(|(plain, _)| plain)
+        .unwrap_or(version);
+    public_version
+        .split(|ch: char| matches!(ch, '.' | '-' | '_'))
+        .filter_map(|part| {
+            let digits = part
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>();
+            if digits.is_empty() {
+                None
+            } else {
+                digits.parse::<u64>().ok()
+            }
+        })
+        .collect()
+}
+
+fn version_is_newer(candidate: &str, current: &str) -> bool {
+    let candidate_parts = version_release_numbers(candidate);
+    let current_parts = version_release_numbers(current);
+    if candidate_parts.is_empty() || current_parts.is_empty() {
+        return false;
+    }
+    let len = candidate_parts.len().max(current_parts.len());
+    for index in 0..len {
+        let candidate = candidate_parts.get(index).copied().unwrap_or(0);
+        let current = current_parts.get(index).copied().unwrap_or(0);
+        match candidate.cmp(&current) {
+            Ordering::Greater => return true,
+            Ordering::Less => return false,
+            Ordering::Equal => {}
+        }
+    }
+    false
+}
+
+fn lerobot_runtime_update_available(
+    current_version: Option<&str>,
+    bundled_version: Option<&str>,
+    archive: Option<&Path>,
+) -> bool {
+    if runtime_uses_external_env() || archive.is_none() {
+        return false;
+    }
+    match (current_version, bundled_version) {
+        (Some(current), Some(bundled)) => version_is_newer(bundled, current),
+        _ => false,
+    }
 }
 
 fn runtime_archive_signature(archive: Option<&Path>) -> String {
@@ -1194,6 +1268,60 @@ where
 fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
     let mut progress = |_event: RuntimeProgressEvent| {};
     ensure_runtime_with_progress(app, &mut progress)
+}
+
+fn update_runtime_with_progress<F>(app: &AppHandle, progress: &mut F) -> Result<PathBuf, String>
+where
+    F: FnMut(RuntimeProgressEvent),
+{
+    if runtime_uses_external_env() {
+        return Err(
+            "Cannot update LeRobot runtime while ROBOTCLOUD_LEROBOT_ENV is set.".to_string(),
+        );
+    }
+
+    let Some(target) = extracted_runtime_path(app) else {
+        return Err("Could not resolve RobotCloud app data directory".to_string());
+    };
+    let archive = runtime_archive_path(app)
+        .ok_or_else(|| format!("LeRobot runtime archive not found for {}", platform_key()))?;
+
+    let _guard = RUNTIME_EXTRACT_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|error| error.to_string())?;
+
+    emit_runtime_progress(
+        progress,
+        "updating",
+        "Updating LeRobot runtime from bundled archive...",
+        None,
+        None,
+    );
+    extract_runtime_archive(&archive, &target, progress)?;
+    emit_runtime_progress(
+        progress,
+        "relocating",
+        "Preparing LeRobot runtime: applying relocation fixups...",
+        None,
+        None,
+    );
+    run_runtime_relocation_fixups(&target, progress)?;
+    emit_runtime_progress(
+        progress,
+        "validating",
+        "Preparing LeRobot runtime: validating Python modules...",
+        None,
+        None,
+    );
+    if runtime_validation_error_with_progress(&target, progress).is_none() {
+        prepare_runtime_with_progress(&target, progress)?;
+        write_runtime_ready_marker(&target, Some(&archive))?;
+        emit_runtime_progress(progress, "ready", "LeRobot runtime is ready.", None, None);
+        Ok(target)
+    } else {
+        Err(runtime_not_ready_message(&target))
+    }
 }
 
 fn bundled_script_path(app: &AppHandle, name: &str) -> PathBuf {
@@ -3232,6 +3360,19 @@ fn runtime_prepare(app: AppHandle) -> Result<RuntimePrepared, String> {
 }
 
 #[tauri::command]
+fn runtime_update(app: AppHandle) -> Result<RuntimePrepared, String> {
+    let progress_app = app.clone();
+    let mut progress = move |event: RuntimeProgressEvent| {
+        let _ = progress_app.emit("runtime-progress", event);
+    };
+    let runtime = update_runtime_with_progress(&app, &mut progress)?;
+    Ok(RuntimePrepared {
+        runtime_path: runtime.to_string_lossy().to_string(),
+        ready: true,
+    })
+}
+
+#[tauri::command]
 fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
     let runtime = runtime_path(&app);
     let archive = runtime_archive_path(&app);
@@ -3245,7 +3386,13 @@ fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
     } else {
         Some(runtime_not_ready_message(&runtime))
     };
-    let lerobot_version = lerobot_runtime_version(&runtime, archive.as_deref(), runtime_ready);
+    let lerobot_version = lerobot_runtime_version(&runtime, runtime_ready);
+    let bundled_lerobot_version = archive.as_deref().and_then(lerobot_version_from_archive);
+    let lerobot_update_available = lerobot_runtime_update_available(
+        lerobot_version.as_deref(),
+        bundled_lerobot_version.as_deref(),
+        archive.as_deref(),
+    );
     let scripts = scripts_dir(&app);
     let data = data_dir(&app)?;
     Ok(DesktopStatus {
@@ -3255,12 +3402,16 @@ fn desktop_status(app: AppHandle) -> Result<DesktopStatus, String> {
         app_build_commit: env!("ROBOTCLOUD_APP_BUILD_COMMIT").to_string(),
         app_build_time: env!("ROBOTCLOUD_APP_BUILD_TIME").to_string(),
         lerobot_version,
+        bundled_lerobot_version,
+        lerobot_update_available,
         api_base_url: api_base_url(),
         web_url: web_url(),
         runtime_ready,
         runtime_path: Some(runtime.to_string_lossy().to_string()),
         runtime_archive_ready,
-        runtime_archive_path: archive.map(|path| path.to_string_lossy().to_string()),
+        runtime_archive_path: archive
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
         runtime_error,
         script_ready: scripts.join("robotcloud_auto_record.py").exists(),
         scripts_dir: Some(scripts.to_string_lossy().to_string()),
@@ -3616,6 +3767,7 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             runtime_prepare,
+            runtime_update,
             desktop_status,
             dataset_inspect_upload,
             dataset_prepare_upload,
@@ -3752,6 +3904,28 @@ mod tests {
         } else {
             assert_eq!(app_title(), "RobotCloud");
         }
+    }
+
+    #[test]
+    fn parses_lerobot_versions_from_specs_with_extras() {
+        assert_eq!(
+            lerobot_version_from_spec("lerobot[async,dataset,viz]==0.6.0"),
+            Some("0.6.0".to_string())
+        );
+        assert_eq!(
+            lerobot_version_from_spec("LeRobot==0.7.0 ; python_version >= '3.10'"),
+            Some("0.7.0".to_string())
+        );
+        assert_eq!(lerobot_version_from_spec("torch==2.10.0"), None);
+    }
+
+    #[test]
+    fn detects_newer_lerobot_runtime_versions() {
+        assert!(version_is_newer("0.6.1", "0.6.0"));
+        assert!(version_is_newer("0.7.0", "0.6.9"));
+        assert!(!version_is_newer("0.6.0", "0.6.0"));
+        assert!(!version_is_newer("0.6.0", "0.6.1"));
+        assert!(!version_is_newer("0.6.0", "0.6.0+local"));
     }
 
     #[test]

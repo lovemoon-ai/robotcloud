@@ -6,6 +6,8 @@ type DesktopStatus = {
   appBuildCommit?: string;
   appBuildTime?: string;
   lerobotVersion?: string | null;
+  bundledLerobotVersion?: string | null;
+  lerobotUpdateAvailable?: boolean;
   apiBaseUrl: string;
   webUrl: string;
   runtimePath: string | null;
@@ -162,6 +164,7 @@ type DesktopBridge = {
   };
   runtime?: {
     prepare: () => Promise<RuntimePrepared>;
+    update?: () => Promise<RuntimePrepared>;
     onProgress: (callback: (event: RuntimeProgressEvent) => void) => () => void;
   };
   terminal: {
