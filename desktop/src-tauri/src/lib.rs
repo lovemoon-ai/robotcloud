@@ -31,6 +31,10 @@ const RUNTIME_PROGRESS_OUTPUT_LIMIT_BYTES: usize = 120_000;
 const RUNTIME_READY_MARKER_VERSION: &str = "5";
 const WINDOWS_SHIMS_MARKER_VERSION: &str = "3";
 const RUNTIME_IMPORT_CHECK: &str = "import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk";
+const RUNTIME_UPDATE_TERMINAL_COMMAND: &str = "robotcloud-runtime-update";
+// The terminal command emits this OSC marker; the PTY reader strips it and runs
+// the Rust updater in the background so the webview never awaits extraction.
+const RUNTIME_UPDATE_TERMINAL_CONTROL: &str = "\x1b]777;robotcloud-runtime-update\x07";
 
 const DEFAULT_BRIDGE_SCRIPT: &str = r#"
 (function () {
@@ -2070,6 +2074,7 @@ fn terminal_startup_script() -> &'static [u8] {
             "Remove-Item Env:PYTHONHOME,Env:PYTHONPATH -ErrorAction SilentlyContinue\r\n",
             "$env:Path = \"$env:ROBOTCLOUD_LEROBOT_ENV\\robotcloud-shims;$env:ROBOTCLOUD_LEROBOT_ENV\\Scripts;$env:ROBOTCLOUD_LEROBOT_ENV\\Library\\bin;$env:ROBOTCLOUD_LEROBOT_ENV;$env:Path\"\r\n",
             "$env:PYTHONNOUSERSITE = \"1\"\r\n",
+            "function robotcloud-runtime-update { [Console]::Write(\"\x1b]777;robotcloud-runtime-update\x07\") }\r\n",
             "Write-Host \"RobotCloud LeRobot runtime: $env:ROBOTCLOUD_LEROBOT_ENV\"\r\n",
         )
         .as_bytes()
@@ -2078,6 +2083,7 @@ fn terminal_startup_script() -> &'static [u8] {
             "unset PYTHONHOME PYTHONPATH\n",
             "export PATH=\"$ROBOTCLOUD_LEROBOT_ENV/bin:$PATH\"\n",
             "export PYTHONNOUSERSITE=1\n",
+            "alias robotcloud-runtime-update='printf \"\\033]777;robotcloud-runtime-update\\007\"'\n",
             "hash -r 2>/dev/null || true\n",
             "printf \"RobotCloud LeRobot runtime: %s\\n\" \"$ROBOTCLOUD_LEROBOT_ENV\"\n",
         )
@@ -2561,6 +2567,154 @@ fn append_terminal_replay(replay: &Arc<Mutex<String>>, data: &str) {
     buffer.drain(..drain_to);
 }
 
+fn emit_terminal_output(
+    app: &AppHandle,
+    session_id: &str,
+    replay: &Arc<Mutex<String>>,
+    data: String,
+) {
+    if data.is_empty() {
+        return;
+    }
+    append_terminal_replay(replay, &data);
+    let _ = app.emit(
+        "terminal-output",
+        TerminalOutputEvent {
+            session_id: session_id.to_string(),
+            data,
+        },
+    );
+}
+
+fn terminal_control_suffix_len(data: &str) -> usize {
+    let marker = RUNTIME_UPDATE_TERMINAL_CONTROL.as_bytes();
+    let bytes = data.as_bytes();
+    let max_len = marker.len().min(bytes.len());
+    for len in (1..=max_len).rev() {
+        let start = bytes.len() - len;
+        if data.is_char_boundary(start) && marker.starts_with(&bytes[start..]) {
+            return len;
+        }
+    }
+    0
+}
+
+fn consume_terminal_control_sequences(pending: &mut String, data: &str) -> (String, usize) {
+    pending.push_str(data);
+    let marker_len = RUNTIME_UPDATE_TERMINAL_CONTROL.len();
+    let mut content = std::mem::take(pending);
+    let mut visible = String::new();
+    let mut runtime_update_requests = 0;
+
+    while let Some(index) = content.find(RUNTIME_UPDATE_TERMINAL_CONTROL) {
+        visible.push_str(&content[..index]);
+        runtime_update_requests += 1;
+        content = content[index + marker_len..].to_string();
+    }
+
+    let suffix_len = terminal_control_suffix_len(&content);
+    if suffix_len > 0 {
+        let visible_len = content.len() - suffix_len;
+        visible.push_str(&content[..visible_len]);
+        pending.push_str(&content[visible_len..]);
+    } else {
+        visible.push_str(&content);
+    }
+
+    (visible, runtime_update_requests)
+}
+
+fn terminal_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n")
+}
+
+fn runtime_progress_terminal_output(event: &RuntimeProgressEvent) -> String {
+    let mut lines = Vec::new();
+    let mut message = format!("[RobotCloud] {}", event.message);
+    if let (Some(current), Some(total)) = (event.current, event.total) {
+        message.push_str(&format!(" ({current}/{total})"));
+    }
+    lines.push(message);
+    if let Some(command) = event
+        .command
+        .as_ref()
+        .filter(|command| !command.trim().is_empty())
+    {
+        lines.push(format!("$ {command}"));
+    }
+    if let Some(output) = event
+        .output
+        .as_ref()
+        .filter(|output| !output.trim().is_empty())
+    {
+        lines.push(format!("[{}]", event.stream.as_deref().unwrap_or("output")));
+        lines.push(output.trim_end().to_string());
+    }
+    terminal_crlf(&format!("{}\n", lines.join("\n")))
+}
+
+fn run_runtime_update_from_terminal(
+    app: AppHandle,
+    session_id: String,
+    replay: Arc<Mutex<String>>,
+) {
+    thread::spawn(move || {
+        emit_terminal_output(
+            &app,
+            &session_id,
+            &replay,
+            format!("\r\n[RobotCloud] {RUNTIME_UPDATE_TERMINAL_COMMAND} started.\r\n"),
+        );
+
+        let progress_app = app.clone();
+        let progress_session_id = session_id.clone();
+        let progress_replay = replay.clone();
+        let mut progress = move |event: RuntimeProgressEvent| {
+            let _ = progress_app.emit("runtime-progress", event.clone());
+            emit_terminal_output(
+                &progress_app,
+                &progress_session_id,
+                &progress_replay,
+                runtime_progress_terminal_output(&event),
+            );
+        };
+
+        match update_runtime_with_progress(&app, &mut progress) {
+            Ok(runtime) => {
+                emit_terminal_output(
+                    &app,
+                    &session_id,
+                    &replay,
+                    terminal_crlf(&format!(
+                        "[RobotCloud] Runtime update complete: {}\n",
+                        runtime.display()
+                    )),
+                );
+            }
+            Err(error) => {
+                let event = RuntimeProgressEvent {
+                    phase: "failed".to_string(),
+                    message: error.clone(),
+                    command: None,
+                    stream: None,
+                    output: None,
+                    current: None,
+                    total: None,
+                };
+                let _ = app.emit("runtime-progress", event.clone());
+                emit_terminal_output(
+                    &app,
+                    &session_id,
+                    &replay,
+                    runtime_progress_terminal_output(&event),
+                );
+            }
+        }
+    });
+}
+
 fn spawn_terminal_reader<R: Read + Send + 'static>(
     app: AppHandle,
     session_id: String,
@@ -2570,30 +2724,44 @@ fn spawn_terminal_reader<R: Read + Send + 'static>(
     thread::spawn(move || {
         let mut reader = BufReader::new(reader);
         let mut buffer = [0_u8; 4096];
+        let mut control_pending = String::new();
         loop {
             match reader.read(&mut buffer) {
-                Ok(0) => break,
+                Ok(0) => {
+                    if !control_pending.is_empty() {
+                        emit_terminal_output(
+                            &app,
+                            &session_id,
+                            &replay,
+                            std::mem::take(&mut control_pending),
+                        );
+                    }
+                    break;
+                }
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buffer[..n]).to_string();
-                    append_terminal_replay(&replay, &data);
-                    let _ = app.emit(
-                        "terminal-output",
-                        TerminalOutputEvent {
-                            session_id: session_id.clone(),
-                            data,
-                        },
-                    );
+                    let (visible, runtime_update_requests) =
+                        consume_terminal_control_sequences(&mut control_pending, &data);
+                    emit_terminal_output(&app, &session_id, &replay, visible);
+                    for _ in 0..runtime_update_requests {
+                        run_runtime_update_from_terminal(
+                            app.clone(),
+                            session_id.clone(),
+                            replay.clone(),
+                        );
+                    }
                 }
                 Err(error) => {
+                    if !control_pending.is_empty() {
+                        emit_terminal_output(
+                            &app,
+                            &session_id,
+                            &replay,
+                            std::mem::take(&mut control_pending),
+                        );
+                    }
                     let data = format!("read error: {error}\n");
-                    append_terminal_replay(&replay, &data);
-                    let _ = app.emit(
-                        "terminal-output",
-                        TerminalOutputEvent {
-                            session_id: session_id.clone(),
-                            data,
-                        },
-                    );
+                    emit_terminal_output(&app, &session_id, &replay, data);
                     break;
                 }
             }
@@ -4247,6 +4415,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert!(script.contains("unset PYTHONHOME PYTHONPATH"));
         assert!(script.contains("export PATH=\"$ROBOTCLOUD_LEROBOT_ENV/bin:$PATH\""));
         assert!(script.contains("export PYTHONNOUSERSITE=1"));
+        assert!(script.contains("alias robotcloud-runtime-update="));
         assert!(script.contains("hash -r"));
     }
 
@@ -4267,6 +4436,42 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
         assert!(replay.ends_with(&"x".repeat(50)));
     }
 
+    #[test]
+    fn terminal_runtime_update_control_sequence_is_consumed() {
+        let mut pending = String::new();
+        let (visible, requests) = consume_terminal_control_sequences(
+            &mut pending,
+            &format!("before{RUNTIME_UPDATE_TERMINAL_CONTROL}after"),
+        );
+
+        assert_eq!(visible, "beforeafter");
+        assert_eq!(requests, 1);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn terminal_runtime_update_control_sequence_can_span_chunks() {
+        let mut pending = String::new();
+        let split = RUNTIME_UPDATE_TERMINAL_CONTROL.len() / 2;
+        let (visible, requests) = consume_terminal_control_sequences(
+            &mut pending,
+            &RUNTIME_UPDATE_TERMINAL_CONTROL[..split],
+        );
+
+        assert_eq!(visible, "");
+        assert_eq!(requests, 0);
+        assert_eq!(pending, RUNTIME_UPDATE_TERMINAL_CONTROL[..split]);
+
+        let (visible, requests) = consume_terminal_control_sequences(
+            &mut pending,
+            &RUNTIME_UPDATE_TERMINAL_CONTROL[split..],
+        );
+
+        assert_eq!(visible, "");
+        assert_eq!(requests, 1);
+        assert!(pending.is_empty());
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn terminal_startup_script_prefers_windows_runtime_shims() {
@@ -4277,6 +4482,7 @@ robotcloud-nested = robotcloud.cli:commands.main [extra]
             "$env:ROBOTCLOUD_LEROBOT_ENV\\robotcloud-shims;$env:ROBOTCLOUD_LEROBOT_ENV\\Scripts"
         ));
         assert!(script.contains("$env:PYTHONNOUSERSITE = \"1\""));
+        assert!(script.contains("function robotcloud-runtime-update"));
     }
 
     #[cfg(target_os = "windows")]

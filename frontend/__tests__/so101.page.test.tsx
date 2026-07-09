@@ -414,33 +414,56 @@ describe("SO101 terminal session", () => {
     let currentStatus = updateAvailableStatus;
     const status = jest.fn().mockImplementation(() => Promise.resolve(currentStatus));
     const runtimePrepare = jest.fn().mockResolvedValue({ runtimePath: "/runtime", ready: true });
-    const runtimeUpdate = jest.fn().mockImplementation(() => {
-      currentStatus = {
-        ...updateAvailableStatus,
-        lerobotVersion: "0.6.0",
-        lerobotUpdateAvailable: false
-      };
-      return Promise.resolve({ runtimePath: "/runtime", ready: true });
-    });
+    const runtimeUpdate = jest.fn().mockResolvedValue({ runtimePath: "/runtime", ready: true });
+    let progressCallback: ((event: RuntimeProgressEvent) => void) | null = null;
 
-    installDesktopBridge({
+    const { terminalWrite } = installDesktopBridge({
       status,
       runtime: {
         prepare: runtimePrepare,
         update: runtimeUpdate,
-        onProgress: jest.fn(() => jest.fn())
+        onProgress: jest.fn((callback: (event: RuntimeProgressEvent) => void) => {
+          progressCallback = callback;
+          return jest.fn();
+        })
       }
+    });
+    terminalWrite.mockImplementation((_sessionId: string, data: string) => {
+      if (data.includes(so101TestExports.RUNTIME_UPDATE_COMMAND)) {
+        currentStatus = {
+          ...updateAvailableStatus,
+          lerobotVersion: "0.6.0",
+          lerobotUpdateAvailable: false
+        };
+      }
+      return Promise.resolve({ ok: true });
     });
 
     const view = render(<SO101Client />);
 
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
     const updateButton = await view.findByRole("button", { name: "Update LeRobot runtime" });
     expect(updateButton).toHaveTextContent("");
 
     fireEvent.click(updateButton);
 
     await waitFor(() => {
-      expect(runtimeUpdate).toHaveBeenCalledTimes(1);
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}${so101TestExports.RUNTIME_UPDATE_COMMAND}\r`
+      );
+    });
+    expect(runtimeUpdate).not.toHaveBeenCalled();
+
+    act(() => {
+      progressCallback?.({
+        phase: "ready",
+        message: "LeRobot runtime is ready.",
+        current: null,
+        total: null
+      });
     });
     await waitFor(() => {
       expect(view.queryByRole("button", { name: "Update LeRobot runtime" })).not.toBeInTheDocument();

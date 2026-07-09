@@ -143,6 +143,7 @@ const MAX_CAMERAS = 3;
 const MIN_UPLOAD_EPISODES = 1;
 const MIN_UPLOAD_DURATION_SECONDS = 1;
 const CLEAR_CURRENT_TERMINAL_INPUT = "\x01\x0b";
+const RUNTIME_UPDATE_COMMAND = "robotcloud-runtime-update";
 const numericTextInputProps = {
   type: "text",
   inputMode: "numeric"
@@ -890,6 +891,7 @@ export const so101TestExports = {
   resolvedDatasetRoot,
   buildActionCommand,
   CLEAR_CURRENT_TERMINAL_INPUT,
+  RUNTIME_UPDATE_COMMAND,
   datasetUploadValidationIssues,
   shellArg,
   resetPersistentTerminalForTest
@@ -1289,6 +1291,7 @@ export function SO101Client() {
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
   const configInputRefs = useRef<Partial<Record<ConfigFieldId, HTMLInputElement | null>>>({});
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runtimeUpdateProgressOffRef = useRef<(() => void) | null>(null);
   const [portChecks, setPortChecks] = useState<Record<PortKey, CheckState>>({
     followerPort: idleCheck,
     leaderPort: idleCheck
@@ -1391,6 +1394,8 @@ export function SO101Client() {
       if (highlightTimerRef.current) {
         clearTimeout(highlightTimerRef.current);
       }
+      runtimeUpdateProgressOffRef.current?.();
+      runtimeUpdateProgressOffRef.current = null;
     };
   }, []);
 
@@ -1536,34 +1541,63 @@ export function SO101Client() {
     setStatus(await window.robotcloudDesktop.status());
   }, []);
 
+  const writeTerminalCommand = useCallback(async (
+    command: string,
+    options: { focusTerminal?: boolean; submit?: boolean } = {}
+  ) => {
+    const sessionId = persistentTerminalStore.sessionId;
+    if (!sessionId || !window.robotcloudDesktop) {
+      throw new Error("Terminal is not ready.");
+    }
+    const suffix = options.submit ? "\r" : "";
+    await window.robotcloudDesktop.terminal.write(sessionId, `${CLEAR_CURRENT_TERMINAL_INPUT}${command}${suffix}`);
+    if (options.focusTerminal) {
+      persistentTerminalStore.term?.focus();
+    }
+  }, []);
+
   const updateRuntime = useCallback(async () => {
-    const runtimeBridge = window.robotcloudDesktop?.runtime;
+    const bridge = window.robotcloudDesktop;
+    const runtimeBridge = bridge?.runtime;
     if (!runtimeBridge?.update) return;
 
+    runtimeUpdateProgressOffRef.current?.();
+    runtimeUpdateProgressOffRef.current = null;
     setRuntimeUpdating(true);
-    setPersistentTerminalState("preparing", null);
-    setPersistentRuntimeProgress({
-      phase: "updating",
-      message: "Updating LeRobot runtime...",
-      command: null,
-      stream: null,
-      output: null,
-      current: null,
-      total: null
-    });
-    const offProgress = runtimeBridge.onProgress?.((event) => setPersistentRuntimeProgress(event));
-    try {
-      await runtimeBridge.update();
-      await refreshStatus();
-      setPersistentRuntimeProgress(null);
-      setPersistentTerminalState("ready", null);
-    } catch (error) {
-      setPersistentTerminalState("failed", messageFromUnknownError(error));
-    } finally {
+    setPersistentTerminalError(null);
+    let offProgress: (() => void) | null = null;
+    const finishUpdating = () => {
       offProgress?.();
+      if (runtimeUpdateProgressOffRef.current === offProgress) {
+        runtimeUpdateProgressOffRef.current = null;
+      }
       setRuntimeUpdating(false);
+    };
+    offProgress = runtimeBridge.onProgress?.((event) => {
+      if (event.phase === "ready") {
+        refreshStatus()
+          .catch((error) => setPersistentTerminalError(messageFromUnknownError(error)))
+          .finally(finishUpdating);
+      } else if (event.phase === "failed") {
+        setPersistentTerminalError(event.message);
+        finishUpdating();
+      }
+    }) ?? null;
+    runtimeUpdateProgressOffRef.current = offProgress;
+    try {
+      await writeTerminalCommand(RUNTIME_UPDATE_COMMAND, { focusTerminal: true, submit: true });
+      if (!offProgress) {
+        setRuntimeUpdating(false);
+      }
+    } catch (error) {
+      offProgress?.();
+      if (runtimeUpdateProgressOffRef.current === offProgress) {
+        runtimeUpdateProgressOffRef.current = null;
+      }
+      setRuntimeUpdating(false);
+      setPersistentTerminalError(messageFromUnknownError(error));
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, writeTerminalCommand]);
 
   useEffect(() => {
     if (!token || !bridgeReady) return;
@@ -1582,17 +1616,6 @@ export function SO101Client() {
       disconnectPersistentTerminalResize();
     };
   }, [bridgeReady, refreshStatus, terminalContainerEl, token]);
-
-  const writeTerminalCommand = useCallback(async (command: string, options: { focusTerminal?: boolean } = {}) => {
-    const sessionId = persistentTerminalStore.sessionId;
-    if (!sessionId || !window.robotcloudDesktop) {
-      throw new Error("Terminal is not ready.");
-    }
-    await window.robotcloudDesktop.terminal.write(sessionId, `${CLEAR_CURRENT_TERMINAL_INPUT}${command}`);
-    if (options.focusTerminal) {
-      persistentTerminalStore.term?.focus();
-    }
-  }, []);
 
   const writeActionCommand = useCallback(async (
     action: ActionId,
@@ -2416,7 +2439,7 @@ export function SO101Client() {
                     aria-label={runtimeUpdating ? copy.updatingRuntime : copy.updateRuntime}
                     title={runtimeUpdating ? copy.updatingRuntime : copy.updateRuntime}
                     onClick={updateRuntime}
-                    disabled={runtimeUpdating}
+                    disabled={runtimeUpdating || terminalPhase !== "ready"}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-theme accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <RuntimeUpdateIcon className={`h-4 w-4 ${runtimeUpdating ? "animate-spin" : ""}`} />
