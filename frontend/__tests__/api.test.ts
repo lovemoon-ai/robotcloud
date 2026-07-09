@@ -848,6 +848,7 @@ describe("robotCloudApi", () => {
           {
             task_id: 7,
             dataset_id: 2,
+            job_name: "cube-pickup-v1",
             model_type: "YOLO",
             status: "queued",
             progress: 0.4,
@@ -868,6 +869,7 @@ describe("robotCloudApi", () => {
       {
         id: 7,
         datasetId: 2,
+        jobName: "cube-pickup-v1",
         model: "YOLO",
         status: "queued",
         progress: 40,
@@ -880,11 +882,19 @@ describe("robotCloudApi", () => {
 
   it("createTrainingJob posts transformed payload", async () => {
     setAuthenticatedUser();
-    const config: TrainingConfig = { model: "YOLO", datasetId: "1", learningRate: 0.1, steps: 10, batchSize: 8 };
+    const config: TrainingConfig = {
+      jobName: "cube-pickup-v1",
+      model: "YOLO",
+      datasetId: "1",
+      learningRate: 0.1,
+      steps: 10,
+      batchSize: 8
+    };
     await robotCloudApi.createTrainingJob(config);
     const [, init] = mockedFetch.mock.calls[0];
     expect(JSON.parse(init?.body as string)).toEqual({
       dataset_id: 1,
+      job_name: "cube-pickup-v1",
       model_type: "YOLO",
       params: { learning_rate: 0.1, steps: 10, batch_size: 8 }
     });

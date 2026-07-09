@@ -196,6 +196,7 @@ type BackendDatasetUploadComplete = {
 type BackendTrainingTask = {
   task_id: number;
   dataset_id: number;
+  job_name?: string;
   model_type: string;
   status: string;
   progress: number;
@@ -1084,6 +1085,7 @@ export const robotCloudApi = {
     return data.items.map((task) => ({
       id: task.task_id,
       datasetId: task.dataset_id,
+      jobName: task.job_name ?? "",
       model: task.model_type,
       status: task.status,
       progress: Math.round(task.progress * 100),
@@ -1099,6 +1101,10 @@ export const robotCloudApi = {
       model_type: config.model,
       params
     };
+    const jobName = config.jobName?.trim();
+    if (jobName) {
+      Object.assign(payload, { job_name: jobName });
+    }
     return request<{ task_id: number; status: string }>("/training/create", {
       method: "POST",
       body: JSON.stringify(payload)

@@ -88,6 +88,7 @@ export interface UserSettings {
 
 export interface TrainingJob {
   id: number;
+  jobName: string;
   model: string;
   status: string;
   progress: number;
@@ -102,6 +103,7 @@ export interface TrainingLogChunk {
 }
 
 export interface TrainingConfig {
+  jobName?: string;
   model: string;
   datasetId: string;
   learningRate: number;

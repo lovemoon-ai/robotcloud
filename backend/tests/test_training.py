@@ -43,7 +43,12 @@ def test_training_lifecycle(client: APIClient, sms_gateway: InMemorySmsGateway) 
 
     create_resp = client.post(
         "/api/v1/training/create",
-        {"dataset_id": dataset_id, "model_type": "yolov8", "params": {"epochs": 10}},
+        {
+            "dataset_id": dataset_id,
+            "job_name": "grasp-cube-baseline",
+            "model_type": "yolov8",
+            "params": {"epochs": 10},
+        },
         format="json",
         HTTP_AUTHORIZATION=f"Bearer {token}",
     )
@@ -59,6 +64,7 @@ def test_training_lifecycle(client: APIClient, sms_gateway: InMemorySmsGateway) 
     data = list_resp.json()["data"]
     assert data["total"] == 1
     assert data["items"][0]["task_id"] == task_id
+    assert data["items"][0]["job_name"] == "grasp-cube-baseline"
 
     status_resp = client.get(
         f"/api/v1/training/{task_id}/status",
@@ -67,6 +73,7 @@ def test_training_lifecycle(client: APIClient, sms_gateway: InMemorySmsGateway) 
     assert status_resp.status_code == 200
     status_data = status_resp.json()["data"]
     assert status_data["task_id"] == task_id
+    assert status_data["job_name"] == "grasp-cube-baseline"
     assert status_data["assigned_node"] is None
     assert status_data["assigned_gpus"] == []
     assert status_data["priority"] == 10

@@ -135,6 +135,7 @@ class TrainTask(models.Model):
 
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="train_tasks")
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="train_tasks")
+    job_name = models.CharField(max_length=128, blank=True, default="")
     model_type = models.CharField(max_length=128)
     params = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="queued")

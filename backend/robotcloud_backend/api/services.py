@@ -1251,9 +1251,11 @@ class RobotCloudService:
         dataset_id: int,
         model_type: str,
         params: Dict[str, Any],
+        job_name: str = "",
     ) -> Dict[str, Any]:
         if not model_type:
             raise ValueError("Model type required")
+        job_name = str(job_name or "").strip()[:128]
         user = self._get_user_by_token(token)
         if not self._has_no_limits(user):
             completed_models = user.train_tasks.filter(status="completed").count()
@@ -1266,6 +1268,7 @@ class RobotCloudService:
             task = TrainTask.objects.create(
                 dataset=dataset,
                 user=user,
+                job_name=job_name,
                 model_type=model_type,
                 params=params or {},
                 status="queued",
@@ -1847,7 +1850,8 @@ class RobotCloudService:
         dataset = task.dataset
         result = {
             "model_id": task.id,
-            "name": f"{task.model_type}-{dataset.name}" if dataset else f"{task.model_type}-{task.id}",
+            "name": task.job_name
+            or (f"{task.model_type}-{dataset.name}" if dataset else f"{task.model_type}-{task.id}"),
             "model_type": task.model_type,
             "dataset_id": task.dataset_id,
             "dataset_name": dataset.name if dataset else None,
@@ -2105,6 +2109,7 @@ class RobotCloudService:
         return {
             "task_id": task.id,
             "dataset_id": task.dataset_id,
+            "job_name": task.job_name,
             "model_type": task.model_type,
             "status": task.status,
             "progress": task.progress,

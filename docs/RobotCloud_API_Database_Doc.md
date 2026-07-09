@@ -176,6 +176,7 @@ Form-Data：
 ``` json
 {
   "dataset_id":42,
+  "job_name":"pi05-grasp-v1",
   "model_type":"yolov8",
   "params":{
     "epochs":50,
@@ -196,6 +197,7 @@ Form-Data：
 ``` json
 {
   "task_id":101,
+  "job_name":"pi05-grasp-v1",
   "status":"running",
   "progress":45.3,
   "logs_url":"/storage/train_logs/101.log"
@@ -345,6 +347,7 @@ Response
   id           INT PK                                          
   dataset_id   INT FK                                          
   user_id      INT FK                                          
+  job_name     VARCHAR(128)                 可选实验/任务名称
   model_type   VARCHAR(50)                                     
   params       JSON                                            
   status       ENUM('queued','running','completed','failed')   

@@ -35,9 +35,9 @@ class DatasetAdmin(admin.ModelAdmin):
 
 @admin.register(models.TrainTask)
 class TrainTaskAdmin(admin.ModelAdmin):
-    list_display = ("id", "dataset", "user", "model_type", "status", "progress", "created_at")
+    list_display = ("id", "job_name", "dataset", "user", "model_type", "status", "progress", "created_at")
     list_filter = ("status", "model_type")
-    search_fields = ("dataset__name", "user__phone", "model_type")
+    search_fields = ("job_name", "dataset__name", "user__phone", "model_type")
     readonly_fields = ("created_at",)
     list_select_related = ("dataset", "user")
 
@@ -93,4 +93,3 @@ class AdminLogAdmin(admin.ModelAdmin):
     search_fields = ("admin__phone", "action", "target_type", "target_id")
     readonly_fields = ("created_at",)
     list_select_related = ("admin",)
-

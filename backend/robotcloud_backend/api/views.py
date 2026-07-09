@@ -352,6 +352,7 @@ class TrainingCreateView(RobotCloudAPIView):
                 payload.get("dataset_id"),
                 payload.get("model_type", ""),
                 payload.get("params", {}) or {},
+                payload.get("job_name", ""),
             ),
         )
 
