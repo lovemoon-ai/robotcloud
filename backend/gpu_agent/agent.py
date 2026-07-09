@@ -53,6 +53,9 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/v1/agent/delete_model":
             self._handle_delete_model()
             return
+        if parsed.path == "/api/v1/agent/datasets/upload/cancel":
+            self._handle_resumable_dataset_upload_cancel()
+            return
         if parsed.path == "/api/v1/agent/inference/stop":
             self._handle_inference_stop()
             return
@@ -110,6 +113,27 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             result = self.server.agent.delete_model_files(payload)
+        except ValueError as exc:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"detail": str(exc)}).encode("utf-8"))
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(result).encode("utf-8"))
+
+    def _handle_resumable_dataset_upload_cancel(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length) if content_length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON payload")
+            return
+        try:
+            result = self.server.agent.delete_dataset_upload_files(payload)
         except ValueError as exc:
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
@@ -1991,6 +2015,30 @@ class Agent:
             except OSError:
                 skipped.append(str(path))
         return {"status": "ok", "removed": removed, "skipped": skipped}
+
+    def delete_dataset_upload_files(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        dataset_id_raw = payload.get("dataset_id")
+        try:
+            dataset_id = int(dataset_id_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("dataset_id must be an integer") from exc
+        if dataset_id <= 0:
+            raise ValueError("dataset_id must be positive")
+        upload_dir = self.dataset_upload_dir(dataset_id)
+        root = (self.config.dataset_cache_dir.parent / "agent_datasets").resolve()
+        try:
+            common = Path(os.path.commonpath([str(root), str(upload_dir)]))
+        except ValueError as exc:
+            raise ValueError("dataset upload path is invalid") from exc
+        if common != root:
+            raise ValueError("dataset upload path is invalid")
+        if not upload_dir.exists():
+            return {"status": "ok", "removed": [], "skipped": [str(upload_dir)]}
+        try:
+            shutil.rmtree(upload_dir)
+        except OSError as exc:
+            return {"status": "ok", "removed": [], "skipped": [str(upload_dir)], "detail": str(exc)}
+        return {"status": "ok", "removed": [str(upload_dir)], "skipped": []}
 
     def enqueue_task(self, payload: Dict) -> Dict[str, str]:
         task_id = payload.get("task_id")

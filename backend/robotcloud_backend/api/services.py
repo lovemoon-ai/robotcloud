@@ -388,6 +388,24 @@ class RobotCloudService:
             raise ValueError("Upload session expired")
         return session
 
+    def _delete_agent_dataset_upload_session(self, dataset: Dataset) -> None:
+        metadata = dataset.metadata if isinstance(dataset.metadata, dict) else {}
+        session = metadata.get("upload_session")
+        if not isinstance(session, dict):
+            return
+        node_name = str(session.get("node_name") or dataset.storage_node or "").strip()
+        if not node_name:
+            return
+        node = WorkerNode.objects.filter(node_name=node_name).first()
+        if not node:
+            return
+        url = f"http://{node.ip}:{node.api_port}/api/v1/agent/datasets/upload/cancel"
+        headers = {"Content-Type": "application/json", "X-Agent-Token": node.auth_token}
+        try:
+            requests.post(url, json={"dataset_id": dataset.id}, headers=headers, timeout=5)
+        except Exception:
+            pass
+
     def _write_dataset_file(self, dataset: Dataset, uploaded_file: Any) -> Path:
         dataset_dir = self.dataset_root / f"user_{dataset.owner_id}" / f"dataset_{dataset.id}"
         dataset_dir.mkdir(parents=True, exist_ok=True)
@@ -1195,6 +1213,8 @@ class RobotCloudService:
                     requests.post(url, json={"paths": [dataset.storage_path]}, headers=headers, timeout=5)
                 except Exception:
                     pass
+        elif dataset.storage_backend == Dataset.STORAGE_BACKEND_AGENT:
+            self._delete_agent_dataset_upload_session(dataset)
         dataset.delete()
         return self._response({"deleted": True})
 

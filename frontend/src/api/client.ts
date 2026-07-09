@@ -302,6 +302,8 @@ type StoredAgentUploadSession = {
   targetNode: string;
 };
 
+type DatasetUploadAbortReason = "pause" | "cancel";
+
 const DEFAULT_AGENT_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
 const AGENT_UPLOAD_RETRY_LIMIT = 3;
 const AGENT_UPLOAD_RETRY_DELAY_MS = 500;
@@ -395,6 +397,7 @@ function parseAgentJson<T>(raw: string, fallbackMessage: string): T {
 }
 
 async function agentFetchJson<T>(url: string, init: RequestInit): Promise<T> {
+  throwIfAborted(init.signal ?? undefined);
   const response = await fetch(url, init);
   const raw = await response.text();
   if (!response.ok) {
@@ -462,8 +465,58 @@ function removeStoredAgentUploadSession(key: string): void {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+function uploadAbortReason(signal?: AbortSignal): DatasetUploadAbortReason | null {
+  if (!signal) return null;
+  const reason = (signal as AbortSignal & { reason?: unknown }).reason;
+  return reason === "pause" || reason === "cancel" ? reason : null;
+}
+
+function createAbortError(signal?: AbortSignal): Error {
+  const reason = uploadAbortReason(signal);
+  const error = new Error(reason === "cancel" ? "Upload canceled" : "Upload paused");
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { name?: unknown; message?: unknown };
+  return (
+    candidate.name === "AbortError" ||
+    candidate.message === "Upload paused" ||
+    candidate.message === "Upload canceled"
+  );
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError(signal);
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof globalThis.setTimeout> | null = null;
+    const cleanup = () => {
+      if (timeout) {
+        globalThis.clearTimeout(timeout);
+        timeout = null;
+      }
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(createAbortError(signal));
+    };
+    timeout = globalThis.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function agentUploadStorageKey(form: DatasetUploadInput): string {
@@ -485,10 +538,30 @@ function xhrAgentJson<T>(
   url: string,
   body: Blob | null,
   headers: Record<string, string>,
-  onProgress?: (loaded: number, total: number) => void
+  onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal
 ): Promise<T> {
   return new Promise((resolve, reject) => {
+    throwIfAborted(signal);
     const xhr = new XMLHttpRequest();
+    let settled = false;
+
+    const cleanup = () => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const onAbort = () => {
+      try {
+        xhr.abort();
+      } catch {
+      }
+      settle(() => reject(createAbortError(signal)));
+    };
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && onProgress) {
@@ -499,9 +572,10 @@ function xhrAgentJson<T>(
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
-          resolve(parseAgentJson<T>(xhr.responseText, "Request failed"));
+          const parsed = parseAgentJson<T>(xhr.responseText, "Request failed");
+          settle(() => resolve(parsed));
         } catch (error) {
-          reject(error);
+          settle(() => reject(error));
         }
       } else {
         let message = xhr.responseText.trim();
@@ -520,14 +594,19 @@ function xhrAgentJson<T>(
         }
         const error = new Error(message) as Error & { status?: number };
         error.status = xhr.status;
-        reject(error);
+        settle(() => reject(error));
       }
     };
 
     xhr.onerror = () => {
-      reject(new Error("Network error"));
+      settle(() => reject(new Error("Network error")));
     };
 
+    xhr.onabort = () => {
+      settle(() => reject(createAbortError(signal)));
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
     xhr.open(method, url);
     Object.entries(headers).forEach(([key, value]) => {
       xhr.setRequestHeader(key, value);
@@ -535,6 +614,7 @@ function xhrAgentJson<T>(
     if (body) {
       xhr.setRequestHeader("Content-Type", body.type || "application/octet-stream");
     }
+    throwIfAborted(signal);
     xhr.send(body);
   });
 }
@@ -542,7 +622,8 @@ function xhrAgentJson<T>(
 async function uploadFileToAgentLegacyWithProgress<T>(
   session: BackendDatasetUploadSession,
   file: File,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal
 ): Promise<T> {
   return xhrAgentJson<T>(
     "POST",
@@ -553,7 +634,8 @@ async function uploadFileToAgentLegacyWithProgress<T>(
       if (total > 0 && onProgress) {
         onProgress(Math.round((loaded / total) * 100));
       }
-    }
+    },
+    signal
   );
 }
 
@@ -562,12 +644,15 @@ async function uploadAgentChunkWithRetry(
   file: File,
   start: number,
   end: number,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal
 ): Promise<number> {
+  throwIfAborted(signal);
   const chunk = file.slice(start, end + 1, file.type || "application/octet-stream");
   let attempt = 0;
   let lastError: unknown;
   while (attempt < AGENT_UPLOAD_RETRY_LIMIT) {
+    throwIfAborted(signal);
     attempt += 1;
     try {
       const result = await xhrAgentJson<AgentUploadChunkResult>(
@@ -583,15 +668,20 @@ async function uploadAgentChunkWithRetry(
           if (onProgress) {
             onProgress(Math.min(99, Math.round(((start + loaded) / file.size) * 100)));
           }
-        }
+        },
+        signal
       );
       return Math.max(Number(result.uploaded_bytes ?? end + 1), end + 1);
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
       lastError = error;
       try {
         const status = await agentFetchJson<AgentUploadStatus>(agentUploadEndpoint(session, "status"), {
           method: "GET",
-          headers: agentUploadHeaders(session)
+          headers: agentUploadHeaders(session),
+          signal
         });
         const uploadedBytes = Math.max(Number(status.uploaded_bytes ?? 0), 0);
         if (uploadedBytes > start) {
@@ -601,7 +691,7 @@ async function uploadAgentChunkWithRetry(
         lastError = statusError;
       }
       if (attempt < AGENT_UPLOAD_RETRY_LIMIT) {
-        await sleep(AGENT_UPLOAD_RETRY_DELAY_MS * attempt);
+        await sleep(AGENT_UPLOAD_RETRY_DELAY_MS * attempt, signal);
       }
     }
   }
@@ -611,13 +701,16 @@ async function uploadAgentChunkWithRetry(
 async function uploadFileToAgentResumableWithProgress(
   session: BackendDatasetUploadSession,
   file: File,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal
 ): Promise<BackendDatasetUploadComplete> {
+  throwIfAborted(signal);
   const headers = agentUploadHeaders(session);
   const chunkSize = Math.max(Number(session.chunk_size ?? DEFAULT_AGENT_UPLOAD_CHUNK_SIZE), 1024 * 1024);
   const status = await agentFetchJson<AgentUploadStatus>(agentUploadEndpoint(session, "status"), {
     method: "GET",
-    headers
+    headers,
+    signal
   });
   let uploadedBytes = Math.min(Math.max(Number(status.uploaded_bytes ?? 0), 0), file.size);
   if (onProgress && uploadedBytes > 0) {
@@ -625,9 +718,10 @@ async function uploadFileToAgentResumableWithProgress(
   }
 
   while (uploadedBytes < file.size) {
+    throwIfAborted(signal);
     const start = uploadedBytes;
     const end = Math.min(start + chunkSize, file.size) - 1;
-    uploadedBytes = await uploadAgentChunkWithRetry(session, file, start, end, onProgress);
+    uploadedBytes = await uploadAgentChunkWithRetry(session, file, start, end, onProgress, signal);
   }
 
   const completed = await agentFetchJson<BackendDatasetUploadComplete>(agentUploadEndpoint(session, "complete"), {
@@ -635,7 +729,8 @@ async function uploadFileToAgentResumableWithProgress(
     headers: {
       ...headers,
       "X-File-Size": String(file.size)
-    }
+    },
+    signal
   });
   if (onProgress) {
     onProgress(100);
@@ -870,53 +965,68 @@ export const robotCloudApi = {
   },
   deleteDataset: async (datasetId: number): Promise<{ deleted: boolean }> =>
     request<{ deleted: boolean }>(`/dataset/${datasetId}/delete`, { method: "POST" }),
-  uploadDataset: async (form: DatasetUploadInput & { onProgress?: (percent: number) => void }) => {
+  uploadDataset: async (form: DatasetUploadInput & { onProgress?: (percent: number) => void; signal?: AbortSignal }) => {
     const storageKey = agentUploadStorageKey(form);
     let session = readStoredAgentUploadSession(storageKey);
-    if (!session) {
-      session = await request<BackendDatasetUploadSession>("/dataset/upload_session", {
-        method: "POST",
-        body: JSON.stringify({
+    try {
+      throwIfAborted(form.signal);
+      if (!session) {
+        session = await request<BackendDatasetUploadSession>("/dataset/upload_session", {
+          method: "POST",
+          body: JSON.stringify({
+            name: form.name,
+            description: form.description,
+            visibility: form.visibility,
+            filename: form.file.name,
+            target_node: form.targetNode || ""
+          })
+        });
+        writeStoredAgentUploadSession(storageKey, {
+          session,
+          fileName: form.file.name,
+          fileSize: form.file.size,
+          lastModified: form.file.lastModified,
           name: form.name,
           description: form.description,
           visibility: form.visibility,
-          filename: form.file.name,
-          target_node: form.targetNode || ""
-        })
-      });
-      writeStoredAgentUploadSession(storageKey, {
-        session,
-        fileName: form.file.name,
-        fileSize: form.file.size,
-        lastModified: form.file.lastModified,
-        name: form.name,
-        description: form.description,
-        visibility: form.visibility,
-        targetNode: form.targetNode || ""
-      });
-    }
-    let response: BackendDatasetUploadComplete;
-    try {
-      response = await uploadFileToAgentResumableWithProgress(session, form.file, form.onProgress);
-    } catch (error) {
-      if ((error as { status?: number }).status !== 404) {
-        throw error;
+          targetNode: form.targetNode || ""
+        });
       }
-      response = await uploadFileToAgentLegacyWithProgress<BackendDatasetUploadComplete>(
-        session,
-        form.file,
-        form.onProgress
-      );
+      let response: BackendDatasetUploadComplete;
+      try {
+        response = await uploadFileToAgentResumableWithProgress(session, form.file, form.onProgress, form.signal);
+      } catch (error) {
+        if (isAbortError(error) || (error as { status?: number }).status !== 404) {
+          throw error;
+        }
+        response = await uploadFileToAgentLegacyWithProgress<BackendDatasetUploadComplete>(
+          session,
+          form.file,
+          form.onProgress,
+          form.signal
+        );
+      }
+      removeStoredAgentUploadSession(storageKey);
+      const result: DatasetUploadResult = {
+        datasetId: response.dataset_id,
+        status: response.status,
+        fileName: response.file_name,
+        fileSize: response.file_size,
+        totalFiles: response.total_files
+      };
+      return result;
+    } catch (error) {
+      if (isAbortError(error) && uploadAbortReason(form.signal) === "cancel") {
+        removeStoredAgentUploadSession(storageKey);
+        if (session) {
+          try {
+            await request<{ deleted: boolean }>(`/dataset/${session.dataset_id}/delete`, { method: "POST" });
+          } catch {
+          }
+        }
+      }
+      throw error;
     }
-    removeStoredAgentUploadSession(storageKey);
-    const result: DatasetUploadResult = {
-      datasetId: response.dataset_id,
-      status: response.status,
-      fileName: response.file_name,
-      fileSize: response.file_size,
-      totalFiles: response.total_files
-    };
-    return result;
   },
   fetchTrainingJobs: async (): Promise<TrainingJob[]> => {
     const data = await request<{ items: BackendTrainingTask[]; total: number }>("/training/list?page=1&size=20");

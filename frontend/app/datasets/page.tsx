@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { robotCloudApi } from "@/api/client";
 import { Card } from "@/components/ui/Card";
@@ -22,6 +22,8 @@ interface DatasetForm {
   targetNode: string;
   file?: FileList;
 }
+
+type UploadAbortAction = "pause" | "cancel";
 
 function normalizeArrayBuffer(value: unknown): ArrayBuffer {
   if (value instanceof ArrayBuffer) {
@@ -54,7 +56,10 @@ export default function DatasetsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [uploadControlAction, setUploadControlAction] = useState<UploadAbortAction | null>(null);
   const [preparedUpload, setPreparedUpload] = useState<PreparedDatasetUploadState | null>(null);
+  const uploadAbortControllerRef = useRef<AbortController | null>(null);
+  const uploadAbortActionRef = useRef<UploadAbortAction | null>(null);
   const { data, isLoading, error } = useQuery({
     queryKey: ["datasets"],
     queryFn: robotCloudApi.listDatasets,
@@ -96,6 +101,10 @@ export default function DatasetsPage() {
           notLoggedSuffix: "并获取必要权限。",
           uploadButton: "开始上传",
           uploading: "上传中...",
+          pauseButton: "暂停",
+          cancelButton: "取消",
+          paused: "上传已暂停，可再次点击开始上传继续。",
+          cancelled: "上传已取消。",
           success: "数据集上传成功",
           missingFile: "请选择要上传的压缩文件。",
           preparedLabel: "已准备的数据包",
@@ -154,6 +163,10 @@ export default function DatasetsPage() {
           notLoggedSuffix: "before uploading.",
           uploadButton: "Start Upload",
           uploading: "Uploading...",
+          pauseButton: "Pause",
+          cancelButton: "Cancel",
+          paused: "Upload paused. Start upload again to resume.",
+          cancelled: "Upload canceled.",
           success: "Dataset uploaded successfully",
           missingFile: "Select an archive file to upload.",
           preparedLabel: "Prepared package",
@@ -197,6 +210,22 @@ export default function DatasetsPage() {
   const uploadAgents = agentsQuery.data?.items.filter((agent) => agent.canUpload) ?? [];
   const selectedTargetNode = form.watch("targetNode");
 
+  const clearUploadAbortState = () => {
+    uploadAbortControllerRef.current = null;
+    uploadAbortActionRef.current = null;
+    setUploadControlAction(null);
+  };
+
+  const abortUpload = (action: UploadAbortAction) => {
+    const controller = uploadAbortControllerRef.current;
+    if (!controller || controller.signal.aborted) {
+      return;
+    }
+    uploadAbortActionRef.current = action;
+    setUploadControlAction(action);
+    controller.abort(action);
+  };
+
   useEffect(() => {
     let cancelled = false;
     void readPreparedDatasetUpload().then((prepared) => {
@@ -239,6 +268,7 @@ export default function DatasetsPage() {
       setSuccess(copy.upload.success);
       setFormError(null);
       setUploadProgress(0);
+      clearUploadAbortState();
       void clearPreparedDatasetUpload();
       setPreparedUpload(null);
       form.reset({
@@ -249,11 +279,21 @@ export default function DatasetsPage() {
       } as Partial<DatasetForm>);
     },
     onError: (uploadError: unknown) => {
+      const abortAction = uploadAbortActionRef.current;
       setSuccess(null);
-      setUploadProgress(0);
-      setFormError(uploadError instanceof Error ? uploadError.message : copy.upload.fallbackError);
+      if (abortAction === "pause") {
+        setFormError(copy.upload.paused);
+      } else if (abortAction === "cancel") {
+        setFormError(copy.upload.cancelled);
+        setUploadProgress(0);
+      } else {
+        setUploadProgress(0);
+        setFormError(uploadError instanceof Error ? uploadError.message : copy.upload.fallbackError);
+      }
+      clearUploadAbortState();
     }
   });
+  const uploadInProgress = mutation.isPending;
 
   const deleteMutation = useMutation({
     mutationFn: robotCloudApi.deleteDataset,
@@ -316,6 +356,10 @@ export default function DatasetsPage() {
     setFormError(null);
     setSuccess(null);
     setUploadProgress(0);
+    setUploadControlAction(null);
+    uploadAbortActionRef.current = null;
+    const uploadController = new AbortController();
+    uploadAbortControllerRef.current = uploadController;
     try {
       await mutation.mutateAsync({
         file,
@@ -323,7 +367,8 @@ export default function DatasetsPage() {
         description: values.description,
         visibility: values.visibility,
         targetNode: values.targetNode,
-        onProgress: (percent) => setUploadProgress(percent)
+        onProgress: (percent) => setUploadProgress(percent),
+        signal: uploadController.signal
       });
     } catch {
       // Error state is handled by the mutation callbacks.
@@ -431,13 +476,31 @@ export default function DatasetsPage() {
               {copy.upload.notLoggedSuffix}
             </p>
           ) : null}
-          <button
-            type="submit"
-            className="w-full rounded-md gradient-primary py-2 font-semibold text-white transition hover:opacity-90"
-            disabled={mutation.isPending || (Boolean(token) && !uploadAgents.length)}
-          >
-            {mutation.isPending ? `${copy.upload.uploading} ${uploadProgress}%` : copy.upload.uploadButton}
-          </button>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+            <button
+              type="submit"
+              className="rounded-md gradient-primary px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={uploadInProgress || (Boolean(token) && !uploadAgents.length)}
+            >
+              {uploadInProgress ? `${copy.upload.uploading} ${uploadProgress}%` : copy.upload.uploadButton}
+            </button>
+            <button
+              type="button"
+              onClick={() => abortUpload("pause")}
+              className="rounded-md border border-theme px-4 py-2 text-sm font-semibold accent-text transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!uploadInProgress || uploadControlAction !== null}
+            >
+              {copy.upload.pauseButton}
+            </button>
+            <button
+              type="button"
+              onClick={() => abortUpload("cancel")}
+              className="rounded-md border border-red-500/50 px-4 py-2 text-sm font-semibold text-red-400 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!uploadInProgress || uploadControlAction !== null}
+            >
+              {copy.upload.cancelButton}
+            </button>
+          </div>
           {formError ? <p className="text-sm text-red-400">{formError}</p> : null}
           {success ? <p className="text-sm accent-text">{success}</p> : null}
         </form>

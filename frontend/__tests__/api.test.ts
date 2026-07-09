@@ -1,3 +1,4 @@
+import { waitFor } from "@testing-library/react";
 import { robotCloudApi } from "@/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
 import {
@@ -37,7 +38,12 @@ describe("robotCloudApi", () => {
   const originalFetch = global.fetch;
   let lastXhr: XMLHttpRequest | null = null;
   let nextXhrResponseText: string | null = null;
-  let xhrQueue: Array<{ status?: number; responseText?: string; error?: boolean }> = [];
+  let xhrQueue: Array<{ status?: number; responseText?: string; error?: boolean; defer?: boolean }> = [];
+
+  const storedUploadKeys = () =>
+    Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(
+      (key): key is string => Boolean(key?.startsWith("robotcloud:agent-upload:"))
+    );
 
   beforeEach(() => {
     mockedFetch = jest.fn().mockResolvedValue({
@@ -51,12 +57,14 @@ describe("robotCloudApi", () => {
       upload = { onprogress: null as null | ((event: ProgressEvent) => void) };
       onload: null | (() => void) = null;
       onerror: null | (() => void) = null;
+      onabort: null | (() => void) = null;
       status = 200;
       responseText = "";
       _method = "";
       _url = "";
       _headers: Record<string, string> = {};
       _body: Document | BodyInit | null = null;
+      _aborted = false;
 
       open(method: string, url: string) {
         this._method = method;
@@ -83,11 +91,21 @@ describe("robotCloudApi", () => {
             }
             return;
           }
+          if (queued.defer) {
+            return;
+          }
         } else if (!this.responseText) {
           this.responseText = JSON.stringify({ code: 0, data: {} });
         }
         if (this.onload) {
           this.onload();
+        }
+      }
+
+      abort() {
+        this._aborted = true;
+        if (this.onabort) {
+          this.onabort();
         }
       }
     }
@@ -487,6 +505,155 @@ describe("robotCloudApi", () => {
       fileSize: 7,
       totalFiles: 5
     });
+  });
+
+  it("pauses a resumable upload and keeps the stored session", async () => {
+    setAuthenticatedUser();
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          dataset_id: 4,
+          status: "processing",
+          upload_url: "https://agent.example.test/api/v1/agent/datasets/upload",
+          upload_token: "upload-token",
+          expires_at: "2024-01-01T00:15:00Z",
+          expires_in: 900,
+          chunk_size: 1024,
+          node_name: "gpu-node-1",
+          file_name: "dataset.zip"
+        }
+      })
+    } as unknown as Response);
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: jest.fn().mockResolvedValue(JSON.stringify({ uploaded_bytes: 0, complete: false }))
+    } as unknown as Response);
+    xhrQueue = [{ defer: true }];
+    const controller = new AbortController();
+    const file = new File(["content"], "dataset.zip", { type: "application/zip" });
+
+    const upload = robotCloudApi.uploadDataset({
+      file,
+      name: "pause",
+      description: "desc",
+      visibility: "private",
+      targetNode: "gpu-node-1",
+      signal: controller.signal
+    });
+
+    await waitFor(() => expect(lastXhr).not.toBeNull());
+    expect(storedUploadKeys()).toHaveLength(1);
+    controller.abort("pause");
+
+    await expect(upload).rejects.toThrow("Upload paused");
+    expect(storedUploadKeys()).toHaveLength(1);
+    expect(mockedFetch.mock.calls.some(([url]) => url === `${API_BASE}/dataset/4/delete`)).toBe(false);
+  });
+
+  it("cancels a resumable upload and deletes the unfinished dataset", async () => {
+    setAuthenticatedUser();
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          dataset_id: 5,
+          status: "processing",
+          upload_url: "https://agent.example.test/api/v1/agent/datasets/upload",
+          upload_token: "upload-token",
+          expires_at: "2024-01-01T00:15:00Z",
+          expires_in: 900,
+          chunk_size: 1024,
+          node_name: "gpu-node-1",
+          file_name: "dataset.zip"
+        }
+      })
+    } as unknown as Response);
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: jest.fn().mockResolvedValue(JSON.stringify({ uploaded_bytes: 0, complete: false }))
+    } as unknown as Response);
+    xhrQueue = [{ defer: true }];
+    const controller = new AbortController();
+    const file = new File(["content"], "dataset.zip", { type: "application/zip" });
+
+    const upload = robotCloudApi.uploadDataset({
+      file,
+      name: "cancel",
+      description: "desc",
+      visibility: "private",
+      targetNode: "gpu-node-1",
+      signal: controller.signal
+    });
+
+    await waitFor(() => expect(lastXhr).not.toBeNull());
+    expect(storedUploadKeys()).toHaveLength(1);
+    controller.abort("cancel");
+
+    await expect(upload).rejects.toThrow("Upload canceled");
+    expect(storedUploadKeys()).toHaveLength(0);
+    expect(
+      mockedFetch.mock.calls.some(
+        ([url, init]) => url === `${API_BASE}/dataset/5/delete` && init?.method === "POST"
+      )
+    ).toBe(true);
+  });
+
+  it("finishes session creation before deleting when cancel is requested early", async () => {
+    setAuthenticatedUser();
+    let resolveSession!: (response: Response) => void;
+    const sessionRequest = new Promise<Response>((resolve) => {
+      resolveSession = resolve;
+    });
+    mockedFetch.mockImplementationOnce(() => sessionRequest);
+    const controller = new AbortController();
+    const file = new File(["content"], "dataset.zip", { type: "application/zip" });
+
+    const upload = robotCloudApi.uploadDataset({
+      file,
+      name: "early-cancel",
+      description: "desc",
+      visibility: "private",
+      targetNode: "gpu-node-1",
+      signal: controller.signal
+    });
+
+    await waitFor(() => expect(mockedFetch).toHaveBeenCalledWith(`${API_BASE}/dataset/upload_session`, expect.any(Object)));
+    const [, sessionInit] = mockedFetch.mock.calls[0];
+    expect(sessionInit?.signal).toBeUndefined();
+    controller.abort("cancel");
+    resolveSession({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          dataset_id: 6,
+          status: "processing",
+          upload_url: "https://agent.example.test/api/v1/agent/datasets/upload",
+          upload_token: "upload-token",
+          expires_at: "2024-01-01T00:15:00Z",
+          expires_in: 900,
+          chunk_size: 1024,
+          node_name: "gpu-node-1",
+          file_name: "dataset.zip"
+        }
+      })
+    } as unknown as Response);
+
+    await expect(upload).rejects.toThrow("Upload canceled");
+    expect(storedUploadKeys()).toHaveLength(0);
+    expect(
+      mockedFetch.mock.calls.some(
+        ([url, init]) => url === `${API_BASE}/dataset/6/delete` && init?.method === "POST"
+      )
+    ).toBe(true);
   });
 
   it("retries a chunk when the status probe also fails", async () => {
