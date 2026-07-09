@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 
-from robotcloud_backend.api.models import Dataset, WorkerNode
+from robotcloud_backend.api.models import Dataset, InferenceTask, TrainTask, User, WorkerNode
 from robotcloud_backend.api.scheduler import SchedulerService
 from robotcloud_backend.sms import InMemorySmsGateway
 
@@ -255,3 +255,198 @@ def test_scheduler_applies_safe_pi05_defaults(
     }
     assert params["batch_size"] == 16
     assert params["learning_rate"] == 2.5e-5
+
+
+def test_scheduler_dispatches_inference_on_direct_h20_port(
+    client: APIClient, sms_gateway: InMemorySmsGateway, monkeypatch
+) -> None:
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13800000005")
+    user = User.objects.get(phone="13800000005")
+    user.role = User.ROLE_PLUS
+    user.save(update_fields=["role"])
+    dataset = Dataset.objects.get(id=dataset_id)
+    train_task = TrainTask.objects.create(
+        dataset=dataset,
+        user=user,
+        model_type="Pi0.5",
+        params={},
+        status="completed",
+        progress=1.0,
+        logs_url="",
+        checkpoint_path="/srv/checkpoints/pi05",
+    )
+    register_resp = client.post(
+        "/api/v1/internal/agent/register",
+        {"node_name": "h20", "ip": "h20.conductor-ai.top", "gpu_total": 1, "version": "1.0.0", "port": 5160},
+        format="json",
+    )
+    assert register_resp.status_code == 200
+    agent_token = register_resp.json()["data"]["token"]
+    create_resp = client.post(
+        "/api/v1/inference/create",
+        {"model_id": train_task.id},
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert create_resp.status_code == 200
+    dispatched: dict = {}
+
+    def _fake_dispatch(url, json=None, headers=None, timeout=None, **kwargs):
+        assert url == "http://h20.conductor-ai.top:5160/api/v1/agent/infer"
+        assert headers and headers.get("X-Agent-Token") == agent_token
+        dispatched.update(json or {})
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"status": "accepted"}
+
+        return _Response()
+
+    monkeypatch.setattr("robotcloud_backend.api.scheduler.requests.post", _fake_dispatch)
+
+    scheduler = SchedulerService(loop_interval=0.01)
+    assigned = scheduler.perform_scheduling_cycle()
+    assert assigned == 1
+    assert dispatched["cmd"] == "lerobot-infer"
+    assert dispatched["params"] == {"host": "0.0.0.0", "port": 5161}
+    assert dispatched["checkpoint_path"] == "/srv/checkpoints/pi05"
+
+
+def test_scheduler_dispatches_inference_while_training_uses_same_gpu(
+    client: APIClient, sms_gateway: InMemorySmsGateway, monkeypatch
+) -> None:
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13800000006")
+    user = User.objects.get(phone="13800000006")
+    user.role = User.ROLE_PLUS
+    user.save(update_fields=["role"])
+    dataset = Dataset.objects.get(id=dataset_id)
+    model_task = TrainTask.objects.create(
+        dataset=dataset,
+        user=user,
+        model_type="Pi0.5",
+        params={},
+        status="completed",
+        progress=1.0,
+        logs_url="",
+        checkpoint_path="/srv/checkpoints/pi05",
+        assigned_node="h20",
+        assigned_gpus="[0]",
+    )
+    TrainTask.objects.create(
+        dataset=dataset,
+        user=user,
+        model_type="Pi0.5",
+        params={},
+        status="running",
+        progress=0.5,
+        logs_url="",
+        assigned_node="h20",
+        assigned_gpus="[0]",
+    )
+    register_resp = client.post(
+        "/api/v1/internal/agent/register",
+        {"node_name": "h20", "ip": "10.0.0.20", "gpu_total": 1, "version": "1.0.0", "port": 5160},
+        format="json",
+    )
+    assert register_resp.status_code == 200
+    agent_token = register_resp.json()["data"]["token"]
+    create_resp = client.post(
+        "/api/v1/inference/create",
+        {"model_id": model_task.id},
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert create_resp.status_code == 200
+    inference_task_id = create_resp.json()["data"]["task_id"]
+    dispatched: dict = {}
+
+    def _fake_dispatch(url, json=None, headers=None, timeout=None, **kwargs):
+        assert url == "http://10.0.0.20:5160/api/v1/agent/infer"
+        assert headers and headers.get("X-Agent-Token") == agent_token
+        dispatched.update(json or {})
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"status": "accepted"}
+
+        return _Response()
+
+    monkeypatch.setattr("robotcloud_backend.api.scheduler.requests.post", _fake_dispatch)
+
+    scheduler = SchedulerService(loop_interval=0.01)
+    assigned = scheduler.perform_scheduling_cycle()
+    assert assigned == 1
+    assert dispatched["task_id"] == inference_task_id
+    task = InferenceTask.objects.get(id=inference_task_id)
+    assert task.status == "running"
+    assert task.assigned_node == "h20"
+    assert task.assigned_gpus == "[0]"
+
+
+def test_scheduler_dispatches_training_while_inference_uses_same_gpu(
+    client: APIClient, sms_gateway: InMemorySmsGateway, monkeypatch
+) -> None:
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13800000007")
+    user = User.objects.get(phone="13800000007")
+    dataset = Dataset.objects.get(id=dataset_id)
+    dataset.storage_backend = Dataset.STORAGE_BACKEND_AGENT
+    dataset.storage_node = "h20"
+    dataset.storage_path = "/srv/robotcloud/agent_datasets/dataset_7/train.zip"
+    dataset.save(update_fields=["storage_backend", "storage_node", "storage_path"])
+    InferenceTask.objects.create(
+        model_id=999,
+        dataset=dataset,
+        user=user,
+        status="running",
+        progress=0.5,
+        assigned_node="h20",
+        assigned_gpus="[0]",
+        checkpoint_path="/srv/checkpoints/pi05",
+    )
+    register_resp = client.post(
+        "/api/v1/internal/agent/register",
+        {"node_name": "h20", "ip": "10.0.0.20", "gpu_total": 1, "version": "1.0.0", "port": 5160},
+        format="json",
+    )
+    assert register_resp.status_code == 200
+    agent_token = register_resp.json()["data"]["token"]
+    create_resp = client.post(
+        "/api/v1/training/create",
+        {"dataset_id": dataset_id, "model_type": "Pi0.5", "params": {"steps": 100}},
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert create_resp.status_code == 200
+    train_task_id = create_resp.json()["data"]["task_id"]
+    dispatched: dict = {}
+
+    def _fake_dispatch(url, json=None, headers=None, timeout=None, **kwargs):
+        assert url == "http://10.0.0.20:5160/api/v1/agent/run"
+        assert headers and headers.get("X-Agent-Token") == agent_token
+        dispatched.update(json or {})
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"status": "accepted"}
+
+        return _Response()
+
+    monkeypatch.setattr("robotcloud_backend.api.scheduler.requests.post", _fake_dispatch)
+
+    scheduler = SchedulerService(loop_interval=0.01)
+    assigned = scheduler.perform_scheduling_cycle()
+    assert assigned == 1
+    assert dispatched["task_id"] == train_task_id
+    task = TrainTask.objects.get(id=train_task_id)
+    assert task.status == "running"
+    assert task.assigned_node == "h20"
+    assert task.assigned_gpus == "[0]"

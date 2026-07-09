@@ -1,7 +1,7 @@
 # 🧩 RobotCloud GPU 调度系统架构设计
 
 **版本**：v1.1\
-**最后更新**：2025-11-04\
+**最后更新**：2026-07-09\
 **适用范围**：Scheduler 与 GPU Agent 部署设计、通信协议、安全架构
 
 ------------------------------------------------------------------------
@@ -199,7 +199,8 @@ ADD COLUMN retry_count INT;
 
 -   优先级：Pro(100) \> Plus(50) \> Free(10)
 -   排序键：priority DESC, created_at ASC
--   并发限制：每用户 2\~4，系统全局 N=GPU 数
+-   并发限制：训练与推理分别计算；训练每用户 2\~4，推理每用户 1\~2 且当前全局单推理任务。
+-   资源视图：训练调度只统计 `train_tasks` 中 running 任务的 `assigned_gpus`；推理调度只统计 `inference_tasks` 中 running 任务的 `assigned_gpus`。训练与推理互不占用彼此的调度名额，允许同一 GPU 节点同时承载训练和推理进程。
 -   Scheduler 每 1 秒循环：
     -   拉取 pending 任务\
     -   分配可用 GPU\

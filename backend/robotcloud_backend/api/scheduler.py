@@ -25,6 +25,7 @@ PI05_DEFAULT_RENAME_MAP = {
     "observation.images.side": "observation.images.left_wrist_0_rgb",
 }
 LEGACY_DEFAULT_LEARNING_RATE = 0.001
+DEFAULT_INFERENCE_SERVER_PORT = 5161
 
 
 def _normalize_policy_name(model_type: str) -> str:
@@ -108,14 +109,6 @@ class SchedulerService:
             if not task.assigned_node:
                 continue
             node_gpu_usage[task.assigned_node].update(self._parse_assigned_gpus(task.assigned_gpus))
-        running_inference = InferenceTask.objects.filter(
-            status="running", assigned_node__in=[node.node_name for node in nodes]
-        )
-        for task in running_inference:
-            if not task.assigned_node:
-                continue
-            node_gpu_usage[task.assigned_node].update(self._parse_assigned_gpus(task.assigned_gpus))
-
         running_counts = {
             row["user_id"]: row["count"]
             for row in TrainTask.objects.filter(status="running").values("user_id").annotate(count=Count("id"))
@@ -169,13 +162,6 @@ class SchedulerService:
             return 0
 
         node_gpu_usage: Dict[str, Set[int]] = defaultdict(set)
-        running_train = TrainTask.objects.filter(
-            status="running", assigned_node__in=[node.node_name for node in nodes]
-        )
-        for task in running_train:
-            if not task.assigned_node:
-                continue
-            node_gpu_usage[task.assigned_node].update(self._parse_assigned_gpus(task.assigned_gpus))
         running_inference = InferenceTask.objects.filter(
             status="running", assigned_node__in=[node.node_name for node in nodes]
         )
@@ -272,7 +258,7 @@ class SchedulerService:
             "task_id": task.id,
             "gpus": [gpu_index],
             "cmd": "lerobot-infer",
-            "params": {"host": "0.0.0.0", "port": 6152},
+            "params": {"host": "0.0.0.0", "port": DEFAULT_INFERENCE_SERVER_PORT},
             "checkpoint_path": task.checkpoint_path,
         }
         headers = {
