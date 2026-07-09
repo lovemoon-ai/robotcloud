@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildTrainingParams,
   isPi05TrainingModel,
@@ -19,6 +19,8 @@ import { useLocaleStore } from "@/store/useLocaleStore";
 import { useThemeStore } from "@/store/useThemeStore";
 
 const ACTIVE_TRAINING_STATUSES: Array<TrainingJob["status"]> = ["queued", "running"];
+const LOG_CHUNK_LIMIT = 1024 * 1024;
+const LOG_POLL_INTERVAL_MS = 2000;
 const PI05_PRESETS = {
   memory: { batchSize: 1, gradientCheckpointing: true },
   balanced: { batchSize: 8, gradientCheckpointing: true },
@@ -45,6 +47,10 @@ function parseParams(text: string): Record<string, unknown> {
     throw new Error("Training params must be a JSON object.");
   }
   return parsed as Record<string, unknown>;
+}
+
+function normalizeLogContent(content: string) {
+  return content.replace(/\r(?!\n)/g, "\n");
 }
 
 function TrainPageContent() {
@@ -221,6 +227,12 @@ function TrainPageContent() {
   const [logComplete, setLogComplete] = useState<boolean>(false);
   const [logError, setLogError] = useState<string | null>(null);
   const [isLogMaximized, setIsLogMaximized] = useState<boolean>(false);
+  const [isLogLoading, setIsLogLoading] = useState<boolean>(false);
+  const [logRefreshSignal, setLogRefreshSignal] = useState(0);
+  const logOffsetRef = useRef(0);
+  const logCompleteRef = useRef(false);
+  const logFetchInFlightRef = useRef(false);
+  const logViewportRef = useRef<HTMLDivElement | null>(null);
   const [completedTaskIds, setCompletedTaskIds] = useState<Set<number>>(new Set());
   const [createError, setCreateError] = useState<string | null>(null);
   const [paramsTemplateModel, setParamsTemplateModel] = useState(selectedModel);
@@ -281,6 +293,10 @@ function TrainPageContent() {
     setLogComplete(false);
     setLogError(null);
     setIsLogMaximized(false);
+    setIsLogLoading(false);
+    logOffsetRef.current = 0;
+    logCompleteRef.current = false;
+    logFetchInFlightRef.current = false;
   };
 
   const openLog = (taskId: number) => {
@@ -289,6 +305,11 @@ function TrainPageContent() {
     setLogOffset(0);
     setLogComplete(false);
     setLogError(null);
+    setIsLogLoading(false);
+    logOffsetRef.current = 0;
+    logCompleteRef.current = false;
+    logFetchInFlightRef.current = false;
+    setLogRefreshSignal((value) => value + 1);
   };
 
   useEffect(() => {
@@ -299,37 +320,69 @@ function TrainPageContent() {
     openLog(parsed);
   }, [searchParams, token]);
 
-  // Poll logs while modal open
-  const [pollTick, setPollTick] = useState(0);
-  const shouldPoll = Boolean(logTaskId && token && !logComplete);
   useEffect(() => {
-    if (!shouldPoll) return;
+    const viewport = logViewportRef.current;
+    if (!viewport) return;
+    viewport.scrollTop = viewport.scrollHeight;
+  }, [isLogMaximized, logBuffer]);
+
+  // Poll logs while modal open. Drain several chunks per tick so completed logs
+  // do not appear stuck at the first 64KB page.
+  useEffect(() => {
+    if (!logTaskId || !token) return;
     let aborted = false;
-    const fetchChunk = async () => {
+
+    const fetchChunks = async () => {
+      if (logFetchInFlightRef.current || logCompleteRef.current) return;
+      logFetchInFlightRef.current = true;
+      setIsLogLoading(true);
       try {
-        const chunk = await robotCloudApi.fetchTrainingLog({ taskId: logTaskId!, offset: logOffset });
-        if (aborted) return;
-        const newContent = chunk.content || "";
-        if (newContent) setLogBuffer((prev) => prev + newContent);
-        setLogOffset(chunk.nextOffset);
-        setLogComplete(chunk.complete);
-        setLogError(null);
-        // Check if log contains "End of training" to mark task as completed
-        if (newContent.includes("End of training") || (logBuffer + newContent).includes("End of training")) {
-          setCompletedTaskIds((prev) => new Set(prev).add(logTaskId!));
+        for (let chunkIndex = 0; chunkIndex < 4; chunkIndex += 1) {
+          const offset = logOffsetRef.current;
+          const chunk = await robotCloudApi.fetchTrainingLog({
+            taskId: logTaskId,
+            offset,
+            limit: LOG_CHUNK_LIMIT
+          });
+          if (aborted) return;
+
+          const rawContent = chunk.content || "";
+          const newContent = normalizeLogContent(rawContent);
+          if (newContent) {
+            setLogBuffer((prev) => prev + newContent);
+          }
+
+          logOffsetRef.current = chunk.nextOffset;
+          logCompleteRef.current = chunk.complete;
+          setLogOffset(chunk.nextOffset);
+          setLogComplete(chunk.complete);
+          setLogError(null);
+
+          if (newContent.includes("End of training")) {
+            setCompletedTaskIds((prev) => new Set(prev).add(logTaskId));
+          }
+          if (chunk.complete || !rawContent || chunk.nextOffset <= offset) {
+            break;
+          }
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setLogError(message);
+      } finally {
+        if (!aborted) {
+          setIsLogLoading(false);
+        }
+        logFetchInFlightRef.current = false;
       }
     };
-    fetchChunk();
-    const t = setInterval(() => setPollTick((x) => x + 1), 2000);
+
+    fetchChunks();
+    const t = setInterval(fetchChunks, LOG_POLL_INTERVAL_MS);
     return () => {
       aborted = true;
       clearInterval(t);
     };
-  }, [shouldPoll, logTaskId, logOffset, pollTick, token, logBuffer]);
+  }, [logRefreshSignal, logTaskId, token]);
 
   // Helper function to get display status for a job
   const getDisplayStatus = (job: TrainingJob): "queued" | "running" | "completed" => {
@@ -603,15 +656,16 @@ function TrainPageContent() {
               </div>
             </div>
             <div
+              ref={logViewportRef}
               className={`overflow-auto rounded p-3 text-xs font-mono ${isLogMaximized ? "h-[calc(100%-5rem)]" : "h-96"} ${theme === "light" ? "bg-white text-black border border-gray-200" : "bg-black text-white"}`}
             >
               <pre className="whitespace-pre-wrap leading-relaxed">{logBuffer || (logError ? `Error: ${logError}` : "Waiting for logs...")}</pre>
             </div>
             <div className="mt-2 flex items-center justify-between text-xs text-muted">
-              <span>Offset: {logOffset}{logComplete ? " · Completed" : ""}</span>
+              <span>Offset: {logOffset}{logComplete ? " · Completed" : isLogLoading ? " · Loading" : ""}</span>
               {!logComplete ? (
                 <button
-                  onClick={() => setPollTick((x) => x + 1)}
+                  onClick={() => setLogRefreshSignal((x) => x + 1)}
                   className="accent-text hover:text-primary"
                   type="button"
                 >
