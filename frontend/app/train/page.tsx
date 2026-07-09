@@ -17,6 +17,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLocaleStore } from "@/store/useLocaleStore";
 import { useThemeStore } from "@/store/useThemeStore";
+import { getTrainingModelDefaults, getTrainingModelOption, LEROBOT_TRAINING_MODELS } from "@/training/models";
 
 const ACTIVE_TRAINING_STATUSES: Array<TrainingJob["status"]> = ["queued", "running"];
 const LOG_CHUNK_LIMIT = 1024 * 1024;
@@ -103,20 +104,25 @@ function TrainPageContent() {
     },
     refetchIntervalInBackground: true
   });
+  const initialModelDefaults = getTrainingModelDefaults("ACT");
   const form = useForm<TrainingConfig>({
     defaultValues: {
       ...DEFAULT_TRAINING_VALUES,
-      datasetId: initialDatasetId
+      datasetId: initialDatasetId,
+      learningRate: initialModelDefaults.learningRate,
+      steps: initialModelDefaults.steps,
+      batchSize: initialModelDefaults.batchSize
     }
   });
-  const selectedModel = form.watch("model");
+  const selectedModelValue = form.watch("model");
+  const selectedModel = getTrainingModelOption(selectedModelValue) ?? LEROBOT_TRAINING_MODELS[0];
   const learningRate = form.watch("learningRate");
   const steps = form.watch("steps");
   const batchSize = form.watch("batchSize");
   const pi05Preset = form.watch("pi05Preset") ?? "memory";
   const pi05TrainingScope = form.watch("pi05TrainingScope") ?? "expert";
   const pi05PresetConfig = PI05_PRESETS[pi05Preset];
-  const isPi05Selected = isPi05TrainingModel(selectedModel);
+  const isPi05Selected = isPi05TrainingModel(selectedModelValue);
   const pi05EffectiveBatchSize = pi05TrainingScope === "full" ? 1 : pi05PresetConfig.batchSize;
   const pi05GradientCheckpointing = pi05TrainingScope === "full" || pi05PresetConfig.gradientCheckpointing;
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
@@ -125,7 +131,7 @@ function TrainPageContent() {
       formatParams(
         buildTrainingParams({
           ...DEFAULT_TRAINING_VALUES,
-          model: selectedModel,
+          model: selectedModelValue,
           datasetId: initialDatasetId,
           learningRate,
           steps,
@@ -134,7 +140,7 @@ function TrainPageContent() {
           pi05TrainingScope
         })
       ),
-    [batchSize, initialDatasetId, learningRate, pi05Preset, pi05TrainingScope, selectedModel, steps]
+    [batchSize, initialDatasetId, learningRate, pi05Preset, pi05TrainingScope, selectedModelValue, steps]
   );
   const [paramsText, setParamsText] = useState(paramsTemplate);
   const [paramsDirty, setParamsDirty] = useState(false);
@@ -151,6 +157,11 @@ function TrainPageContent() {
         learningRateLabel: "学习率",
         batchSizeLabel: "Batch Size",
         epochsLabel: "Steps",
+        presetLabel: "SO101 训练预设",
+        cameraPreset: "2/3 路 RGB 相机",
+        jointPreset: "6DoF joint state/action",
+        taskRequired: "需要数据集 task 字段",
+        taskOptional: "不依赖 task 字段",
         pi05ModeTitle: "Pi0.5 轻量微调",
         pi05ModeDescription: "默认基于 lerobot/pi05_base，只训练 Action Expert，避免误触发 4B 参数全量训练。",
         pi05PresetLabel: "H20 预设",
@@ -204,6 +215,11 @@ function TrainPageContent() {
         learningRateLabel: "Learning Rate",
         batchSizeLabel: "Batch Size",
         epochsLabel: "Steps",
+        presetLabel: "SO101 Training Preset",
+        cameraPreset: "2/3 RGB cameras",
+        jointPreset: "6DoF joint state/action",
+        taskRequired: "Requires dataset task field",
+        taskOptional: "Does not require task field",
         pi05ModeTitle: "Pi0.5 lightweight fine-tuning",
         pi05ModeDescription: "Defaults to lerobot/pi05_base and trains only the Action Expert to avoid accidental 4B full training.",
         pi05PresetLabel: "H20 Preset",
@@ -262,11 +278,11 @@ function TrainPageContent() {
   const logViewportRef = useRef<HTMLDivElement | null>(null);
   const [completedTaskIds, setCompletedTaskIds] = useState<Set<number>>(new Set());
   const [createError, setCreateError] = useState<string | null>(null);
-  const [paramsTemplateModel, setParamsTemplateModel] = useState(selectedModel);
+  const [paramsTemplateModel, setParamsTemplateModel] = useState(selectedModelValue);
 
   useEffect(() => {
-    if (selectedModel !== paramsTemplateModel) {
-      setParamsTemplateModel(selectedModel);
+    if (selectedModelValue !== paramsTemplateModel) {
+      setParamsTemplateModel(selectedModelValue);
       setParamsDirty(false);
       setParamsText(paramsTemplate);
       setParamsError(null);
@@ -276,13 +292,14 @@ function TrainPageContent() {
       setParamsText(paramsTemplate);
       setParamsError(null);
     }
-  }, [paramsDirty, paramsTemplate, paramsTemplateModel, selectedModel]);
+  }, [paramsDirty, paramsTemplate, paramsTemplateModel, selectedModelValue]);
 
   useEffect(() => {
-    if (!isPi05Selected) return;
-    form.setValue("learningRate", PI05_DEFAULT_LEARNING_RATE, { shouldDirty: true });
-    form.setValue("batchSize", pi05EffectiveBatchSize, { shouldDirty: true });
-  }, [form, isPi05Selected, pi05EffectiveBatchSize]);
+    const defaults = getTrainingModelDefaults(selectedModelValue);
+    form.setValue("learningRate", isPi05Selected ? PI05_DEFAULT_LEARNING_RATE : defaults.learningRate);
+    form.setValue("steps", defaults.steps);
+    form.setValue("batchSize", isPi05Selected ? pi05EffectiveBatchSize : defaults.batchSize);
+  }, [form, isPi05Selected, pi05EffectiveBatchSize, selectedModelValue]);
 
   const mutation = useMutation({
     mutationFn: robotCloudApi.createTrainingJob,
@@ -460,13 +477,24 @@ function TrainPageContent() {
           <label className="block text-sm">
             <span className="text-muted">{copy.modelLabel}</span>
             <select {...form.register("model")} className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2">
-              <option value="ACT">ACT</option>
-              <option value="DiffusionPolicy">DiffusionPolicy</option>
-              <option value="Pi0">Pi0</option>
-              <option value="Pi0.5">Pi0.5</option>
-              <option value="SmolVLA">SmolVLA</option>
+              {LEROBOT_TRAINING_MODELS.map((model) => (
+                <option key={model.value} value={model.value}>
+                  {model.label}
+                </option>
+              ))}
             </select>
           </label>
+          <div className="rounded-md border border-theme bg-surface/40 p-3 text-xs">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-semibold accent-text">{copy.presetLabel}</span>
+              <span className="text-muted">{selectedModel.requiresTask ? copy.taskRequired : copy.taskOptional}</span>
+            </div>
+            <p className="mt-2 text-muted">{isZh ? selectedModel.description.zh : selectedModel.description.en}</p>
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted">
+              <span className="rounded border border-theme px-2 py-1">{copy.cameraPreset}</span>
+              <span className="rounded border border-theme px-2 py-1">{copy.jointPreset}</span>
+            </div>
+          </div>
           {isPi05Selected ? (
             <div className="space-y-3 border-l-2 border-primary/60 pl-3">
               <div className="space-y-1">

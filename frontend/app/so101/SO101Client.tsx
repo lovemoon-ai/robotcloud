@@ -133,8 +133,8 @@ type ActionId =
 type ShellDialect = "posix" | "powershell";
 
 const CONNECTION_STORAGE_KEY = "robotcloud-so101-connection";
-const CONNECTION_STORAGE_VERSION = 4;
-const DEFAULT_CAMERA_COUNT = 1;
+const CONNECTION_STORAGE_VERSION = 5;
+const DEFAULT_CAMERA_COUNT = 2;
 const DEFAULT_MAX_RELATIVE_TARGET = 5;
 const LEGACY_DEFAULT_EPISODES = 1;
 const LEGACY_DEFAULT_CAMERA = { width: 480, height: 640, fps: 30 };
@@ -147,11 +147,12 @@ const numericTextInputProps = {
   type: "text",
   inputMode: "numeric"
 } as const;
-const cameraKeys = ["front", "side", "wrist"] as const;
-const cameraLabels = ["Camera 0", "Camera 1", "Camera 2"] as const;
+const cameraKeys = ["head", "wrist", "z_side"] as const;
+const cameraLabels = ["Head camera", "Wrist camera", "Side camera"] as const;
+const legacyCameraKeys = ["front", "side", "wrist"] as const;
 
 const initialCamera: CameraForm = {
-  name: "front",
+  name: "head",
   id: "",
   width: 640,
   height: 480,
@@ -271,21 +272,21 @@ const configFieldByLabel: Record<string, ConfigFieldId> = {
   "Actions per chunk": "inferActionsPerChunk",
   "Chunk size threshold": "inferChunkSizeThreshold",
   "Aggregate function": "inferAggregateFnName",
-  "Camera 0 name": "camera0Name",
-  "Camera 0": "camera0Id",
-  "Camera 0 width": "camera0Width",
-  "Camera 0 height": "camera0Height",
-  "Camera 0 fps": "camera0Fps",
-  "Camera 1 name": "camera1Name",
-  "Camera 1": "camera1Id",
-  "Camera 1 width": "camera1Width",
-  "Camera 1 height": "camera1Height",
-  "Camera 1 fps": "camera1Fps",
-  "Camera 2 name": "camera2Name",
-  "Camera 2": "camera2Id",
-  "Camera 2 width": "camera2Width",
-  "Camera 2 height": "camera2Height",
-  "Camera 2 fps": "camera2Fps"
+  "Head camera name": "camera0Name",
+  "Head camera": "camera0Id",
+  "Head camera width": "camera0Width",
+  "Head camera height": "camera0Height",
+  "Head camera fps": "camera0Fps",
+  "Wrist camera name": "camera1Name",
+  "Wrist camera": "camera1Id",
+  "Wrist camera width": "camera1Width",
+  "Wrist camera height": "camera1Height",
+  "Wrist camera fps": "camera1Fps",
+  "Side camera name": "camera2Name",
+  "Side camera": "camera2Id",
+  "Side camera width": "camera2Width",
+  "Side camera height": "camera2Height",
+  "Side camera fps": "camera2Fps"
 };
 
 class ConfigValidationError extends Error {
@@ -503,7 +504,12 @@ function cameraValidationValue(value: number) {
   return toPositiveInteger(value) ?? 0;
 }
 
-function normalizeCamera(value: unknown, index: number, migrateLegacyDefaults = false): CameraForm {
+function normalizeCamera(
+  value: unknown,
+  index: number,
+  migrateLegacyDefaults = false,
+  migrateLegacyCameraNames = false
+): CameraForm {
   const source = value && typeof value === "object" ? (value as Partial<CameraForm>) : {};
   const fallback = defaultCamera(index);
   const normalized = {
@@ -519,7 +525,18 @@ function normalizeCamera(value: unknown, index: number, migrateLegacyDefaults = 
     normalized.height === LEGACY_DEFAULT_CAMERA.height &&
     normalized.fps === LEGACY_DEFAULT_CAMERA.fps
   ) {
-    return { ...normalized, width: initialCamera.width, height: initialCamera.height };
+    return {
+      ...normalized,
+      name:
+        migrateLegacyCameraNames && normalized.name === (legacyCameraKeys[index] ?? legacyCameraKeys[0])
+          ? fallback.name
+          : normalized.name,
+      width: initialCamera.width,
+      height: initialCamera.height
+    };
+  }
+  if (migrateLegacyCameraNames && normalized.name === (legacyCameraKeys[index] ?? legacyCameraKeys[0])) {
+    return { ...normalized, name: fallback.name };
   }
   return normalized;
 }
@@ -554,6 +571,7 @@ export function parseConnectionSettings(raw: string | null) {
     const camerasSource = Array.isArray(parsed.cameras) ? parsed.cameras : [];
     const storageVersion = typeof parsed.storageVersion === "number" ? parsed.storageVersion : 0;
     const migrateLegacyDefaults = storageVersion < 3;
+    const migrateLegacyCameraNames = storageVersion < 5;
     const episodes = toFiniteNumber(parsed.episodes, initialForm.episodes);
     return {
       followerPort: typeof parsed.followerPort === "string" ? parsed.followerPort : initialForm.followerPort,
@@ -578,9 +596,9 @@ export function parseConnectionSettings(raw: string | null) {
       inferChunkSizeThreshold: typeof parsed.inferChunkSizeThreshold === "string" ? parsed.inferChunkSizeThreshold : initialForm.inferChunkSizeThreshold,
       inferAggregateFnName: typeof parsed.inferAggregateFnName === "string" ? parsed.inferAggregateFnName : initialForm.inferAggregateFnName,
       cameras: [
-        normalizeCamera(camerasSource[0], 0, migrateLegacyDefaults),
-        normalizeCamera(camerasSource[1], 1, migrateLegacyDefaults),
-        normalizeCamera(camerasSource[2], 2, migrateLegacyDefaults)
+        normalizeCamera(camerasSource[0], 0, migrateLegacyDefaults, migrateLegacyCameraNames),
+        normalizeCamera(camerasSource[1], 1, migrateLegacyDefaults, migrateLegacyCameraNames),
+        normalizeCamera(camerasSource[2], 2, migrateLegacyDefaults, migrateLegacyCameraNames)
       ] as [CameraForm, CameraForm, CameraForm],
       cameraCount: clampCameraCount(parsed.cameraCount)
     } satisfies PersistedSO101Settings;
@@ -658,7 +676,7 @@ function cameraConfigValue(form: FormState, cameraCount: number, required = fals
     .map((camera, index) => ({ camera, index }))
     .filter(({ camera }) => camera.id.trim())
     .map(({ camera, index }) => {
-      const label = cameraLabels[index] ?? "Camera 0";
+      const label = cameraLabels[index] ?? "Head camera";
       const name = requireValue(camera.name, `${label} name`, cameraConfigField(index, "Name"));
       const width = requireNumber(camera.width, `${label} width`, { integer: true, min: 1 }, cameraConfigField(index, "Width"));
       const height = requireNumber(camera.height, `${label} height`, { integer: true, min: 1 }, cameraConfigField(index, "Height"));
@@ -667,7 +685,7 @@ function cameraConfigValue(form: FormState, cameraCount: number, required = fals
     });
 
   if (!entries.length) {
-    if (required) throw new ConfigValidationError("Camera 0", "camera0Id");
+    if (required) throw new ConfigValidationError("Head camera", "camera0Id");
     return null;
   }
   return `{ ${entries.join(", ")} }`;
@@ -805,7 +823,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         const minEpisodeTimeS = requireNumber(form.minEpisodeTimeS, "Min episode seconds", { min: Number.MIN_VALUE });
         const maxEpisodeTimeS = requireNumber(form.maxEpisodeTimeS, "Max episode seconds", { min: Number.MIN_VALUE });
         const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
-        if (!cameraArg) throw new Error("先配置 Camera 0");
+        if (!cameraArg) throw new Error("先配置 Head camera");
         const parts = [
           bundledScriptCommand(status, "robotcloud_auto_record.py", dialect, quote),
           "--robot.type=so101_follower",
@@ -835,7 +853,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
       const episodeTimeS = requireNumber(form.episodeTimeS, "Episode seconds", { min: Number.MIN_VALUE });
       const resetTimeS = requireNumber(form.resetTimeS, "Reset seconds", { min: 0 });
       const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
-      if (!cameraArg) throw new Error("先配置 Camera 0");
+      if (!cameraArg) throw new Error("先配置 Head camera");
       const parts = [
         lerobotCommand(status, "lerobot-record"),
         "--robot.type=so101_follower",
@@ -862,7 +880,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
     }
     case "infer": {
       const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
-      if (!cameraArg) throw new Error("先配置 Camera 0");
+      if (!cameraArg) throw new Error("先配置 Head camera");
       return [
         lerobotCommand(status, "lerobot-robot-client"),
         `--server_address=${quote(requireValue(form.inferServerAddress, "Server address"))}`,

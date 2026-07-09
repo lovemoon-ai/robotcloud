@@ -909,8 +909,8 @@ describe("robotCloudApi", () => {
         "policy.train_expert_only": true,
         "policy.gradient_checkpointing": false,
         rename_map: {
-          "observation.images.front": "observation.images.base_0_rgb",
-          "observation.images.side": "observation.images.left_wrist_0_rgb"
+          "observation.images.head": "observation.images.base_0_rgb",
+          "observation.images.wrist": "observation.images.left_wrist_0_rgb"
         }
       }
     });
@@ -923,7 +923,7 @@ describe("robotCloudApi", () => {
       batch_size: 4,
       "policy.path": "custom/pi05",
       rename_map: {
-        "observation.images.front": "observation.images.base_0_rgb",
+        "observation.images.head": "observation.images.base_0_rgb",
         "observation.images.left": "observation.images.left_wrist_0_rgb",
         "observation.images.right": "observation.images.right_wrist_0_rgb"
       }
@@ -942,6 +942,31 @@ describe("robotCloudApi", () => {
       dataset_id: 6,
       model_type: "Pi0.5",
       params
+    });
+  });
+
+  it("createTrainingJob includes SO101 model defaults", async () => {
+    setAuthenticatedUser();
+    const config: TrainingConfig = {
+      model: "FastWAM",
+      datasetId: "2",
+      learningRate: 0.0001,
+      steps: 100,
+      batchSize: 1
+    };
+    await robotCloudApi.createTrainingJob(config);
+    const [, init] = mockedFetch.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toEqual({
+      dataset_id: 2,
+      model_type: "FastWAM",
+      params: expect.objectContaining({
+        learning_rate: 0.0001,
+        steps: 100,
+        batch_size: 1,
+        "policy.action_dim": 6,
+        "policy.proprio_dim": 6,
+        "policy.image_size": [224, 448]
+      })
     });
   });
 

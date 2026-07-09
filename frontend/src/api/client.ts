@@ -20,6 +20,7 @@ import {
   UserSettings,
   UserRole
 } from "@/types";
+import { getTrainingModelDefaults } from "@/training/models";
 
 const DEFAULT_API_BASE = "http://localhost:6150/api/v1";
 
@@ -43,8 +44,8 @@ const DEVICE_ID_STORAGE_KEY = "robotcloud-device-id";
 export const PI05_BASE_MODEL = "lerobot/pi05_base";
 export const PI05_DEFAULT_LEARNING_RATE = 0.000025;
 export const PI05_DEFAULT_RENAME_MAP = {
-  "observation.images.front": "observation.images.base_0_rgb",
-  "observation.images.side": "observation.images.left_wrist_0_rgb"
+  "observation.images.head": "observation.images.base_0_rgb",
+  "observation.images.wrist": "observation.images.left_wrist_0_rgb"
 } as const;
 
 type LoginDeviceType = "mobile" | "desktop";
@@ -65,7 +66,9 @@ export function buildTrainingParams(config: TrainingConfig): Record<string, unkn
     balanced: 8,
     throughput: 16
   } satisfies Record<NonNullable<TrainingConfig["pi05Preset"]>, number>;
+  const modelDefaults = getTrainingModelDefaults(config.model);
   const params: Record<string, unknown> = {
+    ...modelDefaults.params,
     learning_rate: isPi05 ? config.learningRate || PI05_DEFAULT_LEARNING_RATE : config.learningRate,
     steps: config.steps,
     batch_size: isPi05
