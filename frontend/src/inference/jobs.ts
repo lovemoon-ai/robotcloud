@@ -18,7 +18,31 @@ export function selectCurrentRunningInferenceJob(jobs: InferenceJob[] | undefine
   return jobs?.find((job) => job.status === "running") ?? null;
 }
 
+export function normalizeInferenceServerAddress(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    try {
+      return new URL(trimmed).host;
+    } catch {
+      return trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/[/?#].*$/, "");
+    }
+  }
+
+  return trimmed.replace(/[/?#].*$/, "");
+}
+
+function normalizeInferenceServerHost(value: string) {
+  const address = normalizeInferenceServerAddress(value);
+  const ipv6Match = /^\[([^\]]+)\](?::\d+)?$/.exec(address);
+  if (ipv6Match) return `[${ipv6Match[1]}]`;
+  return address.replace(/:\d+$/, "");
+}
+
 export function inferenceJobServerAddress(job: InferenceJob) {
   if (!job.serverHost || !job.serverPort) return null;
-  return `${job.serverHost}:${job.serverPort}`;
+  const host = normalizeInferenceServerHost(job.serverHost);
+  if (!host) return null;
+  return normalizeInferenceServerAddress(`${host}:${job.serverPort}`);
 }

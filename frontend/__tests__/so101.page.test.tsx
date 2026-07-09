@@ -1,6 +1,7 @@
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { SO101Client, so101TestExports } from "../app/so101/SO101Client";
 import { robotCloudApi } from "@/api/client";
+import { inferenceJobServerAddress } from "@/inference/jobs";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
 import { resetDesktopBridgeAvailabilityForTest } from "@/hooks/useDesktopBridgeAvailable";
@@ -1348,6 +1349,23 @@ describe("SO101 command generation", () => {
     );
   });
 
+  it("normalizes infer server URLs before building robot client commands", () => {
+    const command = buildActionCommand(
+      "infer",
+      {
+        ...initialForm,
+        followerPort: "/dev/tty.usbmodem58FA1019921",
+        inferServerAddress: "https://h20.conductor-ai.top:5162/",
+        task: "Put dice into the cup."
+      },
+      desktopStatus,
+      1
+    );
+
+    expect(command).toContain("--server_address='h20.conductor-ai.top:5162'");
+    expect(command).not.toContain("--server_address='https://");
+  });
+
   it("uses camera names as infer camera keys", () => {
     const command = buildActionCommand(
       "infer",
@@ -1591,6 +1609,47 @@ describe("SO101 command generation", () => {
         { name: "wrist", id: "2", width: 640, height: 480, fps: 30 }
       ]
     });
+  });
+
+  it("normalizes persisted infer server URLs", () => {
+    const serialized = serializeConnectionSettings(
+      {
+        ...initialForm,
+        inferServerAddress: "https://h20.conductor-ai.top:5162/"
+      },
+      1
+    );
+
+    expect(JSON.parse(serialized).inferServerAddress).toBe("h20.conductor-ai.top:5162");
+    expect(
+      parseConnectionSettings(JSON.stringify({ inferServerAddress: "https://h20.conductor-ai.top:5162/" }))
+        ?.inferServerAddress
+    ).toBe("h20.conductor-ai.top:5162");
+  });
+
+  it("normalizes inference job server host URLs", () => {
+    expect(
+      inferenceJobServerAddress({
+        id: 14,
+        datasetId: null,
+        modelId: 14,
+        status: "running",
+        serverHost: "https://h20.conductor-ai.top",
+        serverPort: 5162,
+        createdAt: "2026-07-09T00:00:00Z"
+      })
+    ).toBe("h20.conductor-ai.top:5162");
+    expect(
+      inferenceJobServerAddress({
+        id: 15,
+        datasetId: null,
+        modelId: 14,
+        status: "running",
+        serverHost: "https://h20.conductor-ai.top:5162",
+        serverPort: 5161,
+        createdAt: "2026-07-09T00:00:00Z"
+      })
+    ).toBe("h20.conductor-ai.top:5161");
   });
 
   it("round-trips persisted SO101 settings", () => {

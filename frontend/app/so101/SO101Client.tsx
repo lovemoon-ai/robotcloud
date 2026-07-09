@@ -8,6 +8,7 @@ import { isLocalDesktopFrontend, navigateToCloudPath } from "@/desktop/navigatio
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
 import {
   inferenceJobServerAddress,
+  normalizeInferenceServerAddress,
   selectCurrentActiveInferenceJob,
   selectCurrentRunningInferenceJob
 } from "@/inference/jobs";
@@ -374,6 +375,15 @@ function requireValue(value: string, label: string, field = configFieldForLabel(
   return trimmed;
 }
 
+function requireInferenceServerAddress(value: string, label: string, field = configFieldForLabel(label)) {
+  const normalized = normalizeInferenceServerAddress(requireValue(value, label, field));
+  if (!normalized) {
+    if (field) throw new ConfigValidationError(label, field);
+    throw new Error(`先配置 ${label}`);
+  }
+  return normalized;
+}
+
 function requireNumber(
   value: number,
   label: string,
@@ -567,7 +577,10 @@ export function parseConnectionSettings(raw: string | null) {
       displayData: toBoolean(parsed.displayData, initialForm.displayData),
       useLerobotRecorder: toBoolean(parsed.useLerobotRecorder, initialForm.useLerobotRecorder),
       task: typeof parsed.task === "string" ? parsed.task : initialForm.task,
-      inferServerAddress: typeof parsed.inferServerAddress === "string" ? parsed.inferServerAddress : initialForm.inferServerAddress,
+      inferServerAddress:
+        typeof parsed.inferServerAddress === "string"
+          ? normalizeInferenceServerAddress(parsed.inferServerAddress)
+          : initialForm.inferServerAddress,
       inferPolicyType: typeof parsed.inferPolicyType === "string" ? parsed.inferPolicyType : initialForm.inferPolicyType,
       inferPretrainedNameOrPath: typeof parsed.inferPretrainedNameOrPath === "string" ? parsed.inferPretrainedNameOrPath : initialForm.inferPretrainedNameOrPath,
       inferActionsPerChunk: typeof parsed.inferActionsPerChunk === "string" ? parsed.inferActionsPerChunk : initialForm.inferActionsPerChunk,
@@ -604,7 +617,7 @@ export function serializeConnectionSettings(form: FormState, cameraCount: number
     displayData: form.displayData,
     useLerobotRecorder: form.useLerobotRecorder,
     task: form.task,
-    inferServerAddress: form.inferServerAddress,
+    inferServerAddress: normalizeInferenceServerAddress(form.inferServerAddress),
     inferPolicyType: form.inferPolicyType,
     inferPretrainedNameOrPath: form.inferPretrainedNameOrPath,
     inferActionsPerChunk: form.inferActionsPerChunk,
@@ -913,7 +926,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
       if (!cameraArg) throw new Error("先配置 Camera 0");
       return [
         lerobotCommand(status, "lerobot-robot-client"),
-        `--server_address=${quote(requireValue(form.inferServerAddress, "Server address"))}`,
+        `--server_address=${quote(requireInferenceServerAddress(form.inferServerAddress, "Server address"))}`,
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
         `--robot.id=${quote(robotId())}`,
