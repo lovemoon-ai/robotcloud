@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { robotCloudApi, setRobotCloudApiBaseUrl } from "@/api/client";
 import { writePreparedDatasetUpload } from "@/desktop/preparedDatasetUpload";
-import { isLocalDesktopFrontend, navigateToCloudPath } from "@/desktop/navigation";
+import { navigateToCloudPath, shouldUseLocalDesktopNavigation } from "@/desktop/navigation";
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
 import {
   inferenceJobServerAddress,
@@ -1445,10 +1445,10 @@ export function SO101Client() {
 
   useEffect(() => {
     if (!token) {
-      if (isLocalDesktopFrontend()) {
-        navigateToCloudPath("/login?next=%2Fso101");
-      } else {
+      if (shouldUseLocalDesktopNavigation()) {
         router.replace("/login?next=%2Fso101");
+      } else {
+        navigateToCloudPath("/login?next=%2Fso101");
       }
     }
   }, [router, token]);
@@ -1698,10 +1698,10 @@ export function SO101Client() {
     setPersistentTerminalError(null);
     void writePreparedDatasetUpload(prepared)
       .then(() => {
-        if (isLocalDesktopFrontend()) {
-          navigateToCloudPath("/datasets?source=so101");
-        } else {
+        if (shouldUseLocalDesktopNavigation()) {
           router.push("/datasets?source=so101");
+        } else {
+          navigateToCloudPath("/datasets?source=so101");
         }
       })
       .catch((error) => {

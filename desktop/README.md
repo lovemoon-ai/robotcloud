@@ -1,9 +1,9 @@
 # RobotCloud Tauri
 
 This is the Rust/Tauri implementation of RobotCloud Desktop. Release builds
-start from the bundled SO101 workbench frontend, while the rest of RobotCloud
-continues to load from the cloud web app. Local SO101/LeRobot capabilities are
-exposed through a narrow JavaScript bridge.
+start from the bundled SO101 workbench frontend and include the full exported
+RobotCloud frontend so in-app navigation can stay inside one WebView document.
+Local SO101/LeRobot capabilities are exposed through a narrow JavaScript bridge.
 
 Default web URLs:
 
@@ -32,19 +32,17 @@ pnpm dev
 ```
 
 Release builds run `scripts/prepare-frontend-dist.mjs` before packaging. The
-script exports the Next.js frontend and copies only the local SO101 entrypoint,
-shared `_next` assets, and public metadata into `src-tauri/frontend-dist/`.
-Use it directly when checking bundle contents:
+script exports the Next.js frontend and copies the full static export into
+`src-tauri/frontend-dist/`. Use it directly when checking bundle contents:
 
 ```bash
 pnpm prepare:frontend
 ```
 
-Cloud pages such as datasets, training, models, inference, settings, and plans
-remain cloud-backed. In the packaged app, navigation from local SO101 to those
-pages uses `https://robotcloud.conductor-ai.top/...`; navigation from the cloud
-SO101 route is intercepted by Tauri and redirected back to the bundled local
-SO101 workbench.
+Pages such as datasets, training, models, inference, settings, and plans still
+use the configured cloud API, but packaged navigation between them and SO101
+uses the bundled static frontend. Navigation from the cloud SO101 route is still
+intercepted by Tauri and redirected back to the bundled local SO101 workbench.
 
 Windows build:
 
