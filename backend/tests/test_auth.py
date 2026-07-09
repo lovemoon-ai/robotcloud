@@ -350,6 +350,67 @@ def test_legacy_token_cache_entries_are_rejected(client: APIClient, sms_gateway:
     assert caches["tokens"].get("legacy-token") is None
 
 
+def _login(client: APIClient, sms_gateway: InMemorySmsGateway, phone: str, password: str) -> str:
+    register_user(client, sms_gateway, phone, password)
+    login_resp = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password},
+        format="json",
+    )
+    assert login_resp.status_code == 200
+    return login_resp.json()["data"]["token"]
+
+
+def test_token_survives_token_cache_loss(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    """A backend restart wipes the in-memory token cache; the token must still
+    work by being recovered from the persisted UserSession row (no re-login)."""
+    phone = "13800000041"
+    token = _login(client, sms_gateway, phone, "pw123456")
+
+    # Simulate the backend restart / redeploy: token cache is gone.
+    caches["tokens"].clear()
+    assert caches["tokens"].get(token) is None
+
+    response = client.get("/api/v1/auth/verify_token", HTTP_AUTHORIZATION=f"Bearer {token}")
+    assert response.status_code == 200
+    assert response.json()["data"]["user_id"] == User.objects.get(phone=phone).id
+    # Cache is repopulated from the DB so subsequent calls hit the fast path.
+    assert caches["tokens"].get(token) is not None
+
+
+def test_recovery_respects_revoked_session(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    """A revoked session must NOT be recoverable after a cache loss."""
+    phone = "13800000042"
+    token = _login(client, sms_gateway, phone, "pw123456")
+
+    session = UserSession.objects.get(user__phone=phone, status=UserSession.STATUS_ACTIVE)
+    session.status = UserSession.STATUS_REVOKED
+    session.save(update_fields=["status"])
+    caches["tokens"].clear()
+
+    response = client.get("/api/v1/auth/verify_token", HTTP_AUTHORIZATION=f"Bearer {token}")
+    assert response.status_code == 400
+
+
+def test_logout_after_cache_loss_revokes_session(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    """Logout must still revoke the DB session when the cache entry is gone,
+    otherwise the token would be recoverable right after logout."""
+    phone = "13800000043"
+    token = _login(client, sms_gateway, phone, "pw123456")
+
+    caches["tokens"].clear()
+    logout_resp = client.post("/api/v1/auth/logout", HTTP_AUTHORIZATION=f"Bearer {token}")
+    assert logout_resp.status_code == 200
+
+    session = UserSession.objects.get(user__phone=phone)
+    assert session.status == UserSession.STATUS_REVOKED
+
+    # Even after clearing the cache again, a logged-out token must not recover.
+    caches["tokens"].clear()
+    response = client.get("/api/v1/auth/verify_token", HTTP_AUTHORIZATION=f"Bearer {token}")
+    assert response.status_code == 400
+
+
 @override_settings(AUTH_SINGLE_DEVICE_BYPASS_PHONES="13800000031")
 def test_single_device_limit_bypass_phone_whitelist(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
     phone = "13800000031"

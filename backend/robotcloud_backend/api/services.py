@@ -604,14 +604,19 @@ class RobotCloudService:
             raise ValueError("Token required")
         cached = self.token_cache.get(token)
         now = timezone.now()
-        if isinstance(cached, dict):
-            session_id = cached.get("session_id")
-            if session_id:
-                self._revoke_user_sessions(
-                    UserSession.objects.filter(id=session_id, status=UserSession.STATUS_ACTIVE),
-                    "logout",
-                    now,
-                )
+        session_id = cached.get("session_id") if isinstance(cached, dict) else None
+        if session_id is None:
+            # Cache miss (e.g. after a restart): find the session in the DB so
+            # logout still revokes it and it cannot be recovered afterwards.
+            session = self._find_active_session_by_token(token, now)
+            if session is not None:
+                session_id = session.id
+        if session_id:
+            self._revoke_user_sessions(
+                UserSession.objects.filter(id=session_id, status=UserSession.STATUS_ACTIVE),
+                "logout",
+                now,
+            )
         self.token_cache.delete(token)
         return self._response({"logged_out": True})
 
@@ -1851,10 +1856,49 @@ class RobotCloudService:
     def _verification_key(self, phone: str) -> str:
         return f"verification:{phone}"
 
+    def _find_active_session_by_token(self, token: str, now: Any = None) -> Any:
+        """Look up a still-valid UserSession purely from the database.
+
+        The plaintext token lives only in the token cache and the client; the
+        database keeps its SHA-256 (``token_hash``). This lets us recover a
+        session after the in-memory token cache is lost (e.g. a backend
+        restart / redeploy) so users are not forced to log in again.
+        """
+        now = now or timezone.now()
+        return (
+            UserSession.objects.filter(
+                token_hash=self._hash_token(token),
+                status=UserSession.STATUS_ACTIVE,
+                expires_at__gt=now,
+            )
+            .order_by("-last_seen_at")
+            .first()
+        )
+
+    def _recover_token_cache(self, token: str) -> Any:
+        """Rebuild the token->session cache entry from the database on a miss.
+
+        Returns the cache-shaped dict ({"user_id", "session_id"}) and
+        repopulates the token cache with the session's remaining TTL, or None
+        when no valid session exists.
+        """
+        now = timezone.now()
+        session = self._find_active_session_by_token(token, now)
+        if session is None:
+            return None
+        remaining = int((session.expires_at - now).total_seconds())
+        if remaining <= 0:
+            return None
+        entry = {"user_id": session.user_id, "session_id": session.id}
+        self.token_cache.set(token, entry, remaining)
+        return entry
+
     def _get_user_by_token(self, token: str) -> User:
         if not token:
             raise ValueError("Token required")
         cached = self.token_cache.get(token)
+        if cached is None:
+            cached = self._recover_token_cache(token)
         if cached is not None and not isinstance(cached, dict):
             self.token_cache.delete(token)
             raise ValueError("Invalid token")
