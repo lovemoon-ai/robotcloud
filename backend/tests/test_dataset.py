@@ -271,3 +271,62 @@ def test_agent_direct_dataset_upload_session_and_completion(client: APIClient, c
     assert detail["storage_node"] == "gpu-node-1"
     assert detail["file_size"] == 2048
     assert detail["total_files"] == 3
+
+
+@override_settings(DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS=3600)
+def test_delete_pending_agent_upload_cleans_agent_upload_dir(client: APIClient, create_user_token, monkeypatch) -> None:
+    token = create_user_token("13900000007", "passwd")
+    register_resp = client.post(
+        "/api/v1/internal/agent/register",
+        {
+            "node_name": "gpu-node-cleanup",
+            "ip": "10.0.0.11",
+            "gpu_total": 2,
+            "version": "1.0.0",
+            "port": 5001,
+            "public_base_url": "https://agent-cleanup.example.test",
+            "upload_enabled": True,
+        },
+        format="json",
+    )
+    assert register_resp.status_code == 200
+    agent_token = register_resp.json()["data"]["token"]
+    cleanup_calls = []
+
+    def fake_agent_cleanup(url, json=None, headers=None, timeout=None):  # noqa: ANN001
+        cleanup_calls.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+
+        class Response:
+            status_code = 200
+
+        return Response()
+
+    monkeypatch.setattr("robotcloud_backend.api.services.requests.post", fake_agent_cleanup)
+
+    session_resp = client.post(
+        "/api/v1/dataset/upload_session",
+        {
+            "name": "pending",
+            "description": "agent upload",
+            "visibility": "private",
+            "filename": "episodes.zip",
+            "target_node": "gpu-node-cleanup",
+        },
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert session_resp.status_code == 200
+    dataset_id = session_resp.json()["data"]["dataset_id"]
+
+    delete_resp = client.post(f"/api/v1/dataset/{dataset_id}/delete", HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    assert delete_resp.status_code == 200
+    assert cleanup_calls == [
+        {
+            "url": "http://10.0.0.11:5001/api/v1/agent/datasets/upload/cancel",
+            "json": {"dataset_id": dataset_id},
+            "headers": {"Content-Type": "application/json", "X-Agent-Token": agent_token},
+            "timeout": 5,
+        }
+    ]
+    assert not Dataset.objects.filter(id=dataset_id).exists()

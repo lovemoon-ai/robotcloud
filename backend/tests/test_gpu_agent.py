@@ -179,6 +179,34 @@ def test_agent_resumable_dataset_upload(tmp_path: Path) -> None:
     assert backend_session.complete_payload["file_size"] == len(payload)
 
 
+def test_agent_cancel_resumable_dataset_upload_removes_upload_dir(tmp_path: Path) -> None:
+    agent = Agent(_agent_config(tmp_path), session=_BackendSession())  # type: ignore[arg-type]
+    agent.agent_token = "agent-token"
+    upload_dir = agent.dataset_upload_dir(42)
+    upload_dir.mkdir(parents=True)
+    (upload_dir / "episodes.zip.part").write_bytes(b"partial")
+    server = AgentHTTPServer(("127.0.0.1", 0), AgentHTTPRequestHandler, agent)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        resp = requests.post(
+            f"{base_url}/api/v1/agent/datasets/upload/cancel",
+            json={"dataset_id": 42},
+            headers={"X-Agent-Token": "agent-token"},
+            timeout=5,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert resp.status_code == 200
+    assert resp.json()["removed"] == [str(upload_dir)]
+    assert not upload_dir.exists()
+
+
 def test_training_job_builds_command_with_dataset_arg(tmp_path: Path) -> None:
     agent = _StubAgent()
     log_dir = tmp_path / "logs"
