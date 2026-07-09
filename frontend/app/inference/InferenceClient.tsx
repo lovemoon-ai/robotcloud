@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLocaleStore } from "@/store/useLocaleStore";
 import { useThemeStore } from "@/store/useThemeStore";
+import { hasActiveInferenceJob } from "@/inference/jobs";
 
 export default function InferenceClient() {
   const locale = useLocaleStore((state) => state.locale);
@@ -24,8 +25,7 @@ export default function InferenceClient() {
     enabled: Boolean(token),
     refetchInterval: (query) => {
       const jobs = query.state.data;
-      if (!jobs?.length) return false;
-      return jobs.some((job) => ["queued", "running"].includes(job.status)) ? 5000 : false;
+      return hasActiveInferenceJob(jobs) ? 5000 : false;
     },
     refetchIntervalInBackground: true
   });

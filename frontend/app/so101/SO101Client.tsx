@@ -2,13 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { robotCloudApi } from "@/api/client";
 import { writePreparedDatasetUpload } from "@/desktop/preparedDatasetUpload";
 import { isLocalDesktopFrontend, navigateToCloudPath } from "@/desktop/navigation";
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
+import {
+  inferenceJobServerAddress,
+  selectCurrentActiveInferenceJob,
+  selectCurrentRunningInferenceJob
+} from "@/inference/jobs";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
+import type { InferenceJob } from "@/types";
 
 type CameraForm = {
+  name: string;
   id: string;
   width: number;
   height: number;
@@ -32,6 +40,12 @@ type FormState = {
   displayData: boolean;
   useLerobotRecorder: boolean;
   task: string;
+  inferServerAddress: string;
+  inferPolicyType: string;
+  inferPretrainedNameOrPath: string;
+  inferActionsPerChunk: string;
+  inferChunkSizeThreshold: string;
+  inferAggregateFnName: string;
 };
 
 type PersistedSO101Settings = FormState & { cameraCount: number };
@@ -46,14 +60,17 @@ type CheckPhase = "idle" | "checking" | "valid" | "invalid";
 type CheckState = { phase: CheckPhase; message: string };
 type PortKey = "followerPort" | "leaderPort";
 type CameraConfigFieldId =
+  | "camera0Name"
   | "camera0Id"
   | "camera0Width"
   | "camera0Height"
   | "camera0Fps"
+  | "camera1Name"
   | "camera1Id"
   | "camera1Width"
   | "camera1Height"
   | "camera1Fps"
+  | "camera2Name"
   | "camera2Id"
   | "camera2Width"
   | "camera2Height"
@@ -71,6 +88,12 @@ type ConfigFieldId =
   | "resetTimeS"
   | "teleopTimeS"
   | "task"
+  | "inferServerAddress"
+  | "inferPolicyType"
+  | "inferPretrainedNameOrPath"
+  | "inferActionsPerChunk"
+  | "inferChunkSizeThreshold"
+  | "inferAggregateFnName"
   | CameraConfigFieldId;
 type ActionConfigError = { field: ConfigFieldId; message: string };
 type TerminalDisposable = { dispose: () => void };
@@ -104,12 +127,13 @@ type ActionId =
   | "calibrate-leader"
   | "teleop"
   | "save-pose"
-  | "record";
+  | "record"
+  | "infer";
 
 type ShellDialect = "posix" | "powershell";
 
 const CONNECTION_STORAGE_KEY = "robotcloud-so101-connection";
-const CONNECTION_STORAGE_VERSION = 3;
+const CONNECTION_STORAGE_VERSION = 4;
 const DEFAULT_CAMERA_COUNT = 1;
 const DEFAULT_MAX_RELATIVE_TARGET = 5;
 const LEGACY_DEFAULT_EPISODES = 1;
@@ -127,15 +151,21 @@ const cameraKeys = ["front", "side", "wrist"] as const;
 const cameraLabels = ["Camera 0", "Camera 1", "Camera 2"] as const;
 
 const initialCamera: CameraForm = {
+  name: "front",
   id: "",
   width: 640,
   height: 480,
   fps: 30
 };
 
+function defaultCameraName(index: number) {
+  return cameraKeys[index] ?? cameraKeys[0];
+}
+
 function defaultCamera(index: number): CameraForm {
   return {
     ...initialCamera,
+    name: defaultCameraName(index),
     id: String(index)
   };
 }
@@ -160,7 +190,13 @@ const initialForm: FormState = {
   teleopTimeS: 5,
   displayData: true,
   useLerobotRecorder: true,
-  task: ""
+  task: "",
+  inferServerAddress: "h20.conductor-ai.top:5161",
+  inferPolicyType: "pi05",
+  inferPretrainedNameOrPath: "backend/storage/train_runs/task_14/checkpoints/last/pretrained_model",
+  inferActionsPerChunk: "50",
+  inferChunkSizeThreshold: "0.5",
+  inferAggregateFnName: "weighted_average"
 };
 
 const idleCheck: CheckState = { phase: "idle", message: "" };
@@ -174,7 +210,8 @@ const actions: Array<{ id: ActionId; label: string }> = [
   { id: "calibrate-leader", label: "Calibrate leader" },
   { id: "teleop", label: "Teleoperate" },
   { id: "save-pose", label: "Save pose" },
-  { id: "record", label: "Record" }
+  { id: "record", label: "Record" },
+  { id: "infer", label: "Infer" }
 ];
 
 const configFieldIds = new Set<string>([
@@ -191,14 +228,23 @@ const configFieldIds = new Set<string>([
   "resetTimeS",
   "teleopTimeS",
   "task",
+  "inferServerAddress",
+  "inferPolicyType",
+  "inferPretrainedNameOrPath",
+  "inferActionsPerChunk",
+  "inferChunkSizeThreshold",
+  "inferAggregateFnName",
+  "camera0Name",
   "camera0Id",
   "camera0Width",
   "camera0Height",
   "camera0Fps",
+  "camera1Name",
   "camera1Id",
   "camera1Width",
   "camera1Height",
   "camera1Fps",
+  "camera2Name",
   "camera2Id",
   "camera2Width",
   "camera2Height",
@@ -219,14 +265,23 @@ const configFieldByLabel: Record<string, ConfigFieldId> = {
   "Reset seconds": "resetTimeS",
   "Teleop seconds": "teleopTimeS",
   "Task label": "task",
+  "Server address": "inferServerAddress",
+  "Policy type": "inferPolicyType",
+  "Pretrained name or path": "inferPretrainedNameOrPath",
+  "Actions per chunk": "inferActionsPerChunk",
+  "Chunk size threshold": "inferChunkSizeThreshold",
+  "Aggregate function": "inferAggregateFnName",
+  "Camera 0 name": "camera0Name",
   "Camera 0": "camera0Id",
   "Camera 0 width": "camera0Width",
   "Camera 0 height": "camera0Height",
   "Camera 0 fps": "camera0Fps",
+  "Camera 1 name": "camera1Name",
   "Camera 1": "camera1Id",
   "Camera 1 width": "camera1Width",
   "Camera 1 height": "camera1Height",
   "Camera 1 fps": "camera1Fps",
+  "Camera 2 name": "camera2Name",
   "Camera 2": "camera2Id",
   "Camera 2 width": "camera2Width",
   "Camera 2 height": "camera2Height",
@@ -260,6 +315,12 @@ function cameraRef(value: string) {
   return `"${trimmed.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+function cameraNameKey(value: string) {
+  const trimmed = value.trim();
+  if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(trimmed)) return trimmed;
+  return `"${trimmed.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 function isConfigFieldId(value: string): value is ConfigFieldId {
   return configFieldIds.has(value);
 }
@@ -268,7 +329,7 @@ function configFieldForLabel(label: string) {
   return configFieldByLabel[label];
 }
 
-function cameraConfigField(index: number, key: "Id" | "Width" | "Height" | "Fps") {
+function cameraConfigField(index: number, key: "Name" | "Id" | "Width" | "Height" | "Fps") {
   return `camera${index}${key}` as ConfigFieldId;
 }
 
@@ -310,6 +371,22 @@ function requireNumber(
     throw new Error(`先配置 ${label}`);
   }
   return value;
+}
+
+function requireNumericText(
+  value: string,
+  label: string,
+  options: { integer?: boolean; min?: number } = {},
+  field = configFieldForLabel(label)
+) {
+  const trimmed = requireValue(value, label, field);
+  const numeric = Number(trimmed);
+  const min = options.min ?? Number.MIN_VALUE;
+  if (!Number.isFinite(numeric) || numeric < min || (options.integer && !Number.isInteger(numeric))) {
+    if (field) throw new ConfigValidationError(label, field);
+    throw new Error(`先配置 ${label}`);
+  }
+  return trimmed;
 }
 
 function desktopPathSeparator(status: DesktopStatus | null) {
@@ -430,6 +507,7 @@ function normalizeCamera(value: unknown, index: number, migrateLegacyDefaults = 
   const source = value && typeof value === "object" ? (value as Partial<CameraForm>) : {};
   const fallback = defaultCamera(index);
   const normalized = {
+    name: typeof source.name === "string" && source.name.trim() ? source.name : fallback.name,
     id: typeof source.id === "string" ? source.id : fallback.id,
     width: toNumber(source.width, fallback.width),
     height: toNumber(source.height, fallback.height),
@@ -474,7 +552,8 @@ export function parseConnectionSettings(raw: string | null) {
   try {
     const parsed = JSON.parse(raw) as Partial<FormState> & { cameraCount?: number; storageVersion?: number };
     const camerasSource = Array.isArray(parsed.cameras) ? parsed.cameras : [];
-    const migrateLegacyDefaults = parsed.storageVersion !== CONNECTION_STORAGE_VERSION;
+    const storageVersion = typeof parsed.storageVersion === "number" ? parsed.storageVersion : 0;
+    const migrateLegacyDefaults = storageVersion < 3;
     const episodes = toFiniteNumber(parsed.episodes, initialForm.episodes);
     return {
       followerPort: typeof parsed.followerPort === "string" ? parsed.followerPort : initialForm.followerPort,
@@ -492,6 +571,12 @@ export function parseConnectionSettings(raw: string | null) {
       displayData: toBoolean(parsed.displayData, initialForm.displayData),
       useLerobotRecorder: toBoolean(parsed.useLerobotRecorder, initialForm.useLerobotRecorder),
       task: typeof parsed.task === "string" ? parsed.task : initialForm.task,
+      inferServerAddress: typeof parsed.inferServerAddress === "string" ? parsed.inferServerAddress : initialForm.inferServerAddress,
+      inferPolicyType: typeof parsed.inferPolicyType === "string" ? parsed.inferPolicyType : initialForm.inferPolicyType,
+      inferPretrainedNameOrPath: typeof parsed.inferPretrainedNameOrPath === "string" ? parsed.inferPretrainedNameOrPath : initialForm.inferPretrainedNameOrPath,
+      inferActionsPerChunk: typeof parsed.inferActionsPerChunk === "string" ? parsed.inferActionsPerChunk : initialForm.inferActionsPerChunk,
+      inferChunkSizeThreshold: typeof parsed.inferChunkSizeThreshold === "string" ? parsed.inferChunkSizeThreshold : initialForm.inferChunkSizeThreshold,
+      inferAggregateFnName: typeof parsed.inferAggregateFnName === "string" ? parsed.inferAggregateFnName : initialForm.inferAggregateFnName,
       cameras: [
         normalizeCamera(camerasSource[0], 0, migrateLegacyDefaults),
         normalizeCamera(camerasSource[1], 1, migrateLegacyDefaults),
@@ -522,6 +607,12 @@ export function serializeConnectionSettings(form: FormState, cameraCount: number
     displayData: form.displayData,
     useLerobotRecorder: form.useLerobotRecorder,
     task: form.task,
+    inferServerAddress: form.inferServerAddress,
+    inferPolicyType: form.inferPolicyType,
+    inferPretrainedNameOrPath: form.inferPretrainedNameOrPath,
+    inferActionsPerChunk: form.inferActionsPerChunk,
+    inferChunkSizeThreshold: form.inferChunkSizeThreshold,
+    inferAggregateFnName: form.inferAggregateFnName,
     cameras: form.cameras,
     cameraCount: clampCameraCount(cameraCount)
   });
@@ -564,14 +655,15 @@ function writeDesktopConnectionSettings(raw: string) {
 function cameraConfigValue(form: FormState, cameraCount: number, required = false) {
   const entries = form.cameras
     .slice(0, cameraCount)
-    .map((camera, index) => ({ camera, index, key: cameraKeys[index] ?? cameraKeys[0] }))
+    .map((camera, index) => ({ camera, index }))
     .filter(({ camera }) => camera.id.trim())
-    .map(({ camera, index, key }) => {
+    .map(({ camera, index }) => {
       const label = cameraLabels[index] ?? "Camera 0";
+      const name = requireValue(camera.name, `${label} name`, cameraConfigField(index, "Name"));
       const width = requireNumber(camera.width, `${label} width`, { integer: true, min: 1 }, cameraConfigField(index, "Width"));
       const height = requireNumber(camera.height, `${label} height`, { integer: true, min: 1 }, cameraConfigField(index, "Height"));
       const fps = requireNumber(camera.fps, `${label} fps`, { min: Number.MIN_VALUE }, cameraConfigField(index, "Fps"));
-      return `${key}: {type: opencv, index_or_path: ${cameraRef(camera.id)}, width: ${width}, height: ${height}, fps: ${fps}}`;
+      return `${cameraNameKey(name)}: {type: opencv, index_or_path: ${cameraRef(camera.id)}, width: ${width}, height: ${height}, fps: ${fps}}`;
     });
 
   if (!entries.length) {
@@ -587,12 +679,28 @@ function cameraConfigArg(form: FormState, cameraCount: number, quote: (value: st
   return `--robot.cameras=${quote(value)}`;
 }
 
+function alignFormWithRunningInferenceJob(form: FormState, job: InferenceJob): FormState {
+  const serverAddress = inferenceJobServerAddress(job);
+  if (!serverAddress) {
+    throw new Error(`Inference job #${job.id} 还没有服务地址，请等 Inference 页面显示服务地址后再运行 Infer。`);
+  }
+  if (!job.checkpointPath) {
+    throw new Error(`Inference job #${job.id} 还没有模型路径，请等 Inference 页面显示模型路径后再运行 Infer。`);
+  }
+  return {
+    ...form,
+    inferServerAddress: serverAddress,
+    inferPretrainedNameOrPath: job.checkpointPath
+  };
+}
+
 const lerobotModules: Record<string, string> = {
   "lerobot-calibrate": "lerobot.scripts.lerobot_calibrate",
   "lerobot-find-cameras": "lerobot.scripts.lerobot_find_cameras",
   "lerobot-find-port": "lerobot.scripts.lerobot_find_port",
   "lerobot-info": "lerobot.scripts.lerobot_info",
   "lerobot-record": "lerobot.scripts.lerobot_record",
+  "lerobot-robot-client": "lerobot.async_inference.robot_client",
   "lerobot-setup-motors": "lerobot.scripts.lerobot_setup_motors",
   "lerobot-teleoperate": "lerobot.scripts.lerobot_teleoperate"
 };
@@ -751,6 +859,25 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
       ];
       if (datasetRoot) parts.splice(10, 0, `--dataset.root=${quote(datasetRoot)}`);
       return parts.join(" ");
+    }
+    case "infer": {
+      const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
+      if (!cameraArg) throw new Error("先配置 Camera 0");
+      return [
+        lerobotCommand(status, "lerobot-robot-client"),
+        `--server_address=${quote(requireValue(form.inferServerAddress, "Server address"))}`,
+        "--robot.type=so101_follower",
+        `--robot.port=${quote(followerPort())}`,
+        `--robot.id=${quote(robotId())}`,
+        cameraArg,
+        `--task=${quote(requireValue(form.task, "Task label"))}`,
+        `--policy_type=${quote(requireValue(form.inferPolicyType, "Policy type"))}`,
+        `--pretrained_name_or_path=${quote(requireValue(form.inferPretrainedNameOrPath, "Pretrained name or path"))}`,
+        `--actions_per_chunk=${requireNumericText(form.inferActionsPerChunk, "Actions per chunk", { integer: true, min: 1 })}`,
+        `--chunk_size_threshold=${requireNumericText(form.inferChunkSizeThreshold, "Chunk size threshold", { min: 0 })}`,
+        `--aggregate_fn_name=${quote(requireValue(form.inferAggregateFnName, "Aggregate function"))}`,
+        "--debug_visualize_queue_size=True"
+      ].join(" ");
     }
   }
 }
@@ -1328,7 +1455,10 @@ export function SO101Client() {
       cameras[index] = { ...cameras[index], [key]: value };
       return { ...current, cameras };
     });
-    clearConfigErrorForField(cameraConfigField(index, key === "id" ? "Id" : key === "width" ? "Width" : key === "height" ? "Height" : "Fps"));
+    clearConfigErrorForField(cameraConfigField(
+      index,
+      key === "name" ? "Name" : key === "id" ? "Id" : key === "width" ? "Width" : key === "height" ? "Height" : "Fps"
+    ));
     setCameraChecks((current) => {
       const next = [...current] as [CheckState, CheckState, CheckState];
       next[index] = idleCheck;
@@ -1464,8 +1594,12 @@ export function SO101Client() {
     }
   }, []);
 
-  const writeActionCommand = useCallback(async (action: ActionId, options: { force?: boolean } = {}) => {
-    const command = buildActionCommand(action, form, status, cameraCount);
+  const writeActionCommand = useCallback(async (
+    action: ActionId,
+    options: { force?: boolean; formOverride?: FormState } = {}
+  ) => {
+    const commandForm = options.formOverride ?? form;
+    const command = buildActionCommand(action, commandForm, status, cameraCount);
     if (!options.force && command === lastWrittenActionCommandRef.current) return;
     lastWrittenActionCommandRef.current = command;
     try {
@@ -1478,11 +1612,32 @@ export function SO101Client() {
     }
   }, [cameraCount, form, status, writeTerminalCommand]);
 
+  const resolveInferActionForm = async () => {
+    const jobs = await robotCloudApi.fetchInferenceJobs();
+    const runningJob = selectCurrentRunningInferenceJob(jobs);
+    if (!runningJob) {
+      const activeJob = selectCurrentActiveInferenceJob(jobs);
+      if (activeJob) {
+        throw new Error(`Inference job #${activeJob.id} 当前是 ${activeJob.status}，请等 Inference 页面显示 running 和服务地址后再运行 Infer。`);
+      }
+      throw new Error("没有 active inference job。请先在 Inference 页面启动推理任务，并等待状态变为 running。");
+    }
+    return alignFormWithRunningInferenceJob(form, runningJob);
+  };
+
   const runAction = async (action: ActionId) => {
-    setSelectedAction(action);
     try {
       setPersistentTerminalError(null);
       setActionConfigError(null);
+      if (action === "infer") {
+        const alignedForm = await resolveInferActionForm();
+        connectionDirtyRef.current = true;
+        setForm(alignedForm);
+        setSelectedAction(action);
+        await writeActionCommand(action, { force: true, formOverride: alignedForm });
+        return;
+      }
+      setSelectedAction(action);
       await writeActionCommand(action, { force: true });
     } catch (error) {
       if (handleConfigValidationError(error)) return;
@@ -1843,6 +1998,7 @@ export function SO101Client() {
               </div>
 
               {form.cameras.slice(0, cameraCount).map((camera, index) => {
+                const nameField = cameraConfigField(index, "Name");
                 const idField = cameraConfigField(index, "Id");
                 const widthField = cameraConfigField(index, "Width");
                 const heightField = cameraConfigField(index, "Height");
@@ -1863,6 +2019,18 @@ export function SO101Client() {
                     ) : null}
                   </div>
                   <div className="flex flex-wrap items-end gap-2">
+                    <label className="min-w-[7rem] flex-[0_0_8rem] text-sm">
+                      <span className="text-muted">Name</span>
+                      <input
+                        ref={registerConfigInput(nameField)}
+                        value={camera.name}
+                        onChange={(event) => updateCamera(index, "name", event.target.value)}
+                        placeholder={defaultCameraName(index)}
+                        className={configInputClass(nameField, "bg-card")}
+                        {...configInputA11y(nameField)}
+                      />
+                      {renderConfigFieldError(nameField)}
+                    </label>
                     <label className="min-w-0 flex-1 text-sm">
                       <span className="text-muted">Camera id/path</span>
                       <input
@@ -2071,6 +2239,82 @@ export function SO101Client() {
               >
                 {uploadPreparing ? "Checking..." : "Upload"}
               </button>
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-theme bg-card p-5">
+            <h2 className="text-xl font-semibold accent-text">Infer</h2>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <label className="text-sm md:col-span-2">
+                <span className="text-muted">server_address</span>
+                <input
+                  ref={registerConfigInput("inferServerAddress")}
+                  value={form.inferServerAddress}
+                  onChange={(event) => updateField("inferServerAddress", event.target.value)}
+                  className={configInputClass("inferServerAddress")}
+                  {...configInputA11y("inferServerAddress")}
+                />
+                {renderConfigFieldError("inferServerAddress")}
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">policy_type</span>
+                <input
+                  ref={registerConfigInput("inferPolicyType")}
+                  value={form.inferPolicyType}
+                  onChange={(event) => updateField("inferPolicyType", event.target.value)}
+                  className={configInputClass("inferPolicyType")}
+                  {...configInputA11y("inferPolicyType")}
+                />
+                {renderConfigFieldError("inferPolicyType")}
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">pretrained_name_or_path</span>
+                <input
+                  ref={registerConfigInput("inferPretrainedNameOrPath")}
+                  value={form.inferPretrainedNameOrPath}
+                  onChange={(event) => updateField("inferPretrainedNameOrPath", event.target.value)}
+                  className={configInputClass("inferPretrainedNameOrPath")}
+                  {...configInputA11y("inferPretrainedNameOrPath")}
+                />
+                {renderConfigFieldError("inferPretrainedNameOrPath")}
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">actions_per_chunk</span>
+                <input
+                  ref={registerConfigInput("inferActionsPerChunk")}
+                  type="text"
+                  inputMode="numeric"
+                  value={form.inferActionsPerChunk}
+                  onChange={(event) => updateField("inferActionsPerChunk", event.target.value)}
+                  className={configInputClass("inferActionsPerChunk")}
+                  {...configInputA11y("inferActionsPerChunk")}
+                />
+                {renderConfigFieldError("inferActionsPerChunk")}
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">chunk_size_threshold</span>
+                <input
+                  ref={registerConfigInput("inferChunkSizeThreshold")}
+                  type="text"
+                  inputMode="decimal"
+                  value={form.inferChunkSizeThreshold}
+                  onChange={(event) => updateField("inferChunkSizeThreshold", event.target.value)}
+                  className={configInputClass("inferChunkSizeThreshold")}
+                  {...configInputA11y("inferChunkSizeThreshold")}
+                />
+                {renderConfigFieldError("inferChunkSizeThreshold")}
+              </label>
+              <label className="text-sm md:col-span-2">
+                <span className="text-muted">aggregate_fn_name</span>
+                <input
+                  ref={registerConfigInput("inferAggregateFnName")}
+                  value={form.inferAggregateFnName}
+                  onChange={(event) => updateField("inferAggregateFnName", event.target.value)}
+                  className={configInputClass("inferAggregateFnName")}
+                  {...configInputA11y("inferAggregateFnName")}
+                />
+                {renderConfigFieldError("inferAggregateFnName")}
+              </label>
             </div>
           </section>
       </section>

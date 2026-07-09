@@ -507,6 +507,112 @@ describe("robotCloudApi", () => {
     });
   });
 
+  it("refreshes a stored agent upload session after a network load failure", async () => {
+    setAuthenticatedUser();
+    const file = new File(["content"], "dataset.zip", { type: "application/zip" });
+    const storageKey = [
+      "robotcloud:agent-upload:",
+      [file.name, file.size, file.lastModified, "demo", "desc", "public", "h20"].join("|")
+    ].join("");
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        session: {
+          dataset_id: 8,
+          status: "processing",
+          upload_url: "http://115.190.130.100:5160/api/v1/agent/datasets/upload",
+          upload_token: "stale-token",
+          expires_at: "2099-01-01T00:00:00Z",
+          expires_in: 900,
+          chunk_size: 1024,
+          node_name: "h20",
+          file_name: "dataset.zip"
+        },
+        fileName: file.name,
+        fileSize: file.size,
+        lastModified: file.lastModified,
+        name: "demo",
+        description: "desc",
+        visibility: "public",
+        targetNode: "h20"
+      })
+    );
+    mockedFetch.mockRejectedValueOnce(new Error("Load failed"));
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          dataset_id: 11,
+          status: "processing",
+          upload_url: "https://robotcloud.conductor-ai.top/agent-h20/api/v1/agent/datasets/upload",
+          upload_token: "fresh-token",
+          expires_at: "2099-01-01T00:15:00Z",
+          expires_in: 900,
+          chunk_size: 1024,
+          node_name: "h20",
+          file_name: "dataset.zip"
+        }
+      })
+    } as unknown as Response);
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: jest.fn().mockResolvedValue(JSON.stringify({ uploaded_bytes: 0, complete: false }))
+    } as unknown as Response);
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          status: "ready",
+          dataset_id: 11,
+          file_name: "dataset.zip",
+          file_size: 7,
+          total_files: 5
+        })
+      )
+    } as unknown as Response);
+    nextXhrResponseText = JSON.stringify({
+      status: "ok",
+      dataset_id: 11,
+      uploaded_bytes: 7,
+      total_size: 7,
+      complete: true
+    });
+
+    const result = await robotCloudApi.uploadDataset({
+      file,
+      name: "demo",
+      description: "desc",
+      visibility: "public",
+      targetNode: "h20"
+    });
+
+    expect(mockedFetch.mock.calls[0][0]).toBe(
+      "http://115.190.130.100:5160/api/v1/agent/datasets/upload/status"
+    );
+    expect(mockedFetch.mock.calls[1][0]).toBe(`${API_BASE}/dataset/upload_session`);
+    expect(mockedFetch.mock.calls[2][0]).toBe(
+      "https://robotcloud.conductor-ai.top/agent-h20/api/v1/agent/datasets/upload/status"
+    );
+    const xhr = lastXhr as unknown as { _url: string; _headers: Record<string, string> };
+    expect(xhr._url).toBe("https://robotcloud.conductor-ai.top/agent-h20/api/v1/agent/datasets/upload/chunk");
+    expect(xhr._headers).toMatchObject({
+      Authorization: "Bearer fresh-token",
+      "X-Dataset-Id": "11"
+    });
+    expect(localStorage.getItem(storageKey)).toBeNull();
+    expect(result).toEqual<DatasetUploadResult>({
+      datasetId: 11,
+      status: "ready",
+      fileName: "dataset.zip",
+      fileSize: 7,
+      totalFiles: 5
+    });
+  });
+
   it("pauses a resumable upload and keeps the stored session", async () => {
     setAuthenticatedUser();
     mockedFetch.mockResolvedValueOnce({

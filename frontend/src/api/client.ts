@@ -441,6 +441,10 @@ function readStoredAgentUploadSession(key: string): BackendDatasetUploadSession 
       localStorage.removeItem(key);
       return null;
     }
+    if (isMixedContentAgentUploadSession(parsed.session)) {
+      localStorage.removeItem(key);
+      return null;
+    }
     return parsed.session;
   } catch {
     return null;
@@ -531,6 +535,29 @@ function agentUploadStorageKey(form: DatasetUploadInput): string {
     targetNode
   ].join("|");
   return `robotcloud:agent-upload:${signature}`;
+}
+
+function isMixedContentAgentUploadSession(session: BackendDatasetUploadSession): boolean {
+  if (typeof window === "undefined" || window.location.protocol !== "https:") {
+    return false;
+  }
+  try {
+    return new URL(session.upload_url).protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function shouldRefreshStoredAgentUploadSession(error: unknown): boolean {
+  const status = Number((error as { status?: number }).status);
+  if ([400, 401, 404].includes(status)) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return (
+    !Number.isFinite(status) &&
+    (message.includes("network error") || message.includes("load failed") || message.includes("failed to fetch"))
+  );
 }
 
 function xhrAgentJson<T>(
@@ -736,6 +763,22 @@ async function uploadFileToAgentResumableWithProgress(
     onProgress(100);
   }
   return completed;
+}
+
+async function uploadFileToAgentWithProgress(
+  session: BackendDatasetUploadSession,
+  file: File,
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal
+): Promise<BackendDatasetUploadComplete> {
+  try {
+    return await uploadFileToAgentResumableWithProgress(session, file, onProgress, signal);
+  } catch (error) {
+    if (isAbortError(error) || (error as { status?: number }).status !== 404) {
+      throw error;
+    }
+    return uploadFileToAgentLegacyWithProgress<BackendDatasetUploadComplete>(session, file, onProgress, signal);
+  }
 }
 
 function mapAgent(item: BackendAgent): GpuAgent {
@@ -967,44 +1010,46 @@ export const robotCloudApi = {
     request<{ deleted: boolean }>(`/dataset/${datasetId}/delete`, { method: "POST" }),
   uploadDataset: async (form: DatasetUploadInput & { onProgress?: (percent: number) => void; signal?: AbortSignal }) => {
     const storageKey = agentUploadStorageKey(form);
-    let session = readStoredAgentUploadSession(storageKey);
-    try {
-      throwIfAborted(form.signal);
-      if (!session) {
-        session = await request<BackendDatasetUploadSession>("/dataset/upload_session", {
-          method: "POST",
-          body: JSON.stringify({
-            name: form.name,
-            description: form.description,
-            visibility: form.visibility,
-            filename: form.file.name,
-            target_node: form.targetNode || ""
-          })
-        });
-        writeStoredAgentUploadSession(storageKey, {
-          session,
-          fileName: form.file.name,
-          fileSize: form.file.size,
-          lastModified: form.file.lastModified,
+    const createSession = async () => {
+      const created = await request<BackendDatasetUploadSession>("/dataset/upload_session", {
+        method: "POST",
+        body: JSON.stringify({
           name: form.name,
           description: form.description,
           visibility: form.visibility,
-          targetNode: form.targetNode || ""
-        });
+          filename: form.file.name,
+          target_node: form.targetNode || ""
+        })
+      });
+      writeStoredAgentUploadSession(storageKey, {
+        session: created,
+        fileName: form.file.name,
+        fileSize: form.file.size,
+        lastModified: form.file.lastModified,
+        name: form.name,
+        description: form.description,
+        visibility: form.visibility,
+        targetNode: form.targetNode || ""
+      });
+      return created;
+    };
+    let session = readStoredAgentUploadSession(storageKey);
+    const restoredStoredSession = Boolean(session);
+    try {
+      throwIfAborted(form.signal);
+      if (!session) {
+        session = await createSession();
       }
       let response: BackendDatasetUploadComplete;
       try {
-        response = await uploadFileToAgentResumableWithProgress(session, form.file, form.onProgress, form.signal);
+        response = await uploadFileToAgentWithProgress(session, form.file, form.onProgress, form.signal);
       } catch (error) {
-        if (isAbortError(error) || (error as { status?: number }).status !== 404) {
+        if (isAbortError(error) || !restoredStoredSession || !shouldRefreshStoredAgentUploadSession(error)) {
           throw error;
         }
-        response = await uploadFileToAgentLegacyWithProgress<BackendDatasetUploadComplete>(
-          session,
-          form.file,
-          form.onProgress,
-          form.signal
-        );
+        removeStoredAgentUploadSession(storageKey);
+        session = await createSession();
+        response = await uploadFileToAgentWithProgress(session, form.file, form.onProgress, form.signal);
       }
       removeStoredAgentUploadSession(storageKey);
       const result: DatasetUploadResult = {

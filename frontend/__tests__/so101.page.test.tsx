@@ -1,5 +1,6 @@
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { SO101Client, so101TestExports } from "../app/so101/SO101Client";
+import { robotCloudApi } from "@/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
 import { resetDesktopBridgeAvailabilityForTest } from "@/hooks/useDesktopBridgeAvailable";
@@ -44,6 +45,7 @@ jest.mock("next/navigation", () => ({
 }));
 
 afterEach(() => {
+  jest.restoreAllMocks();
   so101TestExports.resetPersistentTerminalForTest();
   resetDesktopBridgeAvailabilityForTest();
   useAuthStore.getState().reset();
@@ -714,12 +716,107 @@ describe("SO101 terminal session", () => {
     const cameraLabel = within(connectionSection as HTMLElement).getByText("Camera 0");
     const addCameraButton = within(connectionSection as HTMLElement).getByRole("button", { name: "Add camera" });
     const connectionControls = within(connectionSection as HTMLElement);
+    const cameraCard = cameraLabel.closest(".rounded-md") as HTMLElement;
+    const cameraControls = within(cameraCard);
 
     expect(cameraLabel.compareDocumentPosition(addCameraButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(cameraControls.getByLabelText("Name")).toHaveValue("front");
+    expect(
+      cameraControls.getByLabelText("Name").compareDocumentPosition(cameraControls.getByLabelText("Camera id/path")) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
     expect(connectionControls.getByLabelText("Width")).toHaveAttribute("type", "text");
     expect(connectionControls.getByLabelText("Width")).toHaveValue("640");
     expect(connectionControls.getByLabelText("Height")).toHaveValue("480");
     expect(connectionControls.getByLabelText("FPS")).toHaveValue("30");
+  });
+
+  it("writes an infer action command from the current cards", async () => {
+    const { terminalWrite } = installDesktopBridge();
+    jest.spyOn(robotCloudApi, "fetchInferenceJobs").mockResolvedValue([
+      {
+        id: 14,
+        datasetId: null,
+        modelId: 14,
+        status: "running",
+        serverHost: "h20.conductor-ai.top",
+        serverPort: 5161,
+        checkpointPath: "backend/storage/train_runs/task_14/checkpoints/last/pretrained_model",
+        createdAt: "2026-07-09T00:00:00Z",
+        startedAt: "2026-07-09T00:00:01Z"
+      }
+    ]);
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    fireEvent.change(view.getByLabelText("Follower port"), { target: { value: "/dev/tty.usbmodem58FA1019921" } });
+    fireEvent.change(view.getByLabelText("Task label"), { target: { value: "Put dice into the cup." } });
+    fireEvent.click(view.getByRole("button", { name: "Add camera" }));
+
+    fireEvent.click(view.getByRole("button", { name: "Infer" }));
+
+    await waitFor(() => {
+      expect(robotCloudApi.fetchInferenceJobs).toHaveBeenCalled();
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        expect.stringContaining("python -m lerobot.async_inference.robot_client")
+      );
+    });
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--server_address='h20.conductor-ai.top:5161'")
+    );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--robot.port='/dev/tty.usbmodem58FA1019921'")
+    );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--robot.cameras='{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, side: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30} }'")
+    );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--pretrained_name_or_path='backend/storage/train_runs/task_14/checkpoints/last/pretrained_model'")
+    );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--actions_per_chunk=50 --chunk_size_threshold=0.5 --aggregate_fn_name='weighted_average' --debug_visualize_queue_size=True")
+    );
+  });
+
+  it("blocks infer action until an inference job is running", async () => {
+    const { terminalWrite } = installDesktopBridge();
+    jest.spyOn(robotCloudApi, "fetchInferenceJobs").mockResolvedValue([
+      {
+        id: 15,
+        datasetId: null,
+        modelId: 15,
+        status: "queued",
+        createdAt: "2026-07-09T00:00:00Z"
+      }
+    ]);
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    fireEvent.change(view.getByLabelText("Follower port"), { target: { value: "/dev/tty.usbmodem58FA1019921" } });
+    fireEvent.change(view.getByLabelText("Task label"), { target: { value: "Put dice into the cup." } });
+    fireEvent.click(view.getByRole("button", { name: "Infer" }));
+
+    await waitFor(() => {
+      expect(view.getByText(/Inference job #15 当前是 queued/)).toBeInTheDocument();
+    });
+    expect(terminalWrite).not.toHaveBeenCalledWith(
+      "session-1",
+      expect.stringContaining("lerobot.async_inference.robot_client")
+    );
   });
 
   it("shows direct lerobot-record parameters without an alternate script flow", async () => {
@@ -809,7 +906,13 @@ describe("SO101 terminal session", () => {
         leaderPort: "/dev/persisted-leader",
         datasetRepoId: "local/desktop-persisted",
         episodes: 6,
-        task: "Persist across desktop navigation"
+        task: "Persist across desktop navigation",
+        inferServerAddress: "custom-h20:5161",
+        inferPolicyType: "pi0fast",
+        inferPretrainedNameOrPath: "/models/custom",
+        inferActionsPerChunk: "25",
+        inferChunkSizeThreshold: "0.25",
+        inferAggregateFnName: "mean"
       },
       1
     );
@@ -824,6 +927,12 @@ describe("SO101 terminal session", () => {
     expect(view.getByLabelText("Leader port")).toHaveValue("/dev/persisted-leader");
     expect(view.getByLabelText("Dataset repo id")).toHaveValue("local/desktop-persisted");
     expect(view.getByLabelText("Episodes")).toHaveValue("6");
+    expect(view.getByLabelText("server_address")).toHaveValue("custom-h20:5161");
+    expect(view.getByLabelText("policy_type")).toHaveValue("pi0fast");
+    expect(view.getByLabelText("pretrained_name_or_path")).toHaveValue("/models/custom");
+    expect(view.getByLabelText("actions_per_chunk")).toHaveValue("25");
+    expect(view.getByLabelText("chunk_size_threshold")).toHaveValue("0.25");
+    expect(view.getByLabelText("aggregate_fn_name")).toHaveValue("mean");
 
     fireEvent.change(view.getByLabelText("Episodes"), { target: { value: "9" } });
 
@@ -1095,6 +1204,52 @@ describe("SO101 command generation", () => {
     expect(command).toContain("--dataset.streaming_encoding=true");
   });
 
+  it("builds infer commands through the async robot client module", () => {
+    const command = buildActionCommand(
+      "infer",
+      {
+        ...initialForm,
+        followerPort: "/dev/tty.usbmodem58FA1019921",
+        robotId: "so101_follower",
+        task: "Put dice into the cup."
+      },
+      desktopStatus,
+      2
+    );
+
+    expect(command).toBe(
+      "python -m lerobot.async_inference.robot_client " +
+        "--server_address='h20.conductor-ai.top:5161' " +
+        "--robot.type=so101_follower --robot.port='/dev/tty.usbmodem58FA1019921' --robot.id='so101_follower' " +
+        "--robot.cameras='{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, side: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30} }' " +
+        "--task='Put dice into the cup.' --policy_type='pi05' " +
+        "--pretrained_name_or_path='backend/storage/train_runs/task_14/checkpoints/last/pretrained_model' " +
+        "--actions_per_chunk=50 --chunk_size_threshold=0.5 --aggregate_fn_name='weighted_average' --debug_visualize_queue_size=True"
+    );
+  });
+
+  it("uses camera names as infer camera keys", () => {
+    const command = buildActionCommand(
+      "infer",
+      {
+        ...initialForm,
+        followerPort: "/dev/follower",
+        task: "Pick",
+        cameras: [
+          { ...initialForm.cameras[0], name: "base_0_rgb", id: "0" },
+          { ...initialForm.cameras[1], name: "left_wrist_0_rgb", id: "1" },
+          { ...initialForm.cameras[2], name: "third camera", id: "2" }
+        ]
+      },
+      desktopStatus,
+      3
+    );
+
+    expect(command).toContain(
+      "--robot.cameras='{ base_0_rgb: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, left_wrist_0_rgb: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30}, \"third camera\": {type: opencv, index_or_path: 2, width: 640, height: 480, fps: 30} }'"
+    );
+  });
+
   it("builds find-port commands through the lerobot python module", () => {
     const command = buildActionCommand("find-port", initialForm, desktopStatus, 1);
 
@@ -1274,8 +1429,9 @@ describe("SO101 command generation", () => {
       cameraCount: 3
     });
     expect(saved?.cameras[0]).toMatchObject({ id: "2", width: 800, height: 600, fps: 15 });
-    expect(saved?.cameras[1]).toMatchObject({ id: "1", width: 640, height: 480, fps: 30 });
-    expect(saved?.cameras[2]).toMatchObject({ id: "2", width: 640, height: 480, fps: 30 });
+    expect(saved?.cameras[0]).toMatchObject({ name: "front" });
+    expect(saved?.cameras[1]).toMatchObject({ name: "side", id: "1", width: 640, height: 480, fps: 30 });
+    expect(saved?.cameras[2]).toMatchObject({ name: "wrist", id: "2", width: 640, height: 480, fps: 30 });
   });
 
   it("migrates legacy and incorrect saved defaults to the current SO101 defaults", () => {
@@ -1292,9 +1448,9 @@ describe("SO101 command generation", () => {
     expect(saved).toMatchObject({
       episodes: 50,
       cameras: [
-        { id: "0", width: 640, height: 480, fps: 30 },
-        { id: "custom", width: 800, height: 600, fps: 15 },
-        { id: "2", width: 640, height: 480, fps: 30 }
+        { name: "front", id: "0", width: 640, height: 480, fps: 30 },
+        { name: "side", id: "custom", width: 800, height: 600, fps: 15 },
+        { name: "wrist", id: "2", width: 640, height: 480, fps: 30 }
       ]
     });
   });
@@ -1317,10 +1473,16 @@ describe("SO101 command generation", () => {
         displayData: false,
         useLerobotRecorder: false,
         task: "Pick persisted cube",
+        inferServerAddress: "custom-h20:5161",
+        inferPolicyType: "pi0fast",
+        inferPretrainedNameOrPath: "/models/custom",
+        inferActionsPerChunk: "20",
+        inferChunkSizeThreshold: "0.25",
+        inferAggregateFnName: "mean",
         cameras: [
-          { id: "0", width: 1280, height: 720, fps: 30 },
-          { id: "2", width: 640, height: 480, fps: 15 },
-          { id: "3", width: 320, height: 240, fps: 10 }
+          { name: "front", id: "0", width: 1280, height: 720, fps: 30 },
+          { name: "side", id: "2", width: 640, height: 480, fps: 15 },
+          { name: "wrist", id: "3", width: 320, height: 240, fps: 10 }
         ]
       },
       2
@@ -1342,25 +1504,31 @@ describe("SO101 command generation", () => {
       displayData: false,
       useLerobotRecorder: false,
       task: "Pick persisted cube",
+      inferServerAddress: "custom-h20:5161",
+      inferPolicyType: "pi0fast",
+      inferPretrainedNameOrPath: "/models/custom",
+      inferActionsPerChunk: "20",
+      inferChunkSizeThreshold: "0.25",
+      inferAggregateFnName: "mean",
       cameras: [
-        { id: "0", width: 1280, height: 720, fps: 30 },
-        { id: "2", width: 640, height: 480, fps: 15 },
-        { id: "3", width: 320, height: 240, fps: 10 }
+        { name: "front", id: "0", width: 1280, height: 720, fps: 30 },
+        { name: "side", id: "2", width: 640, height: 480, fps: 15 },
+        { name: "wrist", id: "3", width: 320, height: 240, fps: 10 }
       ]
     });
   });
 
   it("removes added camera cards by compacting later camera settings", () => {
     const cameras = [
-      { id: "0", width: 1280, height: 720, fps: 30 },
-      { id: "1", width: 640, height: 480, fps: 20 },
-      { id: "2", width: 320, height: 240, fps: 10 }
+      { name: "front", id: "0", width: 1280, height: 720, fps: 30 },
+      { name: "side", id: "1", width: 640, height: 480, fps: 20 },
+      { name: "wrist", id: "2", width: 320, height: 240, fps: 10 }
     ] as typeof initialForm.cameras;
 
     expect(removeCameraAtIndex(cameras, 1)).toEqual([
-      { id: "0", width: 1280, height: 720, fps: 30 },
-      { id: "2", width: 320, height: 240, fps: 10 },
-      { id: "2", width: 640, height: 480, fps: 30 }
+      { name: "front", id: "0", width: 1280, height: 720, fps: 30 },
+      { name: "wrist", id: "2", width: 320, height: 240, fps: 10 },
+      { name: "wrist", id: "2", width: 640, height: 480, fps: 30 }
     ]);
   });
 });
