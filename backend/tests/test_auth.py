@@ -126,6 +126,77 @@ def test_login_with_code_existing_user(client: APIClient, sms_gateway: InMemoryS
     assert data["phone"] == "13800000011"
 
 
+@override_settings(AUTH_PLUS_WHITELIST_PHONES="13800000036")
+def test_register_plus_whitelist_user_defaults_to_plus(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    phone = "13800000036"
+    password = "pw123456"
+
+    register_user(client, sms_gateway, phone, password)
+
+    user = User.objects.get(phone=phone)
+    assert user.role == User.ROLE_PLUS
+    assert user.expire_at is None
+
+    login_resp = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password},
+        format="json",
+    )
+    assert login_resp.status_code == 200
+    data = login_resp.json()["data"]
+    assert data["role"] == User.ROLE_PLUS
+    assert data["expire_at"] is None
+
+
+def test_plus_whitelist_promotes_existing_free_user_on_login(
+    client: APIClient, sms_gateway: InMemorySmsGateway
+) -> None:
+    phone = "13800000037"
+    password = "pw123456"
+    register_user(client, sms_gateway, phone, password)
+    assert User.objects.get(phone=phone).role == User.ROLE_FREE
+
+    with override_settings(AUTH_PLUS_WHITELIST_PHONES=phone):
+        login_resp = client.post(
+            "/api/v1/auth/login",
+            {"phone": phone, "password": password},
+            format="json",
+        )
+
+    assert login_resp.status_code == 200
+    assert login_resp.json()["data"]["role"] == User.ROLE_PLUS
+    user = User.objects.get(phone=phone)
+    assert user.role == User.ROLE_PLUS
+    assert user.expire_at is None
+
+
+@override_settings(AUTH_PLUS_WHITELIST_PHONES="13800000038,13800000039")
+def test_plus_whitelist_does_not_downgrade_higher_roles(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    admin_phone = "13800000038"
+    pro_phone = "13800000039"
+    password = "pw123456"
+    register_user(client, sms_gateway, admin_phone, password)
+    register_user(client, sms_gateway, pro_phone, password)
+    User.objects.filter(phone=admin_phone).update(role=User.ROLE_ADMIN, expire_at=None)
+    User.objects.filter(phone=pro_phone).update(role=User.ROLE_PRO, expire_at=None)
+
+    admin_login = client.post(
+        "/api/v1/auth/login",
+        {"phone": admin_phone, "password": password},
+        format="json",
+    )
+    pro_login = client.post(
+        "/api/v1/auth/login",
+        {"phone": pro_phone, "password": password},
+        format="json",
+    )
+
+    assert admin_login.status_code == 200
+    assert admin_login.json()["data"]["role"] == User.ROLE_ADMIN
+    assert pro_login.status_code == 200
+    assert pro_login.json()["data"]["role"] == User.ROLE_PRO
+
+
 def test_login_with_code_invalid_code(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
     """Test login with invalid SMS code."""
     send_resp = client.post("/api/v1/auth/send_code", {"phone": "13800000012"}, format="json")

@@ -152,6 +152,32 @@ class RobotCloudService:
     def _bypasses_single_device_limit(self, user: User) -> bool:
         return user.phone in self._single_device_bypass_phones()
 
+    def _plus_whitelist_phones(self) -> set[str]:
+        values = getattr(settings, "AUTH_PLUS_WHITELIST_PHONES", [])
+        if isinstance(values, str):
+            values = values.split(",")
+        return {str(item).strip() for item in values if str(item).strip()}
+
+    def _is_plus_whitelisted(self, phone: str) -> bool:
+        return phone in self._plus_whitelist_phones()
+
+    def _apply_plus_whitelist(self, user: User) -> User:
+        if not self._is_plus_whitelisted(user.phone):
+            return user
+        if user.role in {User.ROLE_ADMIN, User.ROLE_PRO}:
+            return user
+
+        update_fields: list[str] = []
+        if user.role != User.ROLE_PLUS:
+            user.role = User.ROLE_PLUS
+            update_fields.append("role")
+        if user.expire_at is not None:
+            user.expire_at = None
+            update_fields.append("expire_at")
+        if update_fields:
+            user.save(update_fields=update_fields)
+        return user
+
     def _revoke_user_sessions(self, queryset, reason: str, now=None) -> int:
         revoked_at = now or timezone.now()
         return queryset.update(
@@ -514,6 +540,7 @@ class RobotCloudService:
             with transaction.atomic():
                 user = self._create_user_without_password(phone)
             self.verification_cache.delete(self._verification_key(phone))
+        user = self._apply_plus_whitelist(user)
 
         token = self._start_user_session(user, device_id, device_type, user_agent, replace_existing_device)
         return self._response(
@@ -556,6 +583,7 @@ class RobotCloudService:
         user = self._get_user_by_phone(phone)
         if not self._verify_password(user, password):
             raise ValueError("Incorrect password")
+        user = self._apply_plus_whitelist(user)
         token = self._start_user_session(user, device_id, device_type, user_agent, replace_existing_device)
         return self._response(
             {
@@ -1768,21 +1796,23 @@ class RobotCloudService:
     # -------------------- Internal helpers --------------------
     def _create_user(self, phone: str, password: str) -> User:
         now = timezone.now()
+        role = User.ROLE_PLUS if self._is_plus_whitelisted(phone) else User.ROLE_FREE
         return User.objects.create(
             phone=phone,
             password_hash=self._hash_password(password),
-            role=User.ROLE_FREE,
-            expire_at=now + timedelta(days=30),
+            role=role,
+            expire_at=None if role == User.ROLE_PLUS else now + timedelta(days=30),
         )
 
     def _create_user_without_password(self, phone: str) -> User:
         """Create a user without password (for SMS code login)."""
         now = timezone.now()
+        role = User.ROLE_PLUS if self._is_plus_whitelisted(phone) else User.ROLE_FREE
         return User.objects.create(
             phone=phone,
             password_hash="",
-            role=User.ROLE_FREE,
-            expire_at=now + timedelta(days=30),
+            role=role,
+            expire_at=None if role == User.ROLE_PLUS else now + timedelta(days=30),
         )
 
     def _ensure_phone(self, phone: str) -> None:
@@ -1861,6 +1891,7 @@ class RobotCloudService:
                 UserSession.objects.filter(pk=session.pk).update(last_seen_at=now)
         # Check subscription expiration and auto-downgrade
         self._check_subscription_expiration(user)
+        user = self._apply_plus_whitelist(user)
         return user
 
     def _check_subscription_expiration(self, user: User) -> None:

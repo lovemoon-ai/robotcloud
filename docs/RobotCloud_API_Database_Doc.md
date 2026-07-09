@@ -73,7 +73,7 @@
 }
 ```
 
-`device_type` 支持 `mobile` / `desktop`。同一用户同一时刻最多保留 1 个 `mobile` 会话和 1 个 `desktop` 会话；同一 `device_id` 重新登录会刷新该设备会话。可通过环境变量 `AUTH_SINGLE_DEVICE_BYPASS_PHONES` 配置逗号分隔手机号白名单，白名单用户不受该限制。
+`device_type` 支持 `mobile` / `desktop`。同一用户同一时刻最多保留 1 个 `mobile` 会话和 1 个 `desktop` 会话；同一 `device_id` 重新登录会刷新该设备会话。可通过环境变量 `AUTH_SINGLE_DEVICE_BYPASS_PHONES` 配置逗号分隔手机号白名单，白名单用户不受该限制。可通过 `AUTH_PLUS_WHITELIST_PHONES` 配置逗号分隔手机号白名单，白名单用户注册或登录时默认获得 plus 权限。
 
 **响应**
 
