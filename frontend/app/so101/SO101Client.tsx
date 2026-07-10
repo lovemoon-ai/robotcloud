@@ -10,7 +10,6 @@ import {
   inferenceJobServerAddress,
   lerobotPolicyTypeFromModelType,
   normalizeInferenceServerAddress,
-  selectCurrentActiveInferenceJob,
   selectCurrentRunningInferenceJob
 } from "@/inference/jobs";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -1774,16 +1773,17 @@ export function SO101Client() {
     if (status?.apiBaseUrl) {
       setRobotCloudApiBaseUrl(status.apiBaseUrl);
     }
-    const jobs = await robotCloudApi.fetchInferenceJobs();
-    const runningJob = selectCurrentRunningInferenceJob(jobs);
-    if (!runningJob) {
-      const activeJob = selectCurrentActiveInferenceJob(jobs);
-      if (activeJob) {
-        throw new Error(`Inference job #${activeJob.id} 当前是 ${activeJob.status}，请等 Inference 页面显示 running 和服务地址后再运行 Infer。`);
+    try {
+      const jobs = await robotCloudApi.fetchInferenceJobs();
+      const runningJob = selectCurrentRunningInferenceJob(jobs);
+      if (runningJob && inferenceJobServerAddress(runningJob) && runningJob.checkpointPath) {
+        return alignFormWithRunningInferenceJob(form, runningJob);
       }
-      throw new Error("没有 active inference job。请先在 Inference 页面启动推理任务，并等待状态变为 running。");
+    } catch {
+      // The Infer card can run from manually entered values; job lookup only
+      // auto-fills fields when a complete running inference job is available.
     }
-    return alignFormWithRunningInferenceJob(form, runningJob);
+    return form;
   };
 
   const runAction = async (action: ActionId) => {

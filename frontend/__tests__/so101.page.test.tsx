@@ -842,7 +842,7 @@ describe("SO101 terminal session", () => {
     );
   });
 
-  it("blocks infer action until an inference job is running", async () => {
+  it("writes an infer action command from card defaults when no inference job is running", async () => {
     const { terminalWrite } = installDesktopBridge();
     jest.spyOn(robotCloudApi, "fetchInferenceJobs").mockResolvedValue([
       {
@@ -865,11 +865,20 @@ describe("SO101 terminal session", () => {
     fireEvent.click(view.getByRole("button", { name: "Infer" }));
 
     await waitFor(() => {
-      expect(view.getByText(/Inference job #15 当前是 queued/)).toBeInTheDocument();
+      expect(robotCloudApi.fetchInferenceJobs).toHaveBeenCalled();
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        expect.stringContaining("lerobot.async_inference.robot_client")
+      );
     });
-    expect(terminalWrite).not.toHaveBeenCalledWith(
+    expect(view.queryByText(/Inference job #15 当前是 queued/)).not.toBeInTheDocument();
+    expect(terminalWrite).toHaveBeenLastCalledWith(
       "session-1",
-      expect.stringContaining("lerobot.async_inference.robot_client")
+      expect.stringContaining("--server_address='h20.conductor-ai.top:5161'")
+    );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--pretrained_name_or_path='backend/storage/train_runs/task_14/checkpoints/last/pretrained_model'")
     );
   });
 
