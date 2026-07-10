@@ -1541,6 +1541,7 @@ class InferenceJob(threading.Thread):
     """Start an async inference policy server."""
 
     MAX_RUNTIME_SECONDS = 20 * 60
+    STARTUP_TIMEOUT_SECONDS = 300
 
     def __init__(
         self,
@@ -1574,7 +1575,7 @@ class InferenceJob(threading.Thread):
         except OSError:
             pass
         host = str(self.params.get("host") or "0.0.0.0")
-        port = str(self.params.get("port") or self._pick_port())
+        port = int(self.params.get("port") or self._pick_port())
         self.server_port = port
         command = self._build_command(host, port)
         env = self._build_env()
@@ -1588,6 +1589,19 @@ class InferenceJob(threading.Thread):
                     stderr=logf,
                     text=True,
                 )
+                ready_error = self._wait_for_server_ready(host, port, self._startup_timeout_seconds())
+                if ready_error:
+                    self._terminate_process()
+                    self.agent.notify_inference_status(
+                        self.task_id,
+                        "failed",
+                        0.0,
+                        server_port=port,
+                        error_message=ready_error,
+                        log_path=str(self.log_path),
+                    )
+                    self.agent.finish_job(self.task_id)
+                    return
                 self.agent.notify_inference_status(
                     self.task_id,
                     "running",
@@ -1671,6 +1685,40 @@ class InferenceJob(threading.Thread):
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+
+    def _wait_for_server_ready(self, host: str, port: int, timeout: int) -> Optional[str]:
+        deadline = time.monotonic() + max(timeout, 1)
+        connect_host = self._connect_probe_host(host)
+        while time.monotonic() < deadline:
+            if self._stop_event.is_set():
+                return "inference task stopped before policy server became ready"
+            process = self._process
+            if process and process.poll() is not None:
+                return f"policy server exited before listening on port {port} (exit_code={process.returncode})"
+            if self._can_connect(connect_host, port):
+                return None
+            time.sleep(0.5)
+        return f"policy server did not listen on port {port} within {max(timeout, 1)} seconds"
+
+    def _startup_timeout_seconds(self) -> int:
+        try:
+            return max(int(os.getenv("AGENT_INFERENCE_STARTUP_TIMEOUT_SECONDS", self.STARTUP_TIMEOUT_SECONDS)), 1)
+        except (TypeError, ValueError):
+            return self.STARTUP_TIMEOUT_SECONDS
+
+    @staticmethod
+    def _connect_probe_host(host: str) -> str:
+        if host in {"", "0.0.0.0", "::"}:
+            return "127.0.0.1"
+        return host
+
+    @staticmethod
+    def _can_connect(host: str, port: int) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                return True
+        except OSError:
+            return False
 
     def _build_command(self, host: str, port: int) -> List[str]:
         base = shlex.split(self.cmd)
@@ -1799,6 +1847,7 @@ class Agent:
                         backend_base_url=self.config.backend_base_url,
                         node_name=self.config.node_name,
                         report_ip=self.config.report_ip,
+                        inference_public_host=self.config.inference_public_host,
                         listen_host=self.config.listen_host,
                         api_port=self.config.api_port,
                         public_base_url=self.config.public_base_url,
@@ -1891,7 +1940,7 @@ class Agent:
             "task_id": task_id,
             "status": status,
             "progress": round(progress, 4),
-            "server_host": self.config.report_ip,
+            "server_host": self.config.inference_public_host,
             "server_port": server_port,
             "error_message": error_message,
             "log_path": log_path,

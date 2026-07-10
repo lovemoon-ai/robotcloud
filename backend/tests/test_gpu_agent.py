@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import io
+import logging
+import socket
 import tarfile
 import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -24,6 +26,9 @@ class _StubAgent:
 
     def notify_status(self, task_id: int, status: str, progress: float, metrics: Dict[str, Any]) -> None:
         self._notifications.append((task_id, status, progress, metrics))
+
+    def notify_inference_status(self, *args: Any, **kwargs: Any) -> None:
+        self._notifications.append((args[0], args[1], args[2], kwargs))
 
     def finish_job(self, task_id: int) -> None:
         self.finished.append(task_id)
@@ -94,6 +99,7 @@ def _agent_config(tmp_path: Path) -> AgentConfig:
         backend_base_url="http://backend.example.test/api/v1",
         node_name="gpu-node-1",
         report_ip="127.0.0.1",
+        inference_public_host="127.0.0.1",
         listen_host="127.0.0.1",
         api_port=0,
         public_base_url="http://127.0.0.1",
@@ -234,6 +240,86 @@ def test_training_job_builds_command_with_dataset_arg(tmp_path: Path) -> None:
 
 def test_inference_job_runtime_limit_is_twenty_minutes() -> None:
     assert InferenceJob.MAX_RUNTIME_SECONDS == 20 * 60
+
+
+def test_agent_reports_inference_public_host(tmp_path: Path) -> None:
+    class CaptureSession:
+        def __init__(self) -> None:
+            self.payload: Dict[str, Any] | None = None
+
+        def post(
+            self,
+            url: str,
+            json: Dict[str, Any] | None = None,  # noqa: A002
+            headers: Dict[str, str] | None = None,
+            timeout: int | None = None,
+        ) -> _BackendResponse:
+            self.payload = json
+            return _BackendResponse({"code": 0, "data": {}})
+
+    config = _agent_config(tmp_path)
+    config = AgentConfig(
+        backend_base_url=config.backend_base_url,
+        node_name=config.node_name,
+        report_ip="127.0.0.1",
+        inference_public_host="h20.conductor-ai.top",
+        listen_host=config.listen_host,
+        api_port=config.api_port,
+        public_base_url=config.public_base_url,
+        upload_enabled=config.upload_enabled,
+        upload_allowed_origins=config.upload_allowed_origins,
+        gpu_total=config.gpu_total,
+        gpu_slot_total=config.gpu_slot_total,
+        heartbeat_interval=config.heartbeat_interval,
+        version=config.version,
+        step_delay=config.step_delay,
+        log_dir=config.log_dir,
+        work_dir=config.work_dir,
+        dataset_cache_dir=config.dataset_cache_dir,
+    )
+    session = CaptureSession()
+    agent = Agent(config, session=session)  # type: ignore[arg-type]
+    agent.agent_token = "agent-token"
+
+    agent.notify_inference_status(21, "running", 0, server_port=5161)
+
+    assert session.payload is not None
+    assert session.payload["server_host"] == "h20.conductor-ai.top"
+    assert session.payload["server_port"] == 5161
+
+
+def test_inference_job_waits_for_policy_server_port(tmp_path: Path) -> None:
+    agent = _StubAgent()
+    job = InferenceJob(
+        agent=agent,  # type: ignore[arg-type]
+        task_id=21,
+        gpus=[0],
+        params={},
+        cmd="python -m server",
+        log_dir=tmp_path / "logs",
+        work_dir=tmp_path,
+    )
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    listener.close()
+
+    def delayed_server() -> None:
+        time.sleep(0.2)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", port))
+            server.listen(1)
+            conn, _ = server.accept()
+            conn.close()
+
+    thread = threading.Thread(target=delayed_server, daemon=True)
+    thread.start()
+    started = time.monotonic()
+
+    assert job._wait_for_server_ready("0.0.0.0", port, 2) is None
+    assert time.monotonic() - started >= 0.15
+    thread.join(timeout=2)
 
 
 def test_training_job_parses_progress_from_logs(tmp_path: Path) -> None:
