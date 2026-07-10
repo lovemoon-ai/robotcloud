@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { AppChrome } from "@/components/AppChrome";
+import { resetDesktopBridgeAvailabilityForTest } from "@/hooks/useDesktopBridgeAvailable";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
 
@@ -35,6 +36,7 @@ function getDesktopNav(container: HTMLElement) {
 describe("AppChrome shell", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    resetDesktopBridgeAvailabilityForTest();
     useAuthStore.getState().reset();
     useAuthStore.getState().setAuth({
       token: "token",
