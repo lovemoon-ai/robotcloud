@@ -1399,6 +1399,7 @@ export function SO101Client() {
   const [terminalState, setTerminalState] = useState<TerminalStoreSnapshot>(() => persistentTerminalSnapshot());
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
   const configInputRefs = useRef<Partial<Record<ConfigFieldId, HTMLInputElement | null>>>({});
+  const rightPanelRef = useRef<HTMLElement | null>(null);
   const rightPanelCardRefs = useRef<Partial<Record<RightPanelCardId, HTMLElement | null>>>({});
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runtimeUpdateProgressOffRef = useRef<(() => void) | null>(null);
@@ -1432,6 +1433,21 @@ export function SO101Client() {
     setActiveRightPanelCard(card);
     rightPanelCardRefs.current[card]?.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
   };
+  const syncRightPanelCardFromScroll = useCallback(() => {
+    const panel = rightPanelRef.current;
+    if (!panel) return;
+    const currentLine = panel.getBoundingClientRect().top + 48;
+    let next: RightPanelCardId = rightPanelNavItems[0].id;
+
+    for (const item of rightPanelNavItems) {
+      const node = rightPanelCardRefs.current[item.id];
+      if (node && node.getBoundingClientRect().top <= currentLine) {
+        next = item.id;
+      }
+    }
+
+    setActiveRightPanelCard((current) => (current === next ? current : next));
+  }, []);
   const fieldErrorId = (field: ConfigFieldId) => `so101-${field}-error`;
   const configInputClass = (field: ConfigFieldId, backgroundClass = "bg-surface") => {
     const highlightClass = highlightedField === field
@@ -2016,10 +2032,12 @@ export function SO101Client() {
     return `scroll-mt-14 rounded-lg border ${selectedClass} bg-card p-4`;
   };
   const rightPanelNavButtonClass = (card: RightPanelCardId) => {
-    const activeClass = activeRightPanelCard === card
-      ? "border-primary text-body"
-      : "border-transparent text-muted hover:border-theme hover:text-body";
-    return `min-w-max flex-1 border-b-2 px-2 pb-2 pt-1 text-center text-xs font-semibold transition ${activeClass}`;
+    const activeClass = activeRightPanelCard === card ? "text-primary" : "text-muted hover:text-body";
+    return `group flex h-7 min-w-0 flex-1 items-center px-1 transition ${activeClass}`;
+  };
+  const rightPanelNavLineClass = (card: RightPanelCardId) => {
+    const activeClass = activeRightPanelCard === card ? "h-1.5" : "h-px group-hover:h-1";
+    return `block w-full rounded-full bg-current transition-all ${activeClass}`;
   };
   const actionButtonClass = (actionId: ActionId) => {
     const selectedClass = selectedAction === actionId ? "border-primary bg-surface" : "border-theme bg-card";
@@ -2529,18 +2547,19 @@ export function SO101Client() {
         {terminalError ? <p className="mt-3 text-xs text-red-400">{terminalError}</p> : null}
       </section>
 
-      <aside className="space-y-4 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto xl:pr-1">
+      <aside ref={rightPanelRef} onScroll={syncRightPanelCardFromScroll} className="space-y-4 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto xl:pr-1">
         <nav aria-label="SO101 panel sections" className="sticky top-0 z-20 border-b border-theme bg-surface/95 backdrop-blur">
-          <div className="flex w-full overflow-x-auto">
+          <div className="flex w-full gap-1">
             {rightPanelNavItems.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => jumpToRightPanelCard(item.id)}
                 aria-label={`Show ${item.label} card`}
+                title={item.label}
                 className={rightPanelNavButtonClass(item.id)}
               >
-                {item.label}
+                <span className={rightPanelNavLineClass(item.id)} />
               </button>
             ))}
           </div>

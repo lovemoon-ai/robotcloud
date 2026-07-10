@@ -798,8 +798,12 @@ describe("SO101 terminal session", () => {
       });
 
       const panelNav = view.getByRole("navigation", { name: "SO101 panel sections" });
-      expect(within(panelNav).getByRole("button", { name: "Show Commands card" })).toBeInTheDocument();
-      fireEvent.click(within(panelNav).getByRole("button", { name: "Show Cameras card" }));
+      const commandsLine = within(panelNav).getByRole("button", { name: "Show Commands card" });
+      const camerasLine = within(panelNav).getByRole("button", { name: "Show Cameras card" });
+      expect(commandsLine).toBeInTheDocument();
+      expect(commandsLine.textContent).toBe("");
+      expect(camerasLine.textContent).toBe("");
+      fireEvent.click(camerasLine);
 
       expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start", inline: "nearest" });
     } finally {
