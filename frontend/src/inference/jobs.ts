@@ -40,6 +40,23 @@ function normalizeInferenceServerHost(value: string) {
   return address.replace(/:\d+$/, "");
 }
 
+export function lerobotPolicyTypeFromModelType(modelType: string) {
+  const normalized = modelType.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  const mapping: Record<string, string> = {
+    act: "act",
+    diffusionpolicy: "diffusion",
+    diffusion: "diffusion",
+    dp: "diffusion",
+    pi0: "pi0",
+    "pi0.5": "pi05",
+    pi05: "pi05",
+    smolvla: "smolvla",
+    groot: "groot",
+    gr00t: "groot"
+  };
+  return mapping[normalized] ?? modelType.trim().toLowerCase();
+}
+
 export function inferenceJobServerAddress(job: InferenceJob) {
   if (!job.serverHost || !job.serverPort) return null;
   const host = normalizeInferenceServerHost(job.serverHost);

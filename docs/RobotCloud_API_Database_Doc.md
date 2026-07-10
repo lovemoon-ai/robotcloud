@@ -177,14 +177,16 @@ Form-Data：
 {
   "dataset_id":42,
   "job_name":"pi05-grasp-v1",
-  "model_type":"yolov8",
+  "model_type":"pi05",
   "params":{
-    "epochs":50,
+    "steps":5000,
     "batch_size":8,
-    "lr":0.001
+    "learning_rate":0.000025
   }
 }
 ```
+
+`model_type` 使用后端/LeRobot CLI canonical 名称，例如 `act`、`diffusion`、`pi0`、`pi05`、`smolvla`、`groot`。
 
 ### 2. 获取任务列表
 
@@ -348,7 +350,7 @@ Response
   dataset_id   INT FK                                          
   user_id      INT FK                                          
   job_name     VARCHAR(128)                 可选实验/任务名称
-  model_type   VARCHAR(50)                                     
+  model_type   VARCHAR(50)                  canonical CLI model type
   params       JSON                                            
   status       ENUM('queued','running','completed','failed')   
   progress     FLOAT                                           

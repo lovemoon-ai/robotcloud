@@ -72,7 +72,7 @@ describe("AppChrome shell", () => {
   it("waits for auth storage hydration before redirecting protected routes", async () => {
     useAuthStore.getState().reset();
     let hydrated = false;
-    const listeners = new Set<() => void>();
+    const listeners = new Set<(state: ReturnType<typeof useAuthStore.getState>) => void>();
     const originalHasHydrated = useAuthStore.persist.hasHydrated;
     const originalOnHydrate = useAuthStore.persist.onHydrate;
     const originalOnFinishHydration = useAuthStore.persist.onFinishHydration;
@@ -99,7 +99,7 @@ describe("AppChrome shell", () => {
 
       act(() => {
         hydrated = true;
-        listeners.forEach((listener) => listener());
+        listeners.forEach((listener) => listener(useAuthStore.getState()));
       });
 
       await waitFor(() => {

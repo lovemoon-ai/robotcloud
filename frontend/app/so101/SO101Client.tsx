@@ -8,6 +8,7 @@ import { navigateToCloudPath, shouldUseLocalDesktopNavigation } from "@/desktop/
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
 import {
   inferenceJobServerAddress,
+  lerobotPolicyTypeFromModelType,
   normalizeInferenceServerAddress,
   selectCurrentActiveInferenceJob,
   selectCurrentRunningInferenceJob
@@ -756,6 +757,7 @@ function alignFormWithRunningInferenceJob(form: FormState, job: InferenceJob): F
   return {
     ...form,
     inferServerAddress: serverAddress,
+    inferPolicyType: job.modelType ? lerobotPolicyTypeFromModelType(job.modelType) : form.inferPolicyType,
     inferPretrainedNameOrPath: job.checkpointPath
   };
 }
@@ -956,6 +958,7 @@ export const so101TestExports = {
   parseConnectionSettings,
   serializeConnectionSettings,
   removeCameraAtIndex,
+  alignFormWithRunningInferenceJob,
   resolvedDatasetRoot,
   buildActionCommand,
   buildPrepareUploadCommand,

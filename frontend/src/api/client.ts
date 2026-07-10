@@ -1,4 +1,3 @@
-import getConfig from "next/config";
 import { useAuthStore } from "@/store/useAuthStore";
 import {
   AdminUser,
@@ -23,21 +22,7 @@ import {
 
 const DEFAULT_API_BASE = "http://localhost:6150/api/v1";
 
-type RuntimeConfig = {
-  publicRuntimeConfig?: {
-    apiBaseUrl?: string;
-  };
-};
-
-const runtimeConfig: RuntimeConfig | undefined = (() => {
-  try {
-    return getConfig();
-  } catch {
-    return undefined;
-  }
-})();
-
-const RAW_API_BASE = runtimeConfig?.publicRuntimeConfig?.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
+const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
 const CONFIGURED_API_BASE = RAW_API_BASE.replace(/\/$/, "");
 const DEVICE_ID_STORAGE_KEY = "robotcloud-device-id";
 export const PI05_BASE_MODEL = "lerobot/pi05_base";
@@ -221,6 +206,7 @@ type BackendTrainingTask = {
 type BackendInferenceTask = {
   task_id: number;
   model_id: number;
+  model_type?: string | null;
   dataset_id?: number | null;
   status: string;
   progress?: number;
@@ -1138,6 +1124,7 @@ export const robotCloudApi = {
       id: task.task_id,
       datasetId: task.dataset_id ?? null,
       modelId: task.model_id,
+      modelType: task.model_type ?? undefined,
       status: task.status,
       progress: task.progress,
       serverHost: task.server_host ?? undefined,

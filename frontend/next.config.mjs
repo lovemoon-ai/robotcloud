@@ -35,12 +35,6 @@ const nextConfig = {
     NEXT_PUBLIC_ROBOTCLOUD_WEB_BASE_URL: WEB_BASE_URL,
     NEXT_PUBLIC_ROBOTCLOUD_BASE_PATH: BASE_PATH
   },
-  experimental: {
-    esmExternals: false
-  },
-  publicRuntimeConfig: {
-    apiBaseUrl: API_BASE_URL
-  },
   webpack: (config) => {
     config.resolve.alias = {
       ...(config.resolve.alias || {}),

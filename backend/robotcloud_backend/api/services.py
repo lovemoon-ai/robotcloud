@@ -42,6 +42,23 @@ DEFAULT_DATASET_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 DEVICE_LIMIT_MESSAGE = "Device limit reached for this device type"
 
 
+def _canonical_model_type(model_type: str) -> str:
+    key = re.sub(r"[\s_-]+", "", str(model_type or "").strip().lower())
+    if key == "act":
+        return "act"
+    if key in {"diffusionpolicy", "diffusion", "dp"}:
+        return "diffusion"
+    if key == "smolvla":
+        return "smolvla"
+    if key == "pi0":
+        return "pi0"
+    if key in {"pi0.5", "pi05"}:
+        return "pi05"
+    if "gr00t" in key or "groot" in key:
+        return "groot"
+    return key
+
+
 class RobotCloudService:
     """Domain service that encapsulates RobotCloud business logic."""
 
@@ -1255,6 +1272,7 @@ class RobotCloudService:
     ) -> Dict[str, Any]:
         if not model_type:
             raise ValueError("Model type required")
+        model_type = _canonical_model_type(model_type)
         job_name = str(job_name or "").strip()[:128]
         user = self._get_user_by_token(token)
         if not self._has_no_limits(user):
@@ -1637,7 +1655,9 @@ class RobotCloudService:
         queryset = user.inference_tasks.all().order_by("-created_at")
         total = queryset.count()
         start = (page - 1) * size
-        items = [self._inference_to_dict(t) for t in queryset[start : start + size]]
+        tasks = list(queryset[start : start + size])
+        model_types = self._inference_model_types(user, tasks)
+        items = [self._inference_to_dict(task, model_types.get(task.model_id)) for task in tasks]
         return self._response({"items": items, "total": total})
 
     def inference_result(self, token: str, task_id: int) -> Dict[str, Any]:
@@ -1646,6 +1666,7 @@ class RobotCloudService:
         return self._response(
             {
                 "task_id": task.id,
+                "model_type": self._inference_model_type(task),
                 "status": task.status,
                 "checkpoint_path": task.checkpoint_path,
                 "server_host": task.server_host,
@@ -1851,8 +1872,12 @@ class RobotCloudService:
         result = {
             "model_id": task.id,
             "name": task.job_name
-            or (f"{task.model_type}-{dataset.name}" if dataset else f"{task.model_type}-{task.id}"),
-            "model_type": task.model_type,
+            or (
+                f"{_canonical_model_type(task.model_type)}-{dataset.name}"
+                if dataset
+                else f"{_canonical_model_type(task.model_type)}-{task.id}"
+            ),
+            "model_type": _canonical_model_type(task.model_type),
             "dataset_id": task.dataset_id,
             "dataset_name": dataset.name if dataset else None,
             "model_path": task.model_path,
@@ -2110,7 +2135,7 @@ class RobotCloudService:
             "task_id": task.id,
             "dataset_id": task.dataset_id,
             "job_name": task.job_name,
-            "model_type": task.model_type,
+            "model_type": _canonical_model_type(task.model_type),
             "status": task.status,
             "progress": task.progress,
             "checkpoint_path": task.checkpoint_path,
@@ -2124,10 +2149,11 @@ class RobotCloudService:
             "created_at": task.created_at.isoformat(),
         }
 
-    def _inference_to_dict(self, task: InferenceTask) -> Dict[str, Any]:
+    def _inference_to_dict(self, task: InferenceTask, model_type: Optional[str]) -> Dict[str, Any]:
         return {
             "task_id": task.id,
             "model_id": task.model_id,
+            "model_type": model_type,
             "dataset_id": task.dataset_id,
             "status": task.status,
             "progress": task.progress,
@@ -2141,6 +2167,27 @@ class RobotCloudService:
             "started_at": task.started_at.isoformat() if task.started_at else None,
             "finished_at": task.finished_at.isoformat() if task.finished_at else None,
             "created_at": task.created_at.isoformat(),
+        }
+
+    def _inference_model_type(self, task: InferenceTask) -> Optional[str]:
+        model_type = (
+            TrainTask.objects.filter(id=task.model_id, user=task.user)
+            .values_list("model_type", flat=True)
+            .first()
+        )
+        return _canonical_model_type(model_type) if model_type else None
+
+    def _inference_model_types(self, user: User, tasks: Iterable[InferenceTask]) -> Dict[int, str]:
+        model_ids = {task.model_id for task in tasks}
+        if not model_ids:
+            return {}
+        return {
+            model_id: _canonical_model_type(model_type)
+            for model_id, model_type in TrainTask.objects.filter(id__in=model_ids, user=user).values_list(
+                "id",
+                "model_type",
+            )
+            if model_type
         }
 
     def _simulation_to_dict(self, task: SimulationTask) -> Dict[str, Any]:

@@ -32,8 +32,9 @@ DEFAULT_INFERENCE_SERVER_PORT = 5161
 def _normalize_policy_name(model_type: str) -> str:
     """Map UI model_type to training policy identifiers.
 
-    Accepts labels like 'ACT', 'DiffusionPolicy', 'SmolVLA', 'Pi0', 'Pi0.5',
-    and GR00T variants, returning one of: act, dp, smolvla, pi0, pi0.5, groot.
+    Accepts canonical names like act, diffusion, smolvla, pi0, pi05, and
+    groot, while still tolerating legacy display labels. Returns one of:
+    act, dp, smolvla, pi0, pi0.5, groot.
     The scheduler later maps these to lerobot-train's hydra policy selection key.
     """
     key = (model_type or "").strip().lower()
@@ -330,7 +331,7 @@ class SchedulerService:
         policy_type = {"dp": "diffusion", "pi0.5": "pi05"}.get(normalized, normalized)
 
         if is_pi05:
-            # Pi0.5 should default to lightweight fine-tuning from the base checkpoint.
+            # pi05 should default to lightweight fine-tuning from the base checkpoint.
             # The legacy UI only submitted policy.type=pi05, which initializes a 4B
             # trainable model from scratch and OOMs on H20.
             if not any(original_params.get(key) for key in ("policy.path", "--policy.path")):
@@ -383,7 +384,7 @@ class SchedulerService:
             key in original_params for key in ("optimizer.lr", "policy.optimizer_lr", "--optimizer.lr")
         )
         if is_pi05 and not optimizer_lr_is_explicit:
-            # Treat the old frontend's hard-coded 1e-3 as unset for Pi0.5.
+            # Treat the old frontend's hard-coded 1e-3 as unset for pi05.
             if learning_rate is None or learning_rate == LEGACY_DEFAULT_LEARNING_RATE:
                 learning_rate = PI05_DEFAULT_LEARNING_RATE
         if learning_rate is not None:

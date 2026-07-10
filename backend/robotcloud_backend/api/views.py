@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Callable, Dict
 
 from rest_framework import status
-from rest_framework.parsers import JSONParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -223,7 +223,7 @@ class PaymentMockCallbackView(RobotCloudAPIView):
 
 class AlipayNotifyView(RobotCloudAPIView):
     """Handle Alipay async notification callback."""
-    parser_classes = [JSONParser, MultiPartParser]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def post(self, request: Request) -> Response:
         data = {}

@@ -29,7 +29,7 @@ const PI05_PRESETS = {
 
 const DEFAULT_TRAINING_VALUES: TrainingConfig = {
   jobName: "",
-  model: "ACT",
+  model: "act",
   datasetId: "",
   learningRate: 0.001,
   steps: 5000,
@@ -154,7 +154,7 @@ function TrainPageContent() {
         learningRateLabel: "学习率",
         batchSizeLabel: "Batch Size",
         epochsLabel: "Steps",
-        pi05ModeTitle: "Pi0.5 轻量微调",
+        pi05ModeTitle: "pi05 轻量微调",
         pi05ModeDescription: "默认基于 lerobot/pi05_base，只训练 Action Expert，避免误触发 4B 参数全量训练。",
         pi05PresetLabel: "H20 预设",
         pi05PresetOptions: {
@@ -209,7 +209,7 @@ function TrainPageContent() {
         learningRateLabel: "Learning Rate",
         batchSizeLabel: "Batch Size",
         epochsLabel: "Steps",
-        pi05ModeTitle: "Pi0.5 lightweight fine-tuning",
+        pi05ModeTitle: "pi05 lightweight fine-tuning",
         pi05ModeDescription: "Defaults to lerobot/pi05_base and trains only the Action Expert to avoid accidental 4B full training.",
         pi05PresetLabel: "H20 Preset",
         pi05PresetOptions: {
@@ -474,11 +474,11 @@ function TrainPageContent() {
           <label className="block text-sm">
             <span className="text-muted">{copy.modelLabel}</span>
             <select {...form.register("model")} className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2">
-              <option value="ACT">ACT</option>
-              <option value="DiffusionPolicy">DiffusionPolicy</option>
-              <option value="Pi0">Pi0</option>
-              <option value="Pi0.5">Pi0.5</option>
-              <option value="SmolVLA">SmolVLA</option>
+              <option value="act">act</option>
+              <option value="diffusion">diffusion</option>
+              <option value="pi0">pi0</option>
+              <option value="pi05">pi05</option>
+              <option value="smolvla">smolvla</option>
             </select>
           </label>
           {isPi05Selected ? (

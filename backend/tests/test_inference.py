@@ -75,8 +75,18 @@ def test_inference_flow(client: APIClient, sms_gateway: InMemorySmsGateway) -> N
     assert result_resp.status_code == 200
     result = result_resp.json()["data"]
     assert result["task_id"] == task_id
+    assert result["model_type"] == "act"
     assert result["status"] in {"queued", "running", "completed", "failed"}
     assert result["checkpoint_path"] == "/tmp/checkpoints/task_1"
+
+    list_resp = client.get(
+        "/api/v1/inference/list",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    assert list_resp.status_code == 200
+    listed = list_resp.json()["data"]["items"][0]
+    assert listed["task_id"] == task_id
+    assert listed["model_type"] == "act"
 
     close_resp = client.post(
         f"/api/v1/inference/{task_id}/close",

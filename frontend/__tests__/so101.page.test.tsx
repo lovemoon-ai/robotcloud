@@ -1205,7 +1205,17 @@ describe("SO101 terminal session", () => {
 });
 
 describe("SO101 command generation", () => {
-  const { buildActionCommand, buildPrepareUploadCommand, initialForm, parseConnectionSettings, removeCameraAtIndex, resolvedDatasetRoot, serializeConnectionSettings, shellArg } = so101TestExports;
+  const {
+    alignFormWithRunningInferenceJob,
+    buildActionCommand,
+    buildPrepareUploadCommand,
+    initialForm,
+    parseConnectionSettings,
+    removeCameraAtIndex,
+    resolvedDatasetRoot,
+    serializeConnectionSettings,
+    shellArg
+  } = so101TestExports;
 
   const desktopStatus: DesktopStatus = {
     isDesktop: true,
@@ -1656,6 +1666,32 @@ describe("SO101 command generation", () => {
         createdAt: "2026-07-09T00:00:00Z"
       })
     ).toBe("h20.conductor-ai.top:5161");
+  });
+
+  it("uses the running inference job model type for infer policy type", () => {
+    const aligned = alignFormWithRunningInferenceJob(
+      {
+        ...initialForm,
+        inferPolicyType: "pi05"
+      },
+      {
+        id: 16,
+        datasetId: null,
+        modelId: 14,
+        modelType: "act",
+        status: "running",
+        serverHost: "h20.conductor-ai.top",
+        serverPort: 5161,
+        checkpointPath: "backend/storage/train_runs/task_14/checkpoints/last/pretrained_model",
+        createdAt: "2026-07-09T00:00:00Z"
+      }
+    );
+
+    expect(aligned.inferPolicyType).toBe("act");
+    expect(aligned.inferServerAddress).toBe("h20.conductor-ai.top:5161");
+    expect(aligned.inferPretrainedNameOrPath).toBe(
+      "backend/storage/train_runs/task_14/checkpoints/last/pretrained_model"
+    );
   });
 
   it("round-trips persisted SO101 settings", () => {

@@ -901,10 +901,10 @@ describe("robotCloudApi", () => {
     });
   });
 
-  it("createTrainingJob posts Pi0.5 lightweight fine-tune payload", async () => {
+  it("createTrainingJob posts pi05 lightweight fine-tune payload", async () => {
     setAuthenticatedUser();
     const config: TrainingConfig = {
-      model: "Pi0.5",
+      model: "pi05",
       datasetId: "6",
       learningRate: 0.000025,
       steps: 5000,
@@ -916,7 +916,7 @@ describe("robotCloudApi", () => {
     const [, init] = mockedFetch.mock.calls[0];
     expect(JSON.parse(init?.body as string)).toEqual({
       dataset_id: 6,
-      model_type: "Pi0.5",
+      model_type: "pi05",
       params: {
         learning_rate: 0.000025,
         steps: 5000,
@@ -946,7 +946,7 @@ describe("robotCloudApi", () => {
       }
     };
     const config: TrainingConfig = {
-      model: "Pi0.5",
+      model: "pi05",
       datasetId: "6",
       learningRate: 0.000025,
       steps: 5000,
@@ -957,7 +957,7 @@ describe("robotCloudApi", () => {
     const [, init] = mockedFetch.mock.calls[0];
     expect(JSON.parse(init?.body as string)).toEqual({
       dataset_id: 6,
-      model_type: "Pi0.5",
+      model_type: "pi05",
       params
     });
   });
@@ -985,6 +985,7 @@ describe("robotCloudApi", () => {
           {
             task_id: 5,
             model_id: 3,
+            model_type: "act",
             dataset_id: 2,
             status: "running",
             result_path: null,
@@ -1006,6 +1007,7 @@ describe("robotCloudApi", () => {
       {
         id: 5,
         modelId: 3,
+        modelType: "act",
         datasetId: 2,
         status: "running",
         progress: undefined,
