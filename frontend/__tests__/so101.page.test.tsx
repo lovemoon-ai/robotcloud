@@ -760,12 +760,12 @@ describe("SO101 terminal session", () => {
       expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
 
-    const connectionSection = view.getByText("Connection").closest("section");
-    expect(connectionSection).not.toBeNull();
+    const camerasSection = view.getByText("Cameras").closest("section");
+    expect(camerasSection).not.toBeNull();
 
-    const cameraLabel = within(connectionSection as HTMLElement).getByText("Camera 0");
-    const addCameraButton = within(connectionSection as HTMLElement).getByRole("button", { name: "Add camera" });
-    const connectionControls = within(connectionSection as HTMLElement);
+    const cameraLabel = within(camerasSection as HTMLElement).getByText("Camera 0");
+    const addCameraButton = within(camerasSection as HTMLElement).getByRole("button", { name: "Add camera" });
+    const cameraSectionControls = within(camerasSection as HTMLElement);
     const cameraCard = cameraLabel.closest(".rounded-md") as HTMLElement;
     const cameraControls = within(cameraCard);
 
@@ -775,10 +775,10 @@ describe("SO101 terminal session", () => {
       cameraControls.getByLabelText("Name").compareDocumentPosition(cameraControls.getByLabelText("Camera id/path")) &
         Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
-    expect(connectionControls.getByLabelText("Width")).toHaveAttribute("type", "text");
-    expect(connectionControls.getByLabelText("Width")).toHaveValue("640");
-    expect(connectionControls.getByLabelText("Height")).toHaveValue("480");
-    expect(connectionControls.getByLabelText("FPS")).toHaveValue("30");
+    expect(cameraSectionControls.getByLabelText("Width")).toHaveAttribute("type", "text");
+    expect(cameraSectionControls.getByLabelText("Width")).toHaveValue("640");
+    expect(cameraSectionControls.getByLabelText("Height")).toHaveValue("480");
+    expect(cameraSectionControls.getByLabelText("FPS")).toHaveValue("30");
   });
 
   it("writes an infer action command from the current cards", async () => {

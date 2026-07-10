@@ -131,6 +131,13 @@ type ActionId =
   | "save-pose"
   | "record"
   | "infer";
+type ConfigSectionId = "connection" | "cameras" | "record" | "infer";
+type ActionDefinition = {
+  id: ActionId;
+  label: string;
+  group: "Diagnose" | "Setup" | "Operate" | "Data" | "Inference";
+  sections: ConfigSectionId[];
+};
 
 type ShellDialect = "posix" | "powershell";
 
@@ -209,18 +216,28 @@ const initialForm: FormState = {
 
 const idleCheck: CheckState = { phase: "idle", message: "" };
 
-const actions: Array<{ id: ActionId; label: string }> = [
-  { id: "info", label: "Info" },
-  { id: "find-port", label: "Find port" },
-  { id: "setup-follower", label: "Setup follower" },
-  { id: "setup-leader", label: "Setup leader" },
-  { id: "calibrate-follower", label: "Calibrate follower" },
-  { id: "calibrate-leader", label: "Calibrate leader" },
-  { id: "teleop", label: "Teleoperate" },
-  { id: "save-pose", label: "Save pose" },
-  { id: "record", label: "Record" },
-  { id: "infer", label: "Infer" }
+const actionDefinitions: ActionDefinition[] = [
+  { id: "info", label: "Info", group: "Diagnose", sections: [] },
+  { id: "find-port", label: "Find port", group: "Diagnose", sections: [] },
+  { id: "setup-follower", label: "Setup follower", group: "Setup", sections: ["connection"] },
+  { id: "setup-leader", label: "Setup leader", group: "Setup", sections: ["connection"] },
+  { id: "calibrate-follower", label: "Calibrate follower", group: "Setup", sections: ["connection"] },
+  { id: "calibrate-leader", label: "Calibrate leader", group: "Setup", sections: ["connection"] },
+  { id: "teleop", label: "Teleoperate", group: "Operate", sections: ["connection"] },
+  { id: "save-pose", label: "Save pose", group: "Operate", sections: ["connection"] },
+  { id: "record", label: "Record", group: "Data", sections: ["connection", "cameras", "record"] },
+  { id: "infer", label: "Infer", group: "Inference", sections: ["connection", "cameras", "infer"] }
 ];
+const actionGroups: Array<{ label: ActionDefinition["group"]; actionIds: ActionId[] }> = [
+  { label: "Diagnose", actionIds: ["info", "find-port"] },
+  { label: "Setup", actionIds: ["setup-follower", "setup-leader", "calibrate-follower", "calibrate-leader"] },
+  { label: "Operate", actionIds: ["teleop", "save-pose"] },
+  { label: "Data", actionIds: ["record"] },
+  { label: "Inference", actionIds: ["infer"] }
+];
+const actionDefinitionById = Object.fromEntries(
+  actionDefinitions.map((action) => [action.id, action])
+) as Record<ActionId, ActionDefinition>;
 
 const configFieldIds = new Set<string>([
   "followerPort",
@@ -1314,6 +1331,19 @@ function RuntimeUpdateIcon({ className }: { className?: string }) {
   );
 }
 
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      aria-hidden="true"
+      fill="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  );
+}
+
 export function SO101Client() {
   const router = useRouter();
   const token = useAuthStore((state) => state.token);
@@ -1751,14 +1781,14 @@ export function SO101Client() {
 
   const writeActionCommand = useCallback(async (
     action: ActionId,
-    options: { force?: boolean; formOverride?: FormState } = {}
+    options: { force?: boolean; formOverride?: FormState; submit?: boolean } = {}
   ) => {
     const commandForm = options.formOverride ?? form;
     const command = buildActionCommand(action, commandForm, status, cameraCount);
     if (!options.force && command === lastWrittenActionCommandRef.current) return;
     lastWrittenActionCommandRef.current = command;
     try {
-      await writeTerminalCommand(command, { focusTerminal: options.force });
+      await writeTerminalCommand(command, { focusTerminal: options.force, submit: options.submit });
     } catch (error) {
       if (lastWrittenActionCommandRef.current === command) {
         lastWrittenActionCommandRef.current = null;
@@ -1783,7 +1813,7 @@ export function SO101Client() {
     return alignFormWithRunningInferenceJob(form, runningJob);
   };
 
-  const runAction = async (action: ActionId) => {
+  const runAction = async (action: ActionId, options: { submit?: boolean } = {}) => {
     try {
       setPersistentTerminalError(null);
       setActionConfigError(null);
@@ -1792,11 +1822,11 @@ export function SO101Client() {
         connectionDirtyRef.current = true;
         setForm(alignedForm);
         setSelectedAction(action);
-        await writeActionCommand(action, { force: true, formOverride: alignedForm });
+        await writeActionCommand(action, { force: true, formOverride: alignedForm, submit: options.submit });
         return;
       }
       setSelectedAction(action);
-      await writeActionCommand(action, { force: true });
+      await writeActionCommand(action, { force: true, submit: options.submit });
     } catch (error) {
       if (handleConfigValidationError(error)) return;
       setPersistentTerminalError(messageFromUnknownError(error));
@@ -1956,6 +1986,438 @@ export function SO101Client() {
     ],
     [copy.appVersion, copy.buildCommit, copy.buildTime, copy.builtInLerobot, status]
   );
+  const selectedActionDefinition = selectedAction ? actionDefinitionById[selectedAction] : null;
+  const selectedConfigSections = useMemo(
+    () => new Set<ConfigSectionId>(selectedActionDefinition?.sections ?? []),
+    [selectedActionDefinition]
+  );
+  const configCardClass = (section: ConfigSectionId) => {
+    const selectedClass = selectedConfigSections.has(section)
+      ? "border-primary/70 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]"
+      : "border-theme";
+    return `rounded-lg border ${selectedClass} bg-card p-4`;
+  };
+  const actionButtonClass = (actionId: ActionId) => {
+    const selectedClass = selectedAction === actionId ? "border-primary bg-surface" : "border-theme bg-card";
+    return `w-full rounded-md border ${selectedClass} px-3 py-2 text-left text-sm font-semibold accent-text transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50`;
+  };
+  const actionRunButtonClass = (actionId: ActionId) => {
+    const selectedClass = selectedAction === actionId ? "border-primary bg-surface" : "border-theme bg-card";
+    return `flex h-9 w-9 shrink-0 items-center justify-center rounded-md border ${selectedClass} accent-text transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50`;
+  };
+
+  const renderConnectionCard = () => (
+    <section className={configCardClass("connection")}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold accent-text">Connection</h2>
+      </div>
+      <div className="mt-4 grid gap-4">
+        {([
+          ["followerPort", "Follower port"],
+          ["leaderPort", "Leader port"]
+        ] as Array<[PortKey, string]>).map(([key, label]) => (
+          <div key={key}>
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="min-w-0 flex-1 text-sm">
+                <span className="text-muted">{label}</span>
+                <input
+                  ref={registerConfigInput(key)}
+                  value={form[key]}
+                  onChange={(event) => updateField(key, event.target.value)}
+                  placeholder="/dev/cu.usbmodem..."
+                  className={configInputClass(key)}
+                  {...configInputA11y(key)}
+                />
+              </label>
+              <CheckButton state={portChecks[key]} onClick={() => checkPort(key)} disabled={!form[key].trim()} />
+            </div>
+            {renderConfigFieldError(key)}
+            {portChecks[key].message ? <p className="mt-1 text-xs text-muted">{portChecks[key].message}</p> : null}
+          </div>
+        ))}
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+          <label className="text-sm">
+            <span className="text-muted">Robot ID</span>
+            <input
+              ref={registerConfigInput("robotId")}
+              value={form.robotId}
+              onChange={(event) => updateField("robotId", event.target.value)}
+              className={configInputClass("robotId")}
+              {...configInputA11y("robotId")}
+            />
+            {renderConfigFieldError("robotId")}
+          </label>
+          <label className="text-sm">
+            <span className="text-muted">Teleop ID</span>
+            <input
+              ref={registerConfigInput("teleopId")}
+              value={form.teleopId}
+              onChange={(event) => updateField("teleopId", event.target.value)}
+              className={configInputClass("teleopId")}
+              {...configInputA11y("teleopId")}
+            />
+            {renderConfigFieldError("teleopId")}
+          </label>
+        </div>
+      </div>
+    </section>
+  );
+
+  const renderCamerasCard = () => (
+    <section className={configCardClass("cameras")}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold accent-text">Cameras</h2>
+      </div>
+      <div className="mt-4 grid gap-3">
+        {form.cameras.slice(0, cameraCount).map((camera, index) => {
+          const nameField = cameraConfigField(index, "Name");
+          const idField = cameraConfigField(index, "Id");
+          const widthField = cameraConfigField(index, "Width");
+          const heightField = cameraConfigField(index, "Height");
+          const fpsField = cameraConfigField(index, "Fps");
+          return (
+            <div key={cameraLabels[index]} className="rounded-md border border-theme bg-surface p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold accent-text">{cameraLabels[index]}</span>
+                {index > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => removeCamera(index)}
+                    aria-label={`Remove ${cameraLabels[index]}`}
+                    className="flex h-7 w-7 items-center justify-center rounded-md border border-theme text-base font-semibold accent-text transition hover:accent-bg"
+                  >
+                    -
+                  </button>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="min-w-[7rem] flex-[0_0_8rem] text-sm">
+                  <span className="text-muted">Name</span>
+                  <input
+                    ref={registerConfigInput(nameField)}
+                    value={camera.name}
+                    onChange={(event) => updateCamera(index, "name", event.target.value)}
+                    placeholder={defaultCameraName(index)}
+                    className={configInputClass(nameField, "bg-card")}
+                    {...configInputA11y(nameField)}
+                  />
+                  {renderConfigFieldError(nameField)}
+                </label>
+                <label className="min-w-0 flex-1 text-sm">
+                  <span className="text-muted">Camera id/path</span>
+                  <input
+                    ref={registerConfigInput(idField)}
+                    value={camera.id}
+                    onChange={(event) => updateCamera(index, "id", event.target.value)}
+                    placeholder={String(index)}
+                    className={configInputClass(idField, "bg-card")}
+                    {...configInputA11y(idField)}
+                  />
+                </label>
+                <CheckButton
+                  state={cameraChecks[index]}
+                  onClick={() => checkCamera(index)}
+                  disabled={!camera.id.trim()}
+                />
+                <button
+                  type="button"
+                  onClick={() => previewCamera(index)}
+                  disabled={!camera.id.trim() || previewingCamera === index}
+                  className="rounded-md border border-theme px-3 py-2 text-xs font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {previewingCamera === index ? "Opening" : "Preview"}
+                </button>
+              </div>
+              {renderConfigFieldError(idField)}
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                <label className="text-xs text-muted">
+                  Width
+                  <input
+                    ref={registerConfigInput(widthField)}
+                    {...numericTextInputProps}
+                    value={hasCameraProfileValue(camera.width) ? camera.width : ""}
+                    onChange={(event) => updateCamera(index, "width", Number(event.target.value))}
+                    className={configInputClass(widthField, "bg-card")}
+                    {...configInputA11y(widthField)}
+                  />
+                  {renderConfigFieldError(widthField)}
+                </label>
+                <label className="text-xs text-muted">
+                  Height
+                  <input
+                    ref={registerConfigInput(heightField)}
+                    {...numericTextInputProps}
+                    value={hasCameraProfileValue(camera.height) ? camera.height : ""}
+                    onChange={(event) => updateCamera(index, "height", Number(event.target.value))}
+                    className={configInputClass(heightField, "bg-card")}
+                    {...configInputA11y(heightField)}
+                  />
+                  {renderConfigFieldError(heightField)}
+                </label>
+                <label className="text-xs text-muted">
+                  FPS
+                  <input
+                    ref={registerConfigInput(fpsField)}
+                    {...numericTextInputProps}
+                    value={hasCameraProfileValue(camera.fps) ? camera.fps : ""}
+                    onChange={(event) => updateCamera(index, "fps", Number(event.target.value))}
+                    className={configInputClass(fpsField, "bg-card")}
+                    {...configInputA11y(fpsField)}
+                  />
+                  {renderConfigFieldError(fpsField)}
+                </label>
+              </div>
+              {cameraChecks[index].message ? <p className="mt-2 text-xs text-muted">{cameraChecks[index].message}</p> : null}
+            </div>
+          );
+        })}
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={addCamera}
+            disabled={cameraCount >= MAX_CAMERAS}
+            aria-label="Add camera"
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            +
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+
+  const renderRecordCard = () => (
+    <section className={configCardClass("record")}>
+      <h2 className="text-lg font-semibold accent-text">Record</h2>
+      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+        <label className="text-sm">
+          <span className="text-muted">Dataset repo id</span>
+          <input
+            ref={registerConfigInput("datasetRepoId")}
+            value={form.datasetRepoId}
+            onChange={(event) => updateField("datasetRepoId", event.target.value)}
+            className={configInputClass("datasetRepoId")}
+            {...configInputA11y("datasetRepoId")}
+          />
+          {renderConfigFieldError("datasetRepoId")}
+        </label>
+        <label className="text-sm">
+          <span className="text-muted">Dataset root</span>
+          <input
+            ref={registerConfigInput("datasetRoot")}
+            value={form.datasetRoot}
+            onChange={(event) => updateField("datasetRoot", event.target.value)}
+            className={configInputClass("datasetRoot")}
+            {...configInputA11y("datasetRoot")}
+          />
+          {renderConfigFieldError("datasetRoot")}
+        </label>
+        <label className="text-sm">
+          <span className="text-muted">Episodes</span>
+          <input
+            ref={registerConfigInput("episodes")}
+            {...numericTextInputProps}
+            value={form.episodes}
+            onChange={(event) => updateField("episodes", Number(event.target.value))}
+            className={configInputClass("episodes")}
+            {...configInputA11y("episodes")}
+          />
+          {renderConfigFieldError("episodes")}
+        </label>
+        {form.useLerobotRecorder ? (
+          <>
+            <label className="text-sm">
+              <span className="text-muted">Episode seconds</span>
+              <input
+                ref={registerConfigInput("episodeTimeS")}
+                {...numericTextInputProps}
+                value={form.episodeTimeS}
+                onChange={(event) => updateField("episodeTimeS", Number(event.target.value))}
+                className={configInputClass("episodeTimeS")}
+                {...configInputA11y("episodeTimeS")}
+              />
+              {renderConfigFieldError("episodeTimeS")}
+            </label>
+            <label className="text-sm">
+              <span className="text-muted">Reset seconds</span>
+              <input
+                ref={registerConfigInput("resetTimeS")}
+                {...numericTextInputProps}
+                value={form.resetTimeS}
+                onChange={(event) => updateField("resetTimeS", Number(event.target.value))}
+                className={configInputClass("resetTimeS")}
+                {...configInputA11y("resetTimeS")}
+              />
+              {renderConfigFieldError("resetTimeS")}
+            </label>
+          </>
+        ) : (
+          <>
+            <label className="text-sm">
+              <span className="text-muted">Min episode seconds</span>
+              <input
+                ref={registerConfigInput("minEpisodeTimeS")}
+                {...numericTextInputProps}
+                value={form.minEpisodeTimeS}
+                onChange={(event) => updateField("minEpisodeTimeS", Number(event.target.value))}
+                className={configInputClass("minEpisodeTimeS")}
+                {...configInputA11y("minEpisodeTimeS")}
+              />
+              {renderConfigFieldError("minEpisodeTimeS")}
+            </label>
+            <label className="text-sm">
+              <span className="text-muted">Max episode seconds</span>
+              <input
+                ref={registerConfigInput("maxEpisodeTimeS")}
+                {...numericTextInputProps}
+                value={form.maxEpisodeTimeS}
+                onChange={(event) => updateField("maxEpisodeTimeS", Number(event.target.value))}
+                className={configInputClass("maxEpisodeTimeS")}
+                {...configInputA11y("maxEpisodeTimeS")}
+              />
+              {renderConfigFieldError("maxEpisodeTimeS")}
+            </label>
+            <label className="text-sm">
+              <span className="text-muted">Stationary action seconds</span>
+              <input
+                ref={registerConfigInput("stationaryHoldTimeS")}
+                {...numericTextInputProps}
+                value={form.stationaryHoldTimeS}
+                onChange={(event) => updateField("stationaryHoldTimeS", Number(event.target.value))}
+                className={configInputClass("stationaryHoldTimeS")}
+                {...configInputA11y("stationaryHoldTimeS")}
+              />
+              {renderConfigFieldError("stationaryHoldTimeS")}
+            </label>
+          </>
+        )}
+        <label className="text-sm md:col-span-2 xl:col-span-1 2xl:col-span-2">
+          <span className="text-muted">Task label</span>
+          <input
+            ref={registerConfigInput("task")}
+            value={form.task}
+            onChange={(event) => updateField("task", event.target.value)}
+            placeholder="Descripe your task ..."
+            className={configInputClass("task")}
+            {...configInputA11y("task")}
+          />
+          {renderConfigFieldError("task")}
+        </label>
+        <label className="flex items-center gap-2 text-sm text-muted md:col-span-2 xl:col-span-1 2xl:col-span-2">
+          <input
+            type="checkbox"
+            checked={form.useLerobotRecorder}
+            onChange={(event) => updateField("useLerobotRecorder", event.target.checked)}
+          />
+          {copy.recorderModeLabel}
+        </label>
+        <label className="flex items-center gap-2 text-sm text-muted">
+          <input type="checkbox" checked={form.displayData} onChange={(event) => updateField("displayData", event.target.checked)} />
+          Display LeRobot data windows
+        </label>
+      </div>
+      <div className="mt-4 flex justify-end">
+        <button
+          type="button"
+          onClick={startDatasetUploadFromTerminal}
+          disabled={uploadPreparing || terminalPhase !== "ready"}
+          className="rounded-md gradient-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {uploadPreparing ? "Packaging..." : "Upload"}
+        </button>
+      </div>
+    </section>
+  );
+
+  const renderInferCard = () => (
+    <section className={configCardClass("infer")}>
+      <h2 className="text-lg font-semibold accent-text">Infer</h2>
+      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+        <label className="text-sm md:col-span-2 xl:col-span-1 2xl:col-span-2">
+          <span className="text-muted">server_address</span>
+          <input
+            ref={registerConfigInput("inferServerAddress")}
+            value={form.inferServerAddress}
+            onChange={(event) => updateField("inferServerAddress", event.target.value)}
+            className={configInputClass("inferServerAddress")}
+            {...configInputA11y("inferServerAddress")}
+          />
+          {renderConfigFieldError("inferServerAddress")}
+        </label>
+        <label className="text-sm">
+          <span className="text-muted">policy_type</span>
+          <input
+            ref={registerConfigInput("inferPolicyType")}
+            value={form.inferPolicyType}
+            onChange={(event) => updateField("inferPolicyType", event.target.value)}
+            className={configInputClass("inferPolicyType")}
+            {...configInputA11y("inferPolicyType")}
+          />
+          {renderConfigFieldError("inferPolicyType")}
+        </label>
+        <label className="text-sm">
+          <span className="text-muted">policy_device</span>
+          <input
+            ref={registerConfigInput("inferPolicyDevice")}
+            value={form.inferPolicyDevice}
+            onChange={(event) => updateField("inferPolicyDevice", event.target.value)}
+            className={configInputClass("inferPolicyDevice")}
+            {...configInputA11y("inferPolicyDevice")}
+          />
+          {renderConfigFieldError("inferPolicyDevice")}
+        </label>
+        <label className="text-sm">
+          <span className="text-muted">pretrained_name_or_path</span>
+          <input
+            ref={registerConfigInput("inferPretrainedNameOrPath")}
+            value={form.inferPretrainedNameOrPath}
+            onChange={(event) => updateField("inferPretrainedNameOrPath", event.target.value)}
+            className={configInputClass("inferPretrainedNameOrPath")}
+            {...configInputA11y("inferPretrainedNameOrPath")}
+          />
+          {renderConfigFieldError("inferPretrainedNameOrPath")}
+        </label>
+        <label className="text-sm">
+          <span className="text-muted">actions_per_chunk</span>
+          <input
+            ref={registerConfigInput("inferActionsPerChunk")}
+            type="text"
+            inputMode="numeric"
+            value={form.inferActionsPerChunk}
+            onChange={(event) => updateField("inferActionsPerChunk", event.target.value)}
+            className={configInputClass("inferActionsPerChunk")}
+            {...configInputA11y("inferActionsPerChunk")}
+          />
+          {renderConfigFieldError("inferActionsPerChunk")}
+        </label>
+        <label className="text-sm">
+          <span className="text-muted">chunk_size_threshold</span>
+          <input
+            ref={registerConfigInput("inferChunkSizeThreshold")}
+            type="text"
+            inputMode="decimal"
+            value={form.inferChunkSizeThreshold}
+            onChange={(event) => updateField("inferChunkSizeThreshold", event.target.value)}
+            className={configInputClass("inferChunkSizeThreshold")}
+            {...configInputA11y("inferChunkSizeThreshold")}
+          />
+          {renderConfigFieldError("inferChunkSizeThreshold")}
+        </label>
+        <label className="text-sm md:col-span-2 xl:col-span-1 2xl:col-span-2">
+          <span className="text-muted">aggregate_fn_name</span>
+          <input
+            ref={registerConfigInput("inferAggregateFnName")}
+            value={form.inferAggregateFnName}
+            onChange={(event) => updateField("inferAggregateFnName", event.target.value)}
+            className={configInputClass("inferAggregateFnName")}
+            {...configInputA11y("inferAggregateFnName")}
+          />
+          {renderConfigFieldError("inferAggregateFnName")}
+        </label>
+      </div>
+    </section>
+  );
 
   if (!token) {
     return (
@@ -1980,7 +2442,7 @@ export function SO101Client() {
   }
 
   return (
-    <main className="space-y-5">
+    <main className="flex min-h-[calc(100vh-8rem)] flex-col gap-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-3xl font-bold text-body">SO101 Desktop Workbench</h1>
         <button
@@ -1992,7 +2454,8 @@ export function SO101Client() {
         </button>
       </header>
 
-      <section className="rounded-lg border border-theme bg-card p-5">
+      <section className="grid flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_25rem] 2xl:grid-cols-[minmax(0,1fr)_28rem]">
+      <section className="flex min-h-[36rem] flex-col rounded-lg border border-theme bg-card p-4 xl:sticky xl:top-4 xl:h-[calc(100vh-9rem)] xl:min-h-0">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-xl font-semibold accent-text">Terminal</h2>
           <div className="flex items-center gap-2">
@@ -2006,32 +2469,8 @@ export function SO101Client() {
                 New terminal
               </button>
             ) : null}
-            <button
-              type="button"
-              onClick={() => setActionsOpen((current) => !current)}
-              aria-expanded={actionsOpen}
-              aria-label="Toggle actions"
-              className="flex h-8 w-8 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg"
-            >
-              {actionsOpen ? "-" : "+"}
-            </button>
           </div>
         </div>
-        {actionsOpen ? (
-          <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
-            {actions.map((action) => (
-              <button
-                key={action.id}
-                type="button"
-                onClick={() => runAction(action.id)}
-                disabled={terminalPhase !== "ready"}
-                className="shrink-0 rounded-md border border-theme bg-surface px-3 py-2 text-sm font-semibold accent-text transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {action.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
         {actionConfigError ? (
           <p role="alert" className="mt-3 rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-500">
             {actionConfigError.message}
@@ -2068,449 +2507,114 @@ export function SO101Client() {
         <div
           ref={terminalContainerRef}
           onClick={() => persistentTerminalStore.term?.focus()}
-          className="mt-4 h-[30rem] overflow-hidden rounded-md border border-theme bg-[#07111f] p-2"
+          className="mt-4 min-h-[28rem] flex-1 overflow-hidden rounded-md border border-theme bg-[#07111f] p-2 xl:min-h-0"
         />
         {terminalError ? <p className="mt-3 text-xs text-red-400">{terminalError}</p> : null}
       </section>
 
-      <section className="grid gap-5 xl:grid-cols-2">
-        <section className="rounded-lg border border-theme bg-card p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-xl font-semibold accent-text">Connection</h2>
+      <aside className="space-y-4 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto xl:pr-1">
+        <section className="rounded-lg border border-theme bg-card p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold accent-text">Quick Commands</h2>
+              {selectedActionDefinition ? (
+                <p className="mt-1 truncate text-xs text-muted">{selectedActionDefinition.label}</p>
+              ) : null}
             </div>
-            <div className="mt-4 grid gap-4">
-              {([
-                ["followerPort", "Follower port"],
-                ["leaderPort", "Leader port"]
-              ] as Array<[PortKey, string]>).map(([key, label]) => (
-                <div key={key}>
-                  <div className="flex flex-wrap items-end gap-2">
-                    <label className="min-w-0 flex-1 text-sm">
-                      <span className="text-muted">{label}</span>
-                      <input
-                        ref={registerConfigInput(key)}
-                        value={form[key]}
-                        onChange={(event) => updateField(key, event.target.value)}
-                        placeholder="/dev/cu.usbmodem..."
-                        className={configInputClass(key)}
-                        {...configInputA11y(key)}
-                      />
-                    </label>
-                    <CheckButton state={portChecks[key]} onClick={() => checkPort(key)} disabled={!form[key].trim()} />
+            <button
+              type="button"
+              onClick={() => setActionsOpen((current) => !current)}
+              aria-expanded={actionsOpen}
+              aria-label="Toggle actions"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg"
+            >
+              {actionsOpen ? "-" : "+"}
+            </button>
+          </div>
+          {actionsOpen ? (
+            <div className="mt-4 space-y-4">
+              {actionGroups.map((group) => (
+                <div key={group.label} className="space-y-2">
+                  <p className="text-xs uppercase tracking-wide text-muted">{group.label}</p>
+                  <div className="grid gap-2">
+                    {group.actionIds.map((actionId) => {
+                      const action = actionDefinitionById[actionId];
+                      return (
+                        <div key={action.id} className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => runAction(action.id)}
+                            disabled={terminalPhase !== "ready"}
+                            className={actionButtonClass(action.id)}
+                          >
+                            {action.label}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => runAction(action.id, { submit: true })}
+                            disabled={terminalPhase !== "ready"}
+                            aria-label={`Run ${action.label}`}
+                            title={`Run ${action.label}`}
+                            className={actionRunButtonClass(action.id)}
+                          >
+                            <PlayIcon className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
-                  {renderConfigFieldError(key)}
-                  {portChecks[key].message ? <p className="mt-1 text-xs text-muted">{portChecks[key].message}</p> : null}
                 </div>
               ))}
+            </div>
+          ) : null}
+        </section>
 
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="text-sm">
-                  <span className="text-muted">Robot ID</span>
-                  <input
-                    ref={registerConfigInput("robotId")}
-                    value={form.robotId}
-                    onChange={(event) => updateField("robotId", event.target.value)}
-                    className={configInputClass("robotId")}
-                    {...configInputA11y("robotId")}
-                  />
-                  {renderConfigFieldError("robotId")}
-                </label>
-                <label className="text-sm">
-                  <span className="text-muted">Teleop ID</span>
-                  <input
-                    ref={registerConfigInput("teleopId")}
-                    value={form.teleopId}
-                    onChange={(event) => updateField("teleopId", event.target.value)}
-                    className={configInputClass("teleopId")}
-                    {...configInputA11y("teleopId")}
-                  />
-                  {renderConfigFieldError("teleopId")}
-                </label>
-              </div>
+        {renderConnectionCard()}
+        {renderCamerasCard()}
+        {renderRecordCard()}
+        {renderInferCard()}
 
-              {form.cameras.slice(0, cameraCount).map((camera, index) => {
-                const nameField = cameraConfigField(index, "Name");
-                const idField = cameraConfigField(index, "Id");
-                const widthField = cameraConfigField(index, "Width");
-                const heightField = cameraConfigField(index, "Height");
-                const fpsField = cameraConfigField(index, "Fps");
-                return (
-                <div key={cameraLabels[index]} className="rounded-md border border-theme bg-surface p-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold accent-text">{cameraLabels[index]}</span>
-                    {index > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => removeCamera(index)}
-                        aria-label={`Remove ${cameraLabels[index]}`}
-                        className="flex h-7 w-7 items-center justify-center rounded-md border border-theme text-base font-semibold accent-text transition hover:accent-bg"
-                      >
-                        -
-                      </button>
-                    ) : null}
-                  </div>
-                  <div className="flex flex-wrap items-end gap-2">
-                    <label className="min-w-[7rem] flex-[0_0_8rem] text-sm">
-                      <span className="text-muted">Name</span>
-                      <input
-                        ref={registerConfigInput(nameField)}
-                        value={camera.name}
-                        onChange={(event) => updateCamera(index, "name", event.target.value)}
-                        placeholder={defaultCameraName(index)}
-                        className={configInputClass(nameField, "bg-card")}
-                        {...configInputA11y(nameField)}
-                      />
-                      {renderConfigFieldError(nameField)}
-                    </label>
-                    <label className="min-w-0 flex-1 text-sm">
-                      <span className="text-muted">Camera id/path</span>
-                      <input
-                        ref={registerConfigInput(idField)}
-                        value={camera.id}
-                        onChange={(event) => updateCamera(index, "id", event.target.value)}
-                        placeholder={String(index)}
-                        className={configInputClass(idField, "bg-card")}
-                        {...configInputA11y(idField)}
-                      />
-                    </label>
-                    <CheckButton
-                      state={cameraChecks[index]}
-                      onClick={() => checkCamera(index)}
-                      disabled={!camera.id.trim()}
-                    />
+        <section className="grid gap-3">
+          {runtimeStatusCards.map((card) => (
+            <div key={card.key} className="rounded-lg border border-theme bg-card p-4">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs uppercase tracking-wide text-muted">{card.label}</span>
+                <div className="flex items-center gap-2">
+                  <span className="rounded border border-theme px-2 py-0.5 text-xs accent-text">{card.value}</span>
+                  {card.key === "runtime" && runtimeUpdateAvailable ? (
                     <button
                       type="button"
-                      onClick={() => previewCamera(index)}
-                      disabled={!camera.id.trim() || previewingCamera === index}
-                      className="rounded-md border border-theme px-3 py-2 text-xs font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label={runtimeUpdating ? copy.updatingRuntime : copy.updateRuntime}
+                      title={runtimeUpdating ? copy.updatingRuntime : copy.updateRuntime}
+                      onClick={updateRuntime}
+                      disabled={runtimeUpdating || terminalPhase !== "ready"}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-theme accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {previewingCamera === index ? "Opening" : "Preview"}
+                      <RuntimeUpdateIcon className={`h-4 w-4 ${runtimeUpdating ? "animate-spin" : ""}`} />
                     </button>
-                  </div>
-                  {renderConfigFieldError(idField)}
-                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                    <label className="text-xs text-muted">
-                      Width
-                      <input
-                        ref={registerConfigInput(widthField)}
-                        {...numericTextInputProps}
-                        value={hasCameraProfileValue(camera.width) ? camera.width : ""}
-                        onChange={(event) => updateCamera(index, "width", Number(event.target.value))}
-                        className={configInputClass(widthField, "bg-card")}
-                        {...configInputA11y(widthField)}
-                      />
-                      {renderConfigFieldError(widthField)}
-                    </label>
-                    <label className="text-xs text-muted">
-                      Height
-                      <input
-                        ref={registerConfigInput(heightField)}
-                        {...numericTextInputProps}
-                        value={hasCameraProfileValue(camera.height) ? camera.height : ""}
-                        onChange={(event) => updateCamera(index, "height", Number(event.target.value))}
-                        className={configInputClass(heightField, "bg-card")}
-                        {...configInputA11y(heightField)}
-                      />
-                      {renderConfigFieldError(heightField)}
-                    </label>
-                    <label className="text-xs text-muted">
-                      FPS
-                      <input
-                        ref={registerConfigInput(fpsField)}
-                        {...numericTextInputProps}
-                        value={hasCameraProfileValue(camera.fps) ? camera.fps : ""}
-                        onChange={(event) => updateCamera(index, "fps", Number(event.target.value))}
-                        className={configInputClass(fpsField, "bg-card")}
-                        {...configInputA11y(fpsField)}
-                      />
-                      {renderConfigFieldError(fpsField)}
-                    </label>
-                  </div>
-                  {cameraChecks[index].message ? <p className="mt-2 text-xs text-muted">{cameraChecks[index].message}</p> : null}
+                  ) : null}
                 </div>
-              );
-              })}
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={addCamera}
-                  disabled={cameraCount >= MAX_CAMERAS}
-                  aria-label="Add camera"
-                  className="flex h-8 w-8 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  +
-                </button>
               </div>
+              <p className="mt-2 break-all text-xs text-muted">{card.detail}</p>
             </div>
-          </section>
+          ))}
+        </section>
 
-          <section className="rounded-lg border border-theme bg-card p-5">
-            <h2 className="text-xl font-semibold accent-text">Record</h2>
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              <label className="text-sm">
-                <span className="text-muted">Dataset repo id</span>
-                <input
-                  ref={registerConfigInput("datasetRepoId")}
-                  value={form.datasetRepoId}
-                  onChange={(event) => updateField("datasetRepoId", event.target.value)}
-                  className={configInputClass("datasetRepoId")}
-                  {...configInputA11y("datasetRepoId")}
-                />
-                {renderConfigFieldError("datasetRepoId")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Dataset root</span>
-                <input
-                  ref={registerConfigInput("datasetRoot")}
-                  value={form.datasetRoot}
-                  onChange={(event) => updateField("datasetRoot", event.target.value)}
-                  className={configInputClass("datasetRoot")}
-                  {...configInputA11y("datasetRoot")}
-                />
-                {renderConfigFieldError("datasetRoot")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">Episodes</span>
-                <input
-                  ref={registerConfigInput("episodes")}
-                  {...numericTextInputProps}
-                  value={form.episodes}
-                  onChange={(event) => updateField("episodes", Number(event.target.value))}
-                  className={configInputClass("episodes")}
-                  {...configInputA11y("episodes")}
-                />
-                {renderConfigFieldError("episodes")}
-              </label>
-              {form.useLerobotRecorder ? (
-                <>
-                  <label className="text-sm">
-                    <span className="text-muted">Episode seconds</span>
-                    <input
-                      ref={registerConfigInput("episodeTimeS")}
-                      {...numericTextInputProps}
-                      value={form.episodeTimeS}
-                      onChange={(event) => updateField("episodeTimeS", Number(event.target.value))}
-                      className={configInputClass("episodeTimeS")}
-                      {...configInputA11y("episodeTimeS")}
-                    />
-                    {renderConfigFieldError("episodeTimeS")}
-                  </label>
-                  <label className="text-sm">
-                    <span className="text-muted">Reset seconds</span>
-                    <input
-                      ref={registerConfigInput("resetTimeS")}
-                      {...numericTextInputProps}
-                      value={form.resetTimeS}
-                      onChange={(event) => updateField("resetTimeS", Number(event.target.value))}
-                      className={configInputClass("resetTimeS")}
-                      {...configInputA11y("resetTimeS")}
-                    />
-                    {renderConfigFieldError("resetTimeS")}
-                  </label>
-                </>
-              ) : (
-                <>
-                  <label className="text-sm">
-                    <span className="text-muted">Min episode seconds</span>
-                    <input
-                      ref={registerConfigInput("minEpisodeTimeS")}
-                      {...numericTextInputProps}
-                      value={form.minEpisodeTimeS}
-                      onChange={(event) => updateField("minEpisodeTimeS", Number(event.target.value))}
-                      className={configInputClass("minEpisodeTimeS")}
-                      {...configInputA11y("minEpisodeTimeS")}
-                    />
-                    {renderConfigFieldError("minEpisodeTimeS")}
-                  </label>
-                  <label className="text-sm">
-                    <span className="text-muted">Max episode seconds</span>
-                    <input
-                      ref={registerConfigInput("maxEpisodeTimeS")}
-                      {...numericTextInputProps}
-                      value={form.maxEpisodeTimeS}
-                      onChange={(event) => updateField("maxEpisodeTimeS", Number(event.target.value))}
-                      className={configInputClass("maxEpisodeTimeS")}
-                      {...configInputA11y("maxEpisodeTimeS")}
-                    />
-                    {renderConfigFieldError("maxEpisodeTimeS")}
-                  </label>
-                  <label className="text-sm">
-                    <span className="text-muted">Stationary action seconds</span>
-                    <input
-                      ref={registerConfigInput("stationaryHoldTimeS")}
-                      {...numericTextInputProps}
-                      value={form.stationaryHoldTimeS}
-                      onChange={(event) => updateField("stationaryHoldTimeS", Number(event.target.value))}
-                      className={configInputClass("stationaryHoldTimeS")}
-                      {...configInputA11y("stationaryHoldTimeS")}
-                    />
-                    {renderConfigFieldError("stationaryHoldTimeS")}
-                  </label>
-                </>
-              )}
-              <label className="text-sm md:col-span-2">
-                <span className="text-muted">Task label</span>
-                <input
-                  ref={registerConfigInput("task")}
-                  value={form.task}
-                  onChange={(event) => updateField("task", event.target.value)}
-                  placeholder="Descripe your task ..."
-                  className={configInputClass("task")}
-                  {...configInputA11y("task")}
-                />
-                {renderConfigFieldError("task")}
-              </label>
-              <label className="flex items-center gap-2 text-sm text-muted md:col-span-2">
-                <input
-                  type="checkbox"
-                  checked={form.useLerobotRecorder}
-                  onChange={(event) => updateField("useLerobotRecorder", event.target.checked)}
-                />
-                {copy.recorderModeLabel}
-              </label>
-              <label className="flex items-center gap-2 text-sm text-muted">
-                <input type="checkbox" checked={form.displayData} onChange={(event) => updateField("displayData", event.target.checked)} />
-                Display LeRobot data windows
-              </label>
-            </div>
-            <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                onClick={startDatasetUploadFromTerminal}
-                disabled={uploadPreparing || terminalPhase !== "ready"}
-                className="rounded-md gradient-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {uploadPreparing ? "Packaging..." : "Upload"}
-              </button>
-            </div>
-          </section>
-
-          <section className="rounded-lg border border-theme bg-card p-5">
-            <h2 className="text-xl font-semibold accent-text">Infer</h2>
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              <label className="text-sm md:col-span-2">
-                <span className="text-muted">server_address</span>
-                <input
-                  ref={registerConfigInput("inferServerAddress")}
-                  value={form.inferServerAddress}
-                  onChange={(event) => updateField("inferServerAddress", event.target.value)}
-                  className={configInputClass("inferServerAddress")}
-                  {...configInputA11y("inferServerAddress")}
-                />
-                {renderConfigFieldError("inferServerAddress")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">policy_type</span>
-                <input
-                  ref={registerConfigInput("inferPolicyType")}
-                  value={form.inferPolicyType}
-                  onChange={(event) => updateField("inferPolicyType", event.target.value)}
-                  className={configInputClass("inferPolicyType")}
-                  {...configInputA11y("inferPolicyType")}
-                />
-                {renderConfigFieldError("inferPolicyType")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">policy_device</span>
-                <input
-                  ref={registerConfigInput("inferPolicyDevice")}
-                  value={form.inferPolicyDevice}
-                  onChange={(event) => updateField("inferPolicyDevice", event.target.value)}
-                  className={configInputClass("inferPolicyDevice")}
-                  {...configInputA11y("inferPolicyDevice")}
-                />
-                {renderConfigFieldError("inferPolicyDevice")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">pretrained_name_or_path</span>
-                <input
-                  ref={registerConfigInput("inferPretrainedNameOrPath")}
-                  value={form.inferPretrainedNameOrPath}
-                  onChange={(event) => updateField("inferPretrainedNameOrPath", event.target.value)}
-                  className={configInputClass("inferPretrainedNameOrPath")}
-                  {...configInputA11y("inferPretrainedNameOrPath")}
-                />
-                {renderConfigFieldError("inferPretrainedNameOrPath")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">actions_per_chunk</span>
-                <input
-                  ref={registerConfigInput("inferActionsPerChunk")}
-                  type="text"
-                  inputMode="numeric"
-                  value={form.inferActionsPerChunk}
-                  onChange={(event) => updateField("inferActionsPerChunk", event.target.value)}
-                  className={configInputClass("inferActionsPerChunk")}
-                  {...configInputA11y("inferActionsPerChunk")}
-                />
-                {renderConfigFieldError("inferActionsPerChunk")}
-              </label>
-              <label className="text-sm">
-                <span className="text-muted">chunk_size_threshold</span>
-                <input
-                  ref={registerConfigInput("inferChunkSizeThreshold")}
-                  type="text"
-                  inputMode="decimal"
-                  value={form.inferChunkSizeThreshold}
-                  onChange={(event) => updateField("inferChunkSizeThreshold", event.target.value)}
-                  className={configInputClass("inferChunkSizeThreshold")}
-                  {...configInputA11y("inferChunkSizeThreshold")}
-                />
-                {renderConfigFieldError("inferChunkSizeThreshold")}
-              </label>
-              <label className="text-sm md:col-span-2">
-                <span className="text-muted">aggregate_fn_name</span>
-                <input
-                  ref={registerConfigInput("inferAggregateFnName")}
-                  value={form.inferAggregateFnName}
-                  onChange={(event) => updateField("inferAggregateFnName", event.target.value)}
-                  className={configInputClass("inferAggregateFnName")}
-                  {...configInputA11y("inferAggregateFnName")}
-                />
-                {renderConfigFieldError("inferAggregateFnName")}
-              </label>
-            </div>
-          </section>
-      </section>
-
-      <section className="grid gap-3 md:grid-cols-2">
-        {runtimeStatusCards.map((card) => (
-          <div key={card.key} className="rounded-lg border border-theme bg-card p-4">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-xs uppercase tracking-wide text-muted">{card.label}</span>
-              <div className="flex items-center gap-2">
-                <span className="rounded border border-theme px-2 py-0.5 text-xs accent-text">{card.value}</span>
-                {card.key === "runtime" && runtimeUpdateAvailable ? (
-                  <button
-                    type="button"
-                    aria-label={runtimeUpdating ? copy.updatingRuntime : copy.updateRuntime}
-                    title={runtimeUpdating ? copy.updatingRuntime : copy.updateRuntime}
-                    onClick={updateRuntime}
-                    disabled={runtimeUpdating || terminalPhase !== "ready"}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-theme accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <RuntimeUpdateIcon className={`h-4 w-4 ${runtimeUpdating ? "animate-spin" : ""}`} />
-                  </button>
-                ) : null}
-              </div>
-            </div>
-            <p className="mt-2 break-all text-xs text-muted">{card.detail}</p>
+        <section aria-label="SO101 app version information">
+          <div className="rounded-lg border border-theme bg-card p-4">
+            <span className="text-xs uppercase tracking-wide text-muted">{copy.versionTitle}</span>
+            <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+              {versionDetails.map((detail) => (
+                <div key={detail.label} className="min-w-0">
+                  <dt className="text-xs uppercase tracking-wide text-muted">{detail.label}</dt>
+                  <dd className="mt-1 break-all text-sm font-semibold text-body">{detail.value}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
-        ))}
-      </section>
+        </section>
+      </aside>
 
-      <section aria-label="SO101 app version information">
-        <div className="rounded-lg border border-theme bg-card p-4">
-          <span className="text-xs uppercase tracking-wide text-muted">{copy.versionTitle}</span>
-          <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2 xl:grid-cols-4">
-            {versionDetails.map((detail) => (
-              <div key={detail.label} className="min-w-0">
-                <dt className="text-xs uppercase tracking-wide text-muted">{detail.label}</dt>
-                <dd className="mt-1 break-all text-sm font-semibold text-body">{detail.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </div>
       </section>
     </main>
   );
