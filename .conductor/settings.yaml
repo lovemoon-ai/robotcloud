@@ -12,3 +12,5 @@ worktree:
     - backend/.venv
     - frontend/node_modules
     - .env.dev
+    - desktop/.runtime-build
+    - desktop/src-tauri/resources/runtime/macos
