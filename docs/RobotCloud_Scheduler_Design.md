@@ -144,6 +144,9 @@ POST /api/v1/internal/agent/heartbeat
   "gpu_total": 4,
   "gpu_free": [0,3],
   "gpu_busy": [1,2],
+  "gpu_slot_total": 4,
+  "gpu_slot_free": 2,
+  "gpu_slot_busy": 2,
   "tasks": [123,124]
 }
 ```
@@ -162,6 +165,9 @@ POST /api/v1/internal/agent/heartbeat
   gpu_total        INT                        总 GPU 数
   gpu_free         INT                        空闲 GPU 数
   gpu_busy         INT                        正在使用数
+  gpu_slot_total   INT                        可调度训练 slot 总数
+  gpu_slot_free    INT                        空闲训练 slot 数
+  gpu_slot_busy    INT                        正在使用训练 slot 数
   last_heartbeat   DATETIME                   上次心跳时间
   status           ENUM('online','offline')   状态
   version          VARCHAR(20)                Agent 版本
@@ -230,7 +236,8 @@ POST /api/v1/internal/agent/register
 {
   "node_name": "gpu-node-1",
   "ip": "10.0.0.5",
-  "gpu_total": 4
+  "gpu_total": 4,
+  "gpu_slot_total": 4
 }
 ```
 
@@ -239,6 +246,8 @@ Scheduler 返回：
 ``` json
 {"agent_id": "node1", "token": "abcd1234"}
 ```
+
+`gpu_total` 表示物理 CUDA GPU 数量；`gpu_slot_total` 表示调度器可分配的逻辑训练 slot 数量，默认等于 `gpu_total`。单卡 H20 如需允许 4 个训练任务共享 GPU 0，可在 GPU Agent 环境中设置 `AGENT_GPU_TOTAL=1`、`AGENT_GPU_SLOT_TOTAL=4`；调度器最多同时派发 4 个训练 slot，但下发给 agent 的 CUDA index 仍为真实的 `0`。
 
 ### 7.2 心跳检测
 

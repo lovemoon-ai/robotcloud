@@ -1,6 +1,7 @@
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { SO101Client, so101TestExports } from "../app/so101/SO101Client";
-import { robotCloudApi } from "@/api/client";
+import { getRobotCloudApiBaseUrl, resetRobotCloudApiBaseUrl, robotCloudApi } from "@/api/client";
+import { inferenceJobServerAddress } from "@/inference/jobs";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
 import { resetDesktopBridgeAvailabilityForTest } from "@/hooks/useDesktopBridgeAvailable";
@@ -48,6 +49,7 @@ afterEach(() => {
   jest.restoreAllMocks();
   so101TestExports.resetPersistentTerminalForTest();
   resetDesktopBridgeAvailabilityForTest();
+  resetRobotCloudApiBaseUrl();
   useAuthStore.getState().reset();
   useLocaleStore.getState().reset();
   window.localStorage.clear();
@@ -186,6 +188,8 @@ describe("SO101 terminal session", () => {
   } = {}) {
     let outputCallback: ((event: TerminalOutputEvent) => void) | null = null;
     let exitCallback: ((event: TerminalExitEvent) => void) | null = null;
+    let preparedUploadCallback: ((prepared: PreparedDatasetUpload) => void) | null = null;
+    let prepareUploadErrorCallback: ((event: DatasetPrepareUploadErrorEvent) => void) | null = null;
     let persistedSettings = options.so101Settings ?? null;
     const status = options.status ?? jest.fn().mockResolvedValue(desktopStatus);
     const terminalStart = jest.fn().mockResolvedValue({ sessionId: "session-1", shell: "/bin/zsh" });
@@ -217,7 +221,12 @@ describe("SO101 terminal session", () => {
       visibility: "private",
       createdAt: "1760000000000"
     });
-    const setPreparedUpload = jest.fn().mockResolvedValue(undefined);
+    let preparedUploadState: PreparedDatasetUpload | null = null;
+    const getPreparedUpload = jest.fn().mockImplementation(() => Promise.resolve(preparedUploadState));
+    const setPreparedUpload = jest.fn().mockImplementation((prepared: PreparedDatasetUpload) => {
+      preparedUploadState = prepared;
+      return Promise.resolve(undefined);
+    });
     const bridge: DesktopBridge = {
       isDesktop: true,
       status,
@@ -235,8 +244,17 @@ describe("SO101 terminal session", () => {
       dataset: {
         inspectUpload,
         prepareUpload,
+        getPreparedUpload,
         setPreparedUpload,
-        readPreparedUpload: jest.fn()
+        readPreparedUpload: jest.fn(),
+        onPreparedUpload: jest.fn((callback) => {
+          preparedUploadCallback = callback;
+          return jest.fn();
+        }),
+        onPrepareUploadError: jest.fn((callback) => {
+          prepareUploadErrorCallback = callback;
+          return jest.fn();
+        })
       },
       terminal: {
         current: terminalCurrent,
@@ -269,9 +287,15 @@ describe("SO101 terminal session", () => {
       validateCamera,
       inspectUpload,
       prepareUpload,
+      getPreparedUpload,
       setPreparedUpload,
+      setStoredPreparedUpload: (prepared: PreparedDatasetUpload | null) => {
+        preparedUploadState = prepared;
+      },
       emitOutput: (data: string) => outputCallback?.({ sessionId: "session-1", data }),
-      emitExit: () => exitCallback?.({ sessionId: "session-1", code: 0, signal: null })
+      emitExit: () => exitCallback?.({ sessionId: "session-1", code: 0, signal: null }),
+      emitPreparedUpload: (prepared: PreparedDatasetUpload) => preparedUploadCallback?.(prepared),
+      emitPrepareUploadError: (message: string) => prepareUploadErrorCallback?.({ message })
     };
   }
 
@@ -313,6 +337,17 @@ describe("SO101 terminal session", () => {
     expect(secondRender.getByTestId("mock-xterm")).toHaveTextContent("first output");
     expect(terminalStart).toHaveBeenCalledTimes(1);
     expect(terminalStop).not.toHaveBeenCalled();
+  });
+
+  it("does not replace the cloud API base with the desktop local status URL", async () => {
+    installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+    expect(getRobotCloudApiBaseUrl()).not.toBe(desktopStatus.apiBaseUrl);
   });
 
   it("reconnects to the existing desktop terminal session after a full frontend reload", async () => {
@@ -414,33 +449,56 @@ describe("SO101 terminal session", () => {
     let currentStatus = updateAvailableStatus;
     const status = jest.fn().mockImplementation(() => Promise.resolve(currentStatus));
     const runtimePrepare = jest.fn().mockResolvedValue({ runtimePath: "/runtime", ready: true });
-    const runtimeUpdate = jest.fn().mockImplementation(() => {
-      currentStatus = {
-        ...updateAvailableStatus,
-        lerobotVersion: "0.6.0",
-        lerobotUpdateAvailable: false
-      };
-      return Promise.resolve({ runtimePath: "/runtime", ready: true });
-    });
+    const runtimeUpdate = jest.fn().mockResolvedValue({ runtimePath: "/runtime", ready: true });
+    let progressCallback: ((event: RuntimeProgressEvent) => void) | null = null;
 
-    installDesktopBridge({
+    const { terminalWrite } = installDesktopBridge({
       status,
       runtime: {
         prepare: runtimePrepare,
         update: runtimeUpdate,
-        onProgress: jest.fn(() => jest.fn())
+        onProgress: jest.fn((callback: (event: RuntimeProgressEvent) => void) => {
+          progressCallback = callback;
+          return jest.fn();
+        })
       }
+    });
+    terminalWrite.mockImplementation((_sessionId: string, data: string) => {
+      if (data.includes(so101TestExports.RUNTIME_UPDATE_COMMAND)) {
+        currentStatus = {
+          ...updateAvailableStatus,
+          lerobotVersion: "0.6.0",
+          lerobotUpdateAvailable: false
+        };
+      }
+      return Promise.resolve({ ok: true });
     });
 
     const view = render(<SO101Client />);
 
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
     const updateButton = await view.findByRole("button", { name: "Update LeRobot runtime" });
     expect(updateButton).toHaveTextContent("");
 
     fireEvent.click(updateButton);
 
     await waitFor(() => {
-      expect(runtimeUpdate).toHaveBeenCalledTimes(1);
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}${so101TestExports.RUNTIME_UPDATE_COMMAND}\r`
+      );
+    });
+    expect(runtimeUpdate).not.toHaveBeenCalled();
+
+    act(() => {
+      progressCallback?.({
+        phase: "ready",
+        message: "LeRobot runtime is ready.",
+        current: null,
+        total: null
+      });
     });
     await waitFor(() => {
       expect(view.queryByRole("button", { name: "Update LeRobot runtime" })).not.toBeInTheDocument();
@@ -697,6 +755,10 @@ describe("SO101 terminal session", () => {
       "session-1",
       expect.stringContaining("--min_episode_time_s=2")
     );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--stationary_hold_time_s=2")
+    );
     expect(view.queryByText(/请先运行/)).not.toBeInTheDocument();
     expect(view.getByRole("button", { name: "Save pose" })).toBeInTheDocument();
   });
@@ -784,11 +846,15 @@ describe("SO101 terminal session", () => {
     );
     expect(terminalWrite).toHaveBeenLastCalledWith(
       "session-1",
+      expect.stringContaining("--policy_device='cuda'")
+    );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
       expect.stringContaining("--actions_per_chunk=50 --chunk_size_threshold=0.5 --aggregate_fn_name='weighted_average' --debug_visualize_queue_size=True")
     );
   });
 
-  it("blocks infer action until an inference job is running", async () => {
+  it("writes an infer action command from card defaults when no inference job is running", async () => {
     const { terminalWrite } = installDesktopBridge();
     jest.spyOn(robotCloudApi, "fetchInferenceJobs").mockResolvedValue([
       {
@@ -811,11 +877,20 @@ describe("SO101 terminal session", () => {
     fireEvent.click(view.getByRole("button", { name: "Infer" }));
 
     await waitFor(() => {
-      expect(view.getByText(/Inference job #15 当前是 queued/)).toBeInTheDocument();
+      expect(robotCloudApi.fetchInferenceJobs).toHaveBeenCalled();
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        expect.stringContaining("lerobot.async_inference.robot_client")
+      );
     });
-    expect(terminalWrite).not.toHaveBeenCalledWith(
+    expect(view.queryByText(/Inference job #15 当前是 queued/)).not.toBeInTheDocument();
+    expect(terminalWrite).toHaveBeenLastCalledWith(
       "session-1",
-      expect.stringContaining("lerobot.async_inference.robot_client")
+      expect.stringContaining("--server_address='h20.conductor-ai.top:5161'")
+    );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--pretrained_name_or_path='backend/storage/train_runs/task_14/checkpoints/last/pretrained_model'")
     );
   });
 
@@ -845,6 +920,7 @@ describe("SO101 terminal session", () => {
     expect(recordControls.getByRole("checkbox", { name: /original LeRobot recorder/ })).toBeChecked();
     expect(recordControls.queryByLabelText("Min episode seconds")).not.toBeInTheDocument();
     expect(recordControls.queryByLabelText("Max episode seconds")).not.toBeInTheDocument();
+    expect(recordControls.queryByLabelText("Stationary action seconds")).not.toBeInTheDocument();
   });
 
   it("restores persisted record card settings from local storage", async () => {
@@ -860,6 +936,7 @@ describe("SO101 terminal session", () => {
           episodeTimeS: 12,
           minEpisodeTimeS: 4,
           maxEpisodeTimeS: 45,
+          stationaryHoldTimeS: 5,
           resetTimeS: 3,
           task: "Pick persisted cube",
           useLerobotRecorder: false,
@@ -886,6 +963,7 @@ describe("SO101 terminal session", () => {
     expect(recordControls.getByLabelText("Episodes")).toHaveValue("4");
     expect(recordControls.getByLabelText("Min episode seconds")).toHaveValue("4");
     expect(recordControls.getByLabelText("Max episode seconds")).toHaveValue("45");
+    expect(recordControls.getByLabelText("Stationary action seconds")).toHaveValue("5");
     expect(recordControls.queryByLabelText("Max relative target")).not.toBeInTheDocument();
     expect(recordControls.getByLabelText("Task label")).toHaveValue("Pick persisted cube");
     expect(recordControls.getByRole("checkbox", { name: /Display LeRobot data windows/ })).not.toBeChecked();
@@ -909,6 +987,7 @@ describe("SO101 terminal session", () => {
         task: "Persist across desktop navigation",
         inferServerAddress: "custom-h20:5161",
         inferPolicyType: "pi0fast",
+        inferPolicyDevice: "mps",
         inferPretrainedNameOrPath: "/models/custom",
         inferActionsPerChunk: "25",
         inferChunkSizeThreshold: "0.25",
@@ -929,6 +1008,7 @@ describe("SO101 terminal session", () => {
     expect(view.getByLabelText("Episodes")).toHaveValue("6");
     expect(view.getByLabelText("server_address")).toHaveValue("custom-h20:5161");
     expect(view.getByLabelText("policy_type")).toHaveValue("pi0fast");
+    expect(view.getByLabelText("policy_device")).toHaveValue("mps");
     expect(view.getByLabelText("pretrained_name_or_path")).toHaveValue("/models/custom");
     expect(view.getByLabelText("actions_per_chunk")).toHaveValue("25");
     expect(view.getByLabelText("chunk_size_threshold")).toHaveValue("0.25");
@@ -1027,8 +1107,8 @@ describe("SO101 terminal session", () => {
     expect(view.getAllByLabelText("FPS")[0]).toHaveValue("30");
   });
 
-  it("shows recording stats before preparing an upload", async () => {
-    const { inspectUpload, prepareUpload, setPreparedUpload } = installDesktopBridge();
+  it("runs dataset upload packaging through the terminal card", async () => {
+    const { inspectUpload, prepareUpload, setPreparedUpload, terminalWrite, emitPreparedUpload } = installDesktopBridge();
 
     const view = render(<SO101Client />);
 
@@ -1039,26 +1119,33 @@ describe("SO101 terminal session", () => {
     fireEvent.click(view.getByRole("button", { name: "Upload" }));
 
     await waitFor(() => {
-      expect(inspectUpload).toHaveBeenCalledWith({
-        datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
-        datasetRepoId: "local/so101_desktop"
-      });
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        `${so101TestExports.CLEAR_CURRENT_TERMINAL_INPUT}${so101TestExports.PREPARE_UPLOAD_COMMAND} '${encodeURIComponent(JSON.stringify({
+          datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
+          datasetRepoId: "local/so101_desktop",
+          task: ""
+        }))}'\r`
+      );
     });
+    expect(inspectUpload).not.toHaveBeenCalled();
     expect(prepareUpload).not.toHaveBeenCalled();
 
-    const dialog = view.getByRole("dialog", { name: "Recording upload review" });
-    expect(within(dialog).getByText("Episodes")).toBeInTheDocument();
-    expect(within(dialog).getByText("Duration")).toBeInTheDocument();
-    expect(within(dialog).getByText("10s")).toBeInTheDocument();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "Upload" }));
+    act(() => {
+      emitPreparedUpload({
+        filePath: "/tmp/robotcloud data/prepared_uploads/local_so101_desktop.zip",
+        fileName: "local_so101_desktop.zip",
+        fileSize: 2048,
+        datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
+        name: "local/so101_desktop",
+        description: "SO101 Desktop recording",
+        visibility: "private",
+        createdAt: "1760000000000"
+      });
+    });
 
     await waitFor(() => {
-      expect(prepareUpload).toHaveBeenCalledWith({
-        datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
-        datasetRepoId: "local/so101_desktop",
-        task: ""
-      });
+      expect(mockPush).toHaveBeenCalledWith("/datasets?source=so101");
     });
     expect(setPreparedUpload).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1066,20 +1153,57 @@ describe("SO101 terminal session", () => {
         name: "local/so101_desktop"
       })
     );
-    expect(mockPush).toHaveBeenCalledWith("/datasets?source=so101");
   });
 
-  it("blocks upload when recorded stats do not meet the minimums", async () => {
-    const { inspectUpload, prepareUpload } = installDesktopBridge();
-    inspectUpload.mockResolvedValue({
+  it("recovers a completed terminal upload after the SO101 page remounts", async () => {
+    const {
+      getPreparedUpload,
+      prepareUpload,
+      setPreparedUpload,
+      setStoredPreparedUpload,
+      terminalWrite
+    } = installDesktopBridge();
+    const prepared: PreparedDatasetUpload = {
+      filePath: "/tmp/robotcloud data/prepared_uploads/local_so101_desktop.zip",
+      fileName: "local_so101_desktop.zip",
+      fileSize: 2048,
       datasetRoot: "/tmp/robotcloud data/datasets/local/so101_desktop",
-      fileCount: 2,
-      totalBytes: 512,
-      episodeCount: 0,
-      totalFrames: 10,
-      fps: 30,
-      durationSeconds: 0.3
+      name: "local/so101_desktop",
+      description: "SO101 Desktop recording",
+      visibility: "private",
+      createdAt: "1760000000000"
+    };
+
+    const firstView = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(firstView.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
+    fireEvent.click(firstView.getByRole("button", { name: "Upload" }));
+    await waitFor(() => {
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        expect.stringContaining(`${so101TestExports.PREPARE_UPLOAD_COMMAND} `)
+      );
+    });
+
+    firstView.unmount();
+    setStoredPreparedUpload(prepared);
+    render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(getPreparedUpload).toHaveBeenCalled();
+      expect(mockPush).toHaveBeenCalledWith("/datasets?source=so101");
+    });
+    expect(setPreparedUpload).toHaveBeenCalledWith(expect.objectContaining({
+      fileName: "local_so101_desktop.zip",
+      name: "local/so101_desktop"
+    }));
+    expect(prepareUpload).not.toHaveBeenCalled();
+  });
+
+  it("shows terminal upload errors without invoking the blocking prepare bridge", async () => {
+    const { inspectUpload, prepareUpload, emitPrepareUploadError } = installDesktopBridge();
 
     const view = render(<SO101Client />);
 
@@ -1089,16 +1213,30 @@ describe("SO101 terminal session", () => {
 
     fireEvent.click(view.getByRole("button", { name: "Upload" }));
 
-    const dialog = await view.findByRole("dialog", { name: "Recording upload review" });
-    expect(within(dialog).getByText("Upload blocked")).toBeInTheDocument();
-    expect(within(dialog).getByText("At least 1 recorded episode is required.")).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "Upload" })).toBeDisabled();
+    act(() => {
+      emitPrepareUploadError("Upload blocked: At least 1 recorded episode is required.");
+    });
+
+    await waitFor(() => {
+      expect(view.getByText("Upload blocked: At least 1 recorded episode is required.")).toBeInTheDocument();
+    });
+    expect(inspectUpload).not.toHaveBeenCalled();
     expect(prepareUpload).not.toHaveBeenCalled();
   });
 });
 
 describe("SO101 command generation", () => {
-  const { buildActionCommand, initialForm, parseConnectionSettings, removeCameraAtIndex, resolvedDatasetRoot, serializeConnectionSettings, shellArg } = so101TestExports;
+  const {
+    alignFormWithRunningInferenceJob,
+    buildActionCommand,
+    buildPrepareUploadCommand,
+    initialForm,
+    parseConnectionSettings,
+    removeCameraAtIndex,
+    resolvedDatasetRoot,
+    serializeConnectionSettings,
+    shellArg
+  } = so101TestExports;
 
   const desktopStatus: DesktopStatus = {
     isDesktop: true,
@@ -1122,6 +1260,26 @@ describe("SO101 command generation", () => {
 
   it("quotes PowerShell arguments without allowing command substitution", () => {
     expect(shellArg("local/$(touch /tmp/pwn)'x", "powershell")).toBe("'local/$(touch /tmp/pwn)''x'");
+  });
+
+  it("builds upload packaging as a terminal control command", () => {
+    const command = buildPrepareUploadCommand(
+      {
+        datasetRoot: "/tmp/robotcloud data/datasets/local/so101",
+        datasetRepoId: "local/so101",
+        task: "Pick 'the' cube"
+      },
+      desktopStatus
+    );
+
+    const payload = encodeURIComponent(JSON.stringify({
+      datasetRoot: "/tmp/robotcloud data/datasets/local/so101",
+      datasetRepoId: "local/so101",
+      task: "Pick 'the' cube"
+    }));
+    expect(command).toBe(
+      `${so101TestExports.PREPARE_UPLOAD_COMMAND} ${shellArg(payload)}`
+    );
   });
 
   it("resolves default dataset roots with platform-specific path separators", () => {
@@ -1224,10 +1382,27 @@ describe("SO101 command generation", () => {
         "--server_address='h20.conductor-ai.top:5161' " +
         "--robot.type=so101_follower --robot.port='/dev/tty.usbmodem58FA1019921' --robot.id='so101_follower' " +
         "--robot.cameras='{ head: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, wrist: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30} }' " +
-        "--task='Put dice into the cup.' --policy_type='pi05' " +
+        "--task='Put dice into the cup.' --policy_type='pi05' --policy_device='cuda' " +
         "--pretrained_name_or_path='backend/storage/train_runs/task_14/checkpoints/last/pretrained_model' " +
         "--actions_per_chunk=50 --chunk_size_threshold=0.5 --aggregate_fn_name='weighted_average' --debug_visualize_queue_size=True"
     );
+  });
+
+  it("normalizes infer server URLs before building robot client commands", () => {
+    const command = buildActionCommand(
+      "infer",
+      {
+        ...initialForm,
+        followerPort: "/dev/tty.usbmodem58FA1019921",
+        inferServerAddress: "https://h20.conductor-ai.top:5162/",
+        task: "Put dice into the cup."
+      },
+      desktopStatus,
+      1
+    );
+
+    expect(command).toContain("--server_address='h20.conductor-ai.top:5162'");
+    expect(command).not.toContain("--server_address='https://");
   });
 
   it("uses camera names as infer camera keys", () => {
@@ -1339,7 +1514,8 @@ describe("SO101 command generation", () => {
         datasetRepoId: "local/auto",
         task: "Pick",
         minEpisodeTimeS: 3,
-        maxEpisodeTimeS: 45
+        maxEpisodeTimeS: 45,
+        stationaryHoldTimeS: 6
       },
       status,
       1
@@ -1348,6 +1524,7 @@ describe("SO101 command generation", () => {
     expect(command).toContain("python '/opt/app/resources/scripts/robotcloud_auto_record.py'");
     expect(command).toContain("--min_episode_time_s=3");
     expect(command).toContain("--max_episode_time_s=45");
+    expect(command).toContain("--stationary_hold_time_s=6");
     expect(command).toContain("--robot.cameras=");
     expect(command).not.toContain("--dataset.episode_time_s");
     expect(command).not.toContain("--dataset.reset_time_s");
@@ -1431,6 +1608,22 @@ describe("SO101 command generation", () => {
         1
       )
     ).toThrow("先配置 Reset seconds");
+
+    expect(() =>
+      buildActionCommand(
+        "record",
+        {
+          ...initialForm,
+          useLerobotRecorder: false,
+          followerPort: "/dev/cu.usbmodem-follower",
+          leaderPort: "/dev/cu.usbmodem-leader",
+          task: "Pick",
+          stationaryHoldTimeS: 0
+        },
+        desktopStatus,
+        1
+      )
+    ).toThrow("先配置 Stationary action seconds");
   });
 
   it("normalizes saved connection settings from local storage payloads", () => {
@@ -1498,6 +1691,73 @@ describe("SO101 command generation", () => {
     expect(saved?.cameras[2].name).toBe("custom_third");
   });
 
+  it("normalizes persisted infer server URLs", () => {
+    const serialized = serializeConnectionSettings(
+      {
+        ...initialForm,
+        inferServerAddress: "https://h20.conductor-ai.top:5162/"
+      },
+      1
+    );
+
+    expect(JSON.parse(serialized).inferServerAddress).toBe("h20.conductor-ai.top:5162");
+    expect(
+      parseConnectionSettings(JSON.stringify({ inferServerAddress: "https://h20.conductor-ai.top:5162/" }))
+        ?.inferServerAddress
+    ).toBe("h20.conductor-ai.top:5162");
+  });
+
+  it("normalizes inference job server host URLs", () => {
+    expect(
+      inferenceJobServerAddress({
+        id: 14,
+        datasetId: null,
+        modelId: 14,
+        status: "running",
+        serverHost: "https://h20.conductor-ai.top",
+        serverPort: 5162,
+        createdAt: "2026-07-09T00:00:00Z"
+      })
+    ).toBe("h20.conductor-ai.top:5162");
+    expect(
+      inferenceJobServerAddress({
+        id: 15,
+        datasetId: null,
+        modelId: 14,
+        status: "running",
+        serverHost: "https://h20.conductor-ai.top:5162",
+        serverPort: 5161,
+        createdAt: "2026-07-09T00:00:00Z"
+      })
+    ).toBe("h20.conductor-ai.top:5161");
+  });
+
+  it("uses the running inference job model type for infer policy type", () => {
+    const aligned = alignFormWithRunningInferenceJob(
+      {
+        ...initialForm,
+        inferPolicyType: "pi05"
+      },
+      {
+        id: 16,
+        datasetId: null,
+        modelId: 14,
+        modelType: "act",
+        status: "running",
+        serverHost: "h20.conductor-ai.top",
+        serverPort: 5161,
+        checkpointPath: "backend/storage/train_runs/task_14/checkpoints/last/pretrained_model",
+        createdAt: "2026-07-09T00:00:00Z"
+      }
+    );
+
+    expect(aligned.inferPolicyType).toBe("act");
+    expect(aligned.inferServerAddress).toBe("h20.conductor-ai.top:5161");
+    expect(aligned.inferPretrainedNameOrPath).toBe(
+      "backend/storage/train_runs/task_14/checkpoints/last/pretrained_model"
+    );
+  });
+
   it("round-trips persisted SO101 settings", () => {
     const serialized = serializeConnectionSettings(
       {
@@ -1512,12 +1772,14 @@ describe("SO101 command generation", () => {
         episodeTimeS: 12,
         minEpisodeTimeS: 4,
         maxEpisodeTimeS: 45,
+        stationaryHoldTimeS: 5,
         resetTimeS: 3,
         displayData: false,
         useLerobotRecorder: false,
         task: "Pick persisted cube",
         inferServerAddress: "custom-h20:5161",
         inferPolicyType: "pi0fast",
+        inferPolicyDevice: "mps",
         inferPretrainedNameOrPath: "/models/custom",
         inferActionsPerChunk: "20",
         inferChunkSizeThreshold: "0.25",
@@ -1543,12 +1805,14 @@ describe("SO101 command generation", () => {
       episodeTimeS: 12,
       minEpisodeTimeS: 4,
       maxEpisodeTimeS: 45,
+      stationaryHoldTimeS: 5,
       resetTimeS: 3,
       displayData: false,
       useLerobotRecorder: false,
       task: "Pick persisted cube",
       inferServerAddress: "custom-h20:5161",
       inferPolicyType: "pi0fast",
+      inferPolicyDevice: "mps",
       inferPretrainedNameOrPath: "/models/custom",
       inferActionsPerChunk: "20",
       inferChunkSizeThreshold: "0.25",

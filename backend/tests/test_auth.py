@@ -170,6 +170,28 @@ def test_plus_whitelist_promotes_existing_free_user_on_login(
     assert user.expire_at is None
 
 
+def test_no_limits_whitelist_promotes_existing_free_user_on_login(
+    client: APIClient, sms_gateway: InMemorySmsGateway
+) -> None:
+    phone = "13800000040"
+    password = "pw123456"
+    register_user(client, sms_gateway, phone, password)
+    assert User.objects.get(phone=phone).role == User.ROLE_FREE
+
+    with override_settings(AUTH_NO_LIMITS_WHITELIST_PHONES=phone):
+        login_resp = client.post(
+            "/api/v1/auth/login",
+            {"phone": phone, "password": password},
+            format="json",
+        )
+
+    assert login_resp.status_code == 200
+    assert login_resp.json()["data"]["role"] == User.ROLE_PLUS
+    user = User.objects.get(phone=phone)
+    assert user.role == User.ROLE_PLUS
+    assert user.expire_at is None
+
+
 @override_settings(AUTH_PLUS_WHITELIST_PHONES="13800000038,13800000039")
 def test_plus_whitelist_does_not_downgrade_higher_roles(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
     admin_phone = "13800000038"
@@ -216,13 +238,13 @@ def test_login_limits_one_session_per_device_type(client: APIClient, sms_gateway
     password = "pw123456"
     register_user(client, sms_gateway, phone, password)
 
-    mobile_login = client.post(
+    browser_login = client.post(
         "/api/v1/auth/login",
-        {"phone": phone, "password": password, "device_id": "phone-1", "device_type": "mobile"},
+        {"phone": phone, "password": password, "device_id": "browser-1", "device_type": "browser"},
         format="json",
     )
-    assert mobile_login.status_code == 200
-    old_mobile_token = mobile_login.json()["data"]["token"]
+    assert browser_login.status_code == 200
+    old_browser_token = browser_login.json()["data"]["token"]
 
     desktop_login = client.post(
         "/api/v1/auth/login",
@@ -230,14 +252,15 @@ def test_login_limits_one_session_per_device_type(client: APIClient, sms_gateway
         format="json",
     )
     assert desktop_login.status_code == 200
+    desktop_token = desktop_login.json()["data"]["token"]
 
-    second_mobile = client.post(
+    second_browser = client.post(
         "/api/v1/auth/login",
-        {"phone": phone, "password": password, "device_id": "phone-2", "device_type": "mobile"},
+        {"phone": phone, "password": password, "device_id": "browser-2", "device_type": "browser"},
         format="json",
     )
-    assert second_mobile.status_code == 400
-    assert "device limit" in second_mobile.json()["detail"].lower()
+    assert second_browser.status_code == 400
+    assert "device limit" in second_browser.json()["detail"].lower()
 
     second_desktop = client.post(
         "/api/v1/auth/login",
@@ -247,26 +270,63 @@ def test_login_limits_one_session_per_device_type(client: APIClient, sms_gateway
     assert second_desktop.status_code == 400
     assert "device limit" in second_desktop.json()["detail"].lower()
 
-    refreshed_mobile = client.post(
+    verify_desktop = client.get(
+        "/api/v1/auth/verify_token",
+        HTTP_AUTHORIZATION=f"Bearer {desktop_token}",
+    )
+    assert verify_desktop.status_code == 200
+
+    refreshed_browser = client.post(
         "/api/v1/auth/login",
-        {"phone": phone, "password": password, "device_id": "phone-1", "device_type": "mobile"},
+        {"phone": phone, "password": password, "device_id": "browser-1", "device_type": "browser"},
         format="json",
     )
-    assert refreshed_mobile.status_code == 200
-    new_mobile_token = refreshed_mobile.json()["data"]["token"]
+    assert refreshed_browser.status_code == 200
+    new_browser_token = refreshed_browser.json()["data"]["token"]
 
     revoked_resp = client.get(
         "/api/v1/auth/verify_token",
-        HTTP_AUTHORIZATION=f"Bearer {old_mobile_token}",
+        HTTP_AUTHORIZATION=f"Bearer {old_browser_token}",
     )
     assert revoked_resp.status_code == 400
     assert revoked_resp.json()["detail"] == "Session revoked"
 
     verify_resp = client.get(
         "/api/v1/auth/verify_token",
-        HTTP_AUTHORIZATION=f"Bearer {new_mobile_token}",
+        HTTP_AUTHORIZATION=f"Bearer {new_browser_token}",
     )
     assert verify_resp.status_code == 200
+
+
+def test_web_device_type_uses_browser_slot(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:
+    phone = "13800000036"
+    password = "pw123456"
+    register_user(client, sms_gateway, phone, password)
+
+    browser_login = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "browser-1", "device_type": "web"},
+        format="json",
+    )
+    assert browser_login.status_code == 200
+
+    desktop_login = client.post(
+        "/api/v1/auth/login",
+        {"phone": phone, "password": password, "device_id": "desktop-1", "device_type": "desktop"},
+        format="json",
+    )
+    assert desktop_login.status_code == 200
+
+    assert UserSession.objects.filter(
+        user__phone=phone,
+        device_type=UserSession.DEVICE_BROWSER,
+        status=UserSession.STATUS_ACTIVE,
+    ).count() == 1
+    assert UserSession.objects.filter(
+        user__phone=phone,
+        device_type=UserSession.DEVICE_DESKTOP,
+        status=UserSession.STATUS_ACTIVE,
+    ).count() == 1
 
 
 def test_logout_releases_device_slot(client: APIClient, sms_gateway: InMemorySmsGateway) -> None:

@@ -7,6 +7,7 @@ frontend/node_modules
 *.swo
 .env
 .env.dev
+.env.dev.old
 .env.prod
 .DS_Store
 
@@ -33,3 +34,9 @@ Makefile
 
 # ignore local lerobot-env
 desktop/src-tauri/resources/runtime/macos/
+
+# gpu-agent logs
+logs/
+
+# local manual upload token
+scripts/manual-upload/.token

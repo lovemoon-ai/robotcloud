@@ -35,9 +35,9 @@ class DatasetAdmin(admin.ModelAdmin):
 
 @admin.register(models.TrainTask)
 class TrainTaskAdmin(admin.ModelAdmin):
-    list_display = ("id", "dataset", "user", "model_type", "status", "progress", "created_at")
+    list_display = ("id", "job_name", "dataset", "user", "model_type", "status", "progress", "created_at")
     list_filter = ("status", "model_type")
-    search_fields = ("dataset__name", "user__phone", "model_type")
+    search_fields = ("job_name", "dataset__name", "user__phone", "model_type")
     readonly_fields = ("created_at",)
     list_select_related = ("dataset", "user")
 
@@ -49,6 +49,24 @@ class InferenceTaskAdmin(admin.ModelAdmin):
     search_fields = ("dataset__name", "user__phone")
     readonly_fields = ("created_at",)
     list_select_related = ("dataset", "user")
+
+
+@admin.register(models.WorkerNode)
+class WorkerNodeAdmin(admin.ModelAdmin):
+    list_display = (
+        "node_name",
+        "status",
+        "gpu_busy",
+        "gpu_total",
+        "gpu_slot_busy",
+        "gpu_slot_total",
+        "ip",
+        "api_port",
+        "updated_at",
+    )
+    list_filter = ("status", "upload_enabled")
+    search_fields = ("node_name", "ip")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(models.SimulationTask)
@@ -75,5 +93,3 @@ class AdminLogAdmin(admin.ModelAdmin):
     search_fields = ("admin__phone", "action", "target_type", "target_id")
     readonly_fields = ("created_at",)
     list_select_related = ("admin",)
-
-

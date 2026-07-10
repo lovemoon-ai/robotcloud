@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Callable, Dict
 
 from rest_framework import status
-from rest_framework.parsers import JSONParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -223,7 +223,7 @@ class PaymentMockCallbackView(RobotCloudAPIView):
 
 class AlipayNotifyView(RobotCloudAPIView):
     """Handle Alipay async notification callback."""
-    parser_classes = [JSONParser, MultiPartParser]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def post(self, request: Request) -> Response:
         data = {}
@@ -352,6 +352,7 @@ class TrainingCreateView(RobotCloudAPIView):
                 payload.get("dataset_id"),
                 payload.get("model_type", ""),
                 payload.get("params", {}) or {},
+                payload.get("job_name", ""),
             ),
         )
 
@@ -415,6 +416,7 @@ class AgentRegisterView(RobotCloudAPIView):
                 int(payload.get("port", 5000) or 5000),
                 payload.get("public_base_url", "") or "",
                 self._bool_value(payload.get("upload_enabled"), True),
+                int(payload.get("gpu_slot_total", 0) or 0) or None,
             )
         )
 
@@ -466,6 +468,9 @@ class AgentHeartbeatView(RobotCloudAPIView):
                 payload.get("gpu_free"),
                 payload.get("gpu_busy"),
                 payload.get("version"),
+                payload.get("gpu_slot_total"),
+                payload.get("gpu_slot_free"),
+                payload.get("gpu_slot_busy"),
             )
         )
 

@@ -39,12 +39,14 @@ class AgentConfig:
     backend_base_url: str
     node_name: str
     report_ip: str
+    inference_public_host: str
     listen_host: str
     api_port: int
     public_base_url: str
     upload_enabled: bool
     upload_allowed_origins: tuple[str, ...]
     gpu_total: int
+    gpu_slot_total: int
     heartbeat_interval: int
     version: str
     step_delay: float
@@ -57,12 +59,15 @@ class AgentConfig:
         backend_base = os.getenv("SCHEDULER_API_BASE_URL", "http://localhost:8000/api/v1").rstrip("/")
         node_name = os.getenv("AGENT_NODE_NAME", socket.gethostname())
         report_ip = os.getenv("AGENT_IP", "127.0.0.1")
+        inference_public_host = os.getenv("AGENT_INFERENCE_PUBLIC_HOST", report_ip).strip() or report_ip
         listen_host = os.getenv("AGENT_LISTEN_HOST", "0.0.0.0")
         api_port = _int_env("AGENT_PORT", 5000)
         public_base_url = os.getenv("AGENT_PUBLIC_BASE_URL", "").strip().rstrip("/")
         upload_enabled = _bool_env("AGENT_UPLOAD_ENABLED", True)
         upload_allowed_origins = _list_env("AGENT_UPLOAD_ALLOWED_ORIGINS")
         gpu_total = max(_int_env("AGENT_GPU_TOTAL", 1), 1)
+        slots_per_gpu = max(_int_env("AGENT_GPU_SLOTS_PER_GPU", 1), 1)
+        gpu_slot_total = max(_int_env("AGENT_GPU_SLOT_TOTAL", gpu_total * slots_per_gpu), gpu_total)
         heartbeat_interval = max(_int_env("AGENT_HEARTBEAT_INTERVAL", 30), 5)
         version = os.getenv("AGENT_VERSION", "1.0.0")
         step_delay = max(_float_env("AGENT_STEP_DELAY", 0.5), 0.1)
@@ -75,12 +80,14 @@ class AgentConfig:
             backend_base_url=backend_base,
             node_name=node_name,
             report_ip=report_ip,
+            inference_public_host=inference_public_host,
             listen_host=listen_host,
             api_port=api_port,
             public_base_url=public_base_url,
             upload_enabled=upload_enabled,
             upload_allowed_origins=upload_allowed_origins,
             gpu_total=gpu_total,
+            gpu_slot_total=gpu_slot_total,
             heartbeat_interval=heartbeat_interval,
             version=version,
             step_delay=step_delay,

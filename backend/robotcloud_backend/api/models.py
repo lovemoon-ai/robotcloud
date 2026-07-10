@@ -35,10 +35,12 @@ class User(models.Model):
 
 
 class UserSession(models.Model):
+    DEVICE_BROWSER = "browser"
     DEVICE_MOBILE = "mobile"
     DEVICE_DESKTOP = "desktop"
 
     DEVICE_TYPE_CHOICES = [
+        (DEVICE_BROWSER, "Browser"),
         (DEVICE_MOBILE, "Mobile"),
         (DEVICE_DESKTOP, "Desktop"),
     ]
@@ -135,6 +137,7 @@ class TrainTask(models.Model):
 
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="train_tasks")
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="train_tasks")
+    job_name = models.CharField(max_length=128, blank=True, default="")
     model_type = models.CharField(max_length=128)
     params = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="queued")
@@ -257,6 +260,9 @@ class WorkerNode(models.Model):
     gpu_total = models.IntegerField(default=0)
     gpu_free = models.IntegerField(default=0)
     gpu_busy = models.IntegerField(default=0)
+    gpu_slot_total = models.IntegerField(default=0)
+    gpu_slot_free = models.IntegerField(default=0)
+    gpu_slot_busy = models.IntegerField(default=0)
     last_heartbeat = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_OFFLINE)
     version = models.CharField(max_length=20, blank=True)

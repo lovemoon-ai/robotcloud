@@ -84,7 +84,7 @@ from lerobot.utils.utils import init_logging, log_say
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 
-STATIONARY_HOLD_TIME_S = 3.0
+DEFAULT_STATIONARY_HOLD_TIME_S = 2.0
 STATIONARY_ACTION_TOLERANCE = 1.0
 MIN_POSE_JOINT_COUNT = 6
 
@@ -119,6 +119,7 @@ class AutoRecordConfig:
     dataset: DatasetAutoRecordConfig
     min_episode_time_s: int | float = 2
     max_episode_time_s: int | float = 60
+    stationary_hold_time_s: int | float = DEFAULT_STATIONARY_HOLD_TIME_S
     teleop: TeleoperatorConfig | None = None
     policy: PreTrainedConfig | None = None
     display_data: bool = False
@@ -142,6 +143,8 @@ class AutoRecordConfig:
             raise ValueError("max_episode_time_s must be > 0")
         if self.max_episode_time_s < self.min_episode_time_s:
             raise ValueError("max_episode_time_s must be >= min_episode_time_s")
+        if self.stationary_hold_time_s <= 0:
+            raise ValueError("stationary_hold_time_s must be > 0")
 
     @classmethod
     def __get_path_fields__(cls) -> list[str]:
@@ -182,6 +185,19 @@ def supported_kwargs(fn: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
 
 def call_supported(fn: Any, *args: Any, **kwargs: Any) -> Any:
     return fn(*args, **supported_kwargs(fn, kwargs))
+
+
+def dataset_has_pending_frames(dataset: LeRobotDataset) -> bool:
+    has_pending_frames = getattr(dataset, "has_pending_frames", None)
+    if callable(has_pending_frames):
+        return bool(has_pending_frames())
+
+    episode_buffer = getattr(dataset, "episode_buffer", None)
+    if episode_buffer is None:
+        writer = getattr(dataset, "writer", None)
+        episode_buffer = getattr(writer, "episode_buffer", None) if writer is not None else None
+
+    return episode_buffer is not None and episode_buffer["size"] > 0
 
 
 def get_action_values(
@@ -282,6 +298,7 @@ def auto_record_loop(
     robot_observation_processor: RobotProcessorPipeline[RobotObservation, RobotObservation],
     min_episode_time_s: float,
     max_episode_time_s: float,
+    stationary_hold_time_s: float,
     dataset: LeRobotDataset,
     teleop: Teleoperator | None = None,
     policy: PreTrainedPolicy | None = None,
@@ -362,7 +379,7 @@ def auto_record_loop(
         if (
             elapsed_s >= min_episode_time_s
             and stationary_since is not None
-            and now - stationary_since >= STATIONARY_HOLD_TIME_S
+            and now - stationary_since >= stationary_hold_time_s
         ):
             pending_delimiter_frames.clear()
             return "stationary_pose"
@@ -496,6 +513,7 @@ def auto_record(cfg: AutoRecordConfig) -> LeRobotDataset:
                     robot_observation_processor=robot_observation_processor,
                     min_episode_time_s=float(cfg.min_episode_time_s),
                     max_episode_time_s=float(cfg.max_episode_time_s),
+                    stationary_hold_time_s=float(cfg.stationary_hold_time_s),
                     teleop=teleop,
                     policy=policy,
                     preprocessor=preprocessor,
@@ -513,7 +531,7 @@ def auto_record(cfg: AutoRecordConfig) -> LeRobotDataset:
                     dataset.clear_episode_buffer()
                     continue
 
-                if dataset.episode_buffer is not None and dataset.episode_buffer["size"] > 0:
+                if dataset_has_pending_frames(dataset):
                     log_say(f"Saving episode ({reason})", cfg.play_sounds)
                     dataset.save_episode()
                     recorded_episodes += 1

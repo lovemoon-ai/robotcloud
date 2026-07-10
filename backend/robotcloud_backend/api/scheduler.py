@@ -7,7 +7,7 @@ import time
 from collections import defaultdict
 from copy import deepcopy
 from datetime import timedelta
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from pathlib import Path
@@ -16,6 +16,7 @@ from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
 
+from .limits import user_has_no_limits
 from .models import Dataset, InferenceTask, TrainTask, User, WorkerNode
 
 PI05_BASE_POLICY_PATH = "lerobot/pi05_base"
@@ -207,14 +208,15 @@ class SchedulerService:
             return 0
         nodes_by_name = {node.node_name: node for node in nodes}
 
-        node_gpu_usage: Dict[str, Set[int]] = defaultdict(set)
+        node_gpu_usage: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
         running_tasks = TrainTask.objects.filter(
             status="running", assigned_node__in=[node.node_name for node in nodes]
         )
         for task in running_tasks:
             if not task.assigned_node:
                 continue
-            node_gpu_usage[task.assigned_node].update(self._parse_assigned_gpus(task.assigned_gpus))
+            for gpu_index in self._parse_assigned_gpus(task.assigned_gpus) or [0]:
+                node_gpu_usage[task.assigned_node][gpu_index] += 1
         running_counts = {
             row["user_id"]: row["count"]
             for row in TrainTask.objects.filter(status="running").values("user_id").annotate(count=Count("id"))
@@ -228,7 +230,7 @@ class SchedulerService:
 
         assignments = 0
         for task in queued_tasks:
-            max_concurrent = self._max_concurrent_for_role(task.user.role)
+            max_concurrent = self._max_concurrent_for_user(task.user, nodes)
             current_running = running_counts.get(task.user_id, 0)
             if current_running >= max_concurrent:
                 continue
@@ -246,7 +248,7 @@ class SchedulerService:
                 continue
             node_ref, task_ref, gpu_index = assignment
             if self._dispatch_task(node_ref, task_ref, gpu_index):
-                node_gpu_usage[node_ref.node_name].add(gpu_index)
+                node_gpu_usage[node_ref.node_name][gpu_index] += 1
                 running_counts[task_ref.user_id] = running_counts.get(task_ref.user_id, 0) + 1
                 assignments += 1
             else:
@@ -267,14 +269,15 @@ class SchedulerService:
         if InferenceTask.objects.filter(status="running").exists():
             return 0
 
-        node_gpu_usage: Dict[str, Set[int]] = defaultdict(set)
+        node_gpu_usage: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
         running_inference = InferenceTask.objects.filter(
             status="running", assigned_node__in=[node.node_name for node in nodes]
         )
         for task in running_inference:
             if not task.assigned_node:
                 continue
-            node_gpu_usage[task.assigned_node].update(self._parse_assigned_gpus(task.assigned_gpus))
+            for gpu_index in self._parse_assigned_gpus(task.assigned_gpus) or [0]:
+                node_gpu_usage[task.assigned_node][gpu_index] += 1
 
         running_counts = {
             row["user_id"]: row["count"]
@@ -314,7 +317,7 @@ class SchedulerService:
                 continue
             node_ref, task_ref, gpu_index = assignment
             if self._dispatch_inference_task(node_ref, task_ref, gpu_index):
-                node_gpu_usage[node_ref.node_name].add(gpu_index)
+                node_gpu_usage[node_ref.node_name][gpu_index] += 1
                 running_counts[task_ref.user_id] = running_counts.get(task_ref.user_id, 0) + 1
                 assignments += 1
             else:
@@ -325,7 +328,7 @@ class SchedulerService:
         self,
         task: InferenceTask,
         node: WorkerNode,
-        node_gpu_usage: Dict[str, Set[int]],
+        node_gpu_usage: Dict[str, Dict[int, int]],
         max_concurrent: int,
     ) -> Optional[Tuple[WorkerNode, InferenceTask, int]]:
         with transaction.atomic():
@@ -353,9 +356,7 @@ class SchedulerService:
                 update_fields=["status", "assigned_node", "assigned_gpus", "progress", "started_at"]
             )
 
-            node_ref.gpu_busy = min(node_ref.gpu_busy + 1, node_ref.gpu_total)
-            node_ref.gpu_free = max(node_ref.gpu_total - node_ref.gpu_busy, 0)
-            node_ref.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+            self._refresh_node_usage_counts(node_ref)
         return node_ref, task_ref, gpu_index
 
     def _dispatch_inference_task(self, node: WorkerNode, task: InferenceTask, gpu_index: int) -> bool:
@@ -392,7 +393,7 @@ class SchedulerService:
         self,
         task: TrainTask,
         node: WorkerNode,
-        node_gpu_usage: Dict[str, Set[int]],
+        node_gpu_usage: Dict[str, Dict[int, int]],
         max_concurrent: int,
     ) -> Optional[Tuple[WorkerNode, TrainTask, int]]:
         with transaction.atomic():
@@ -421,9 +422,7 @@ class SchedulerService:
             task_ref.progress = 0.0
             task_ref.save(update_fields=["status", "assigned_node", "assigned_gpus", "progress"])
 
-            node_ref.gpu_busy = min(node_ref.gpu_busy + 1, node_ref.gpu_total)
-            node_ref.gpu_free = max(node_ref.gpu_total - node_ref.gpu_busy, 0)
-            node_ref.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+            self._refresh_node_usage_counts(node_ref)
         return node_ref, task_ref, gpu_index
 
     def _dispatch_task(self, node: WorkerNode, task: TrainTask, gpu_index: int) -> bool:
@@ -438,7 +437,7 @@ class SchedulerService:
         is_pi05 = policy_type == "pi05"
 
         if is_pi05:
-            # Pi0.5 should default to lightweight fine-tuning from the base checkpoint.
+            # pi05 should default to lightweight fine-tuning from the base checkpoint.
             # The legacy UI only submitted policy.type=pi05, which initializes a 4B
             # trainable model from scratch and OOMs on H20.
             if not any(original_params.get(key) for key in ("policy.path", "--policy.path")):
@@ -492,7 +491,7 @@ class SchedulerService:
             key in original_params for key in ("optimizer.lr", "policy.optimizer_lr", "--optimizer.lr")
         )
         if is_pi05 and not optimizer_lr_is_explicit:
-            # Treat the old frontend's hard-coded 1e-3 as unset for Pi0.5.
+            # Treat the old frontend's hard-coded 1e-3 as unset for pi05.
             if learning_rate is None or learning_rate == LEGACY_DEFAULT_LEARNING_RATE:
                 learning_rate = PI05_DEFAULT_LEARNING_RATE
         if learning_rate is not None:
@@ -601,6 +600,25 @@ class SchedulerService:
             return p
         return Path(base) / p
 
+    def _refresh_node_usage_counts(self, node: WorkerNode) -> None:
+        physical_gpu_indices: set[int] = set()
+        slot_busy = 0
+        for task in TrainTask.objects.filter(assigned_node=node.node_name, status="running"):
+            gpus = self._parse_assigned_gpus(task.assigned_gpus) or [0]
+            physical_gpu_indices.update(gpus)
+            slot_busy += max(len(gpus), 1)
+        for task in InferenceTask.objects.filter(assigned_node=node.node_name, status="running"):
+            gpus = self._parse_assigned_gpus(task.assigned_gpus) or [0]
+            physical_gpu_indices.update(gpus)
+            slot_busy += max(len(gpus), 1)
+
+        node.gpu_slot_total = self._node_slot_total(node)
+        node.gpu_busy = min(len(physical_gpu_indices), node.gpu_total)
+        node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
+        node.gpu_slot_busy = min(slot_busy, node.gpu_slot_total)
+        node.gpu_slot_free = max(node.gpu_slot_total - node.gpu_slot_busy, 0)
+        node.save(update_fields=["gpu_busy", "gpu_free", "gpu_slot_total", "gpu_slot_busy", "gpu_slot_free", "updated_at"])
+
     def _rollback_assignment(self, task_id: int, node_id: int) -> None:
         with transaction.atomic():
             try:
@@ -616,9 +634,7 @@ class SchedulerService:
                 node = WorkerNode.objects.select_for_update().get(pk=node_id)
             except WorkerNode.DoesNotExist:
                 return
-            node.gpu_busy = max(node.gpu_busy - 1, 0)
-            node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
-            node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+            self._refresh_node_usage_counts(node)
 
     def _rollback_inference_assignment(self, task_id: int, node_id: int) -> None:
         with transaction.atomic():
@@ -635,9 +651,7 @@ class SchedulerService:
                 node = WorkerNode.objects.select_for_update().get(pk=node_id)
             except WorkerNode.DoesNotExist:
                 return
-            node.gpu_busy = max(node.gpu_busy - 1, 0)
-            node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
-            node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+            self._refresh_node_usage_counts(node)
 
     def cleanup_offline_nodes(self) -> None:
         threshold = timezone.now() - self.heartbeat_timeout
@@ -649,7 +663,9 @@ class SchedulerService:
             node.status = WorkerNode.STATUS_OFFLINE
             node.gpu_busy = 0
             node.gpu_free = 0
-            node.save(update_fields=["status", "gpu_busy", "gpu_free", "updated_at"])
+            node.gpu_slot_busy = 0
+            node.gpu_slot_free = 0
+            node.save(update_fields=["status", "gpu_busy", "gpu_free", "gpu_slot_busy", "gpu_slot_free", "updated_at"])
             self._requeue_tasks_for_node(node)
 
     # -------------------- Helpers --------------------
@@ -675,16 +691,35 @@ class SchedulerService:
         if tasks.exists():
             self.refresh_queue_positions()
 
-    def _available_gpus(self, node: WorkerNode, node_gpu_usage: Dict[str, Set[int]]) -> List[int]:
-        used = node_gpu_usage[node.node_name]
-        return [idx for idx in range(node.gpu_total) if idx not in used]
+    def _node_slot_total(self, node: WorkerNode) -> int:
+        return max(int(node.gpu_slot_total or node.gpu_total or 1), int(node.gpu_total or 1), 1)
 
-    def _select_node(self, nodes: List[WorkerNode], node_gpu_usage: Dict[str, Set[int]]) -> Optional[WorkerNode]:
+    def _slot_capacity_for_gpu(self, node: WorkerNode, gpu_index: int) -> int:
+        gpu_total = max(int(node.gpu_total or 1), 1)
+        slot_total = self._node_slot_total(node)
+        base = slot_total // gpu_total
+        extra = slot_total % gpu_total
+        return base + (1 if gpu_index < extra else 0)
+
+    def _free_slot_count(self, node: WorkerNode, usage: Dict[int, int]) -> int:
+        free = 0
+        for gpu_index in range(max(node.gpu_total, 0)):
+            free += max(self._slot_capacity_for_gpu(node, gpu_index) - usage.get(gpu_index, 0), 0)
+        return free
+
+    def _available_gpus(self, node: WorkerNode, node_gpu_usage: Dict[str, Dict[int, int]]) -> List[int]:
+        used = node_gpu_usage[node.node_name]
+        return [
+            idx
+            for idx in range(node.gpu_total)
+            if used.get(idx, 0) < self._slot_capacity_for_gpu(node, idx)
+        ]
+
+    def _select_node(self, nodes: List[WorkerNode], node_gpu_usage: Dict[str, Dict[int, int]]) -> Optional[WorkerNode]:
         best_node: Optional[WorkerNode] = None
         best_free = -1
         for node in nodes:
-            used = len(node_gpu_usage[node.node_name])
-            free = node.gpu_total - used
+            free = self._free_slot_count(node, node_gpu_usage[node.node_name])
             if free <= 0:
                 continue
             if free > best_free:
@@ -717,6 +752,11 @@ class SchedulerService:
             User.ROLE_ADMIN: 4,
         }
         return mapping.get(role, 2)
+
+    def _max_concurrent_for_user(self, user: User, nodes: List[WorkerNode]) -> int:
+        if user_has_no_limits(user):
+            return max(sum(self._node_slot_total(node) for node in nodes), 1)
+        return self._max_concurrent_for_role(user.role)
 
     def _max_inference_concurrent_for_role(self, role: str) -> int:
         mapping = {

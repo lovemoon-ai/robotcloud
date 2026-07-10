@@ -1,5 +1,9 @@
+from urllib.parse import urlencode
+
 from django.test import override_settings
 from rest_framework.test import APIClient
+
+from robotcloud_backend.payment.alipay import AlipayClient
 
 
 @override_settings(DEBUG=True)
@@ -129,6 +133,34 @@ def test_wechat_not_supported(client: APIClient, create_user_token, auth_header)
     assert "alipay" in create_resp.json()["detail"].lower()
 
 
+def test_alipay_verify_notify_removes_signature_before_sdk_verify(monkeypatch) -> None:
+    seen = {}
+
+    class FakeAlipaySdk:
+        def verify(self, data, signature) -> bool:
+            seen["data"] = dict(data)
+            seen["signature"] = signature
+            data.pop("sign_type", None)
+            return signature == "valid-sign" and "sign" not in data
+
+    client = AlipayClient(app_id="app", private_key="private", public_key="public")
+    monkeypatch.setattr(client, "_get_sdk", lambda: FakeAlipaySdk())
+    payload = {
+        "out_trade_no": "payment-id",
+        "trade_status": "TRADE_SUCCESS",
+        "total_amount": "1000.00",
+        "sign": "valid-sign",
+        "sign_type": "RSA2",
+    }
+
+    assert client.verify_notify(payload) is True
+    assert seen["signature"] == "valid-sign"
+    assert "sign" not in seen["data"]
+    assert seen["data"]["sign_type"] == "RSA2"
+    assert payload["sign"] == "valid-sign"
+    assert payload["sign_type"] == "RSA2"
+
+
 def test_alipay_payment_flow(client: APIClient, create_user_token, auth_header) -> None:
     """Test Alipay payment creation and query."""
     token = create_user_token("13800000020", "alipay_test")
@@ -187,6 +219,92 @@ def test_alipay_notify_callback(client: APIClient, create_user_token, auth_heade
     status_resp = client.get(f"/api/v1/payment/{payment_id}", **auth_header(token))
     assert status_resp.status_code == 200
     assert status_resp.json()["data"]["status"] == "succeeded"
+
+
+@override_settings(DEBUG=True, ALIPAY_APP_ID="", ALIPAY_PRIVATE_KEY="", ALIPAY_PUBLIC_KEY="")
+def test_alipay_notify_accepts_form_encoded_callback(client: APIClient, create_user_token, auth_header) -> None:
+    token = create_user_token("13800000027", "alipay_form_notify")
+
+    create_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus", "provider": "alipay"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp.status_code == 200
+    payment = create_resp.json()["data"]
+
+    notify_resp = client.post(
+        "/api/v1/payment/alipay/notify",
+        urlencode(
+            {
+                "out_trade_no": payment["payment_id"],
+                "trade_status": "TRADE_SUCCESS",
+                "total_amount": f"{payment['amount_cents'] / 100:.2f}",
+            }
+        ),
+        content_type="application/x-www-form-urlencoded",
+    )
+    assert notify_resp.status_code == 200
+    assert notify_resp.content == b"success"
+
+    status_resp = client.get(f"/api/v1/payment/{payment['payment_id']}", **auth_header(token))
+    assert status_resp.status_code == 200
+    assert status_resp.json()["data"]["status"] == "succeeded"
+
+
+@override_settings(DEBUG=False)
+def test_alipay_notify_accepts_signed_form_callback_when_configured(
+    client: APIClient,
+    create_user_token,
+    auth_header,
+    monkeypatch,
+) -> None:
+    class ConfiguredAlipay:
+        def is_configured(self) -> bool:
+            return True
+
+        def create_page_pay(self, **kwargs) -> str:
+            return "https://alipay.example.test/checkout"
+
+        def verify_notify(self, data) -> bool:
+            return data.get("sign") == "valid-sign"
+
+    monkeypatch.setattr("robotcloud_backend.api.services.get_alipay", lambda: ConfiguredAlipay())
+    token = create_user_token("13800000028", "alipay_signed_form_notify")
+
+    create_resp = client.post(
+        "/api/v1/payment/create",
+        {"target_role": "plus", "provider": "alipay"},
+        format="json",
+        **auth_header(token),
+    )
+    assert create_resp.status_code == 200
+    payment = create_resp.json()["data"]
+
+    notify_resp = client.post(
+        "/api/v1/payment/alipay/notify",
+        urlencode(
+            {
+                "out_trade_no": payment["payment_id"],
+                "trade_status": "TRADE_SUCCESS",
+                "total_amount": f"{payment['amount_cents'] / 100:.2f}",
+                "sign": "valid-sign",
+                "sign_type": "RSA2",
+            }
+        ),
+        content_type="application/x-www-form-urlencoded",
+    )
+    assert notify_resp.status_code == 200
+    assert notify_resp.content == b"success"
+
+    status_resp = client.get(f"/api/v1/payment/{payment['payment_id']}", **auth_header(token))
+    assert status_resp.status_code == 200
+    assert status_resp.json()["data"]["status"] == "succeeded"
+
+    profile_resp = client.get("/api/v1/user/profile", **auth_header(token))
+    assert profile_resp.status_code == 200
+    assert profile_resp.json()["data"]["role"] == "plus"
 
 
 @override_settings(DEBUG=True, ALIPAY_APP_ID="app", ALIPAY_PRIVATE_KEY="private", ALIPAY_PUBLIC_KEY="public")

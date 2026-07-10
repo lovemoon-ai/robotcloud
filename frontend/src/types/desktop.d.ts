@@ -38,6 +38,7 @@ type So101RunConfig = {
   episodeTimeS?: number;
   minEpisodeTimeS?: number;
   maxEpisodeTimeS?: number;
+  stationaryHoldTimeS?: number;
   resetTimeS?: number;
   task?: string;
   teleopTimeS?: number;
@@ -71,6 +72,10 @@ type PreparedDatasetUpload = {
   visibility: "public" | "private";
   createdAt: string;
   stats?: DatasetUploadInspection;
+};
+
+type DatasetPrepareUploadErrorEvent = {
+  message: string;
 };
 
 type DesktopAuthSession = {
@@ -156,6 +161,8 @@ type DesktopBridge = {
     setPreparedUpload?: (prepared: PreparedDatasetUpload) => Promise<void>;
     clearPreparedUpload?: () => Promise<void>;
     readPreparedUpload: (filePath: string) => Promise<ArrayBuffer>;
+    onPreparedUpload?: (callback: (prepared: PreparedDatasetUpload) => void) => () => void;
+    onPrepareUploadError?: (callback: (event: DatasetPrepareUploadErrorEvent) => void) => () => void;
   };
   auth?: {
     getSession: () => Promise<DesktopAuthSession | null>;

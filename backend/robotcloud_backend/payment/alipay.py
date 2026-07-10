@@ -132,8 +132,14 @@ class AlipayClient:
             logger.warning("Alipay SDK unavailable; cannot verify notification")
             return False
 
+        signature = data.get("sign", "")
+        if not signature:
+            return False
+        verify_data = dict(data)
+        verify_data.pop("sign", None)
+
         try:
-            return sdk.verify(data, data.get("sign", ""))
+            return sdk.verify(verify_data, signature)
         except Exception as e:
             logger.error("Failed to verify notify signature: %s", e)
             return False

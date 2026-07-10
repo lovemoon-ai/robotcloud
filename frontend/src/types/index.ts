@@ -70,6 +70,9 @@ export interface GpuAgent {
   gpuTotal: number;
   gpuFree: number;
   gpuBusy: number;
+  gpuSlotTotal: number;
+  gpuSlotFree: number;
+  gpuSlotBusy: number;
   status: string;
   version: string;
   publicBaseUrl: string;
@@ -85,6 +88,7 @@ export interface UserSettings {
 
 export interface TrainingJob {
   id: number;
+  jobName: string;
   model: string;
   status: string;
   progress: number;
@@ -99,6 +103,7 @@ export interface TrainingLogChunk {
 }
 
 export interface TrainingConfig {
+  jobName?: string;
   model: string;
   datasetId: string;
   learningRate: number;
@@ -113,6 +118,7 @@ export interface InferenceJob {
   id: number;
   datasetId: number | null;
   modelId: number;
+  modelType?: string | null;
   status: string;
   progress?: number;
   serverHost?: string | null;

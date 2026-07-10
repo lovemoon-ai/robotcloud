@@ -68,6 +68,9 @@ describe("/datasets page", () => {
           gpuTotal: 2,
           gpuFree: 1,
           gpuBusy: 1,
+          gpuSlotTotal: 2,
+          gpuSlotFree: 1,
+          gpuSlotBusy: 1,
           status: "online",
           version: "test",
           publicBaseUrl: "https://agent.example.test",
@@ -92,7 +95,7 @@ describe("/datasets page", () => {
 
     renderDatasetsPage();
 
-    await screen.findByText("gpu-node-1 · Free GPUs: 1/2");
+    await screen.findByText("gpu-node-1 · Free slots: 1/2");
     fireEvent.change(screen.getByLabelText("Dataset Name"), { target: { value: "demo" } });
     fireEvent.change(screen.getByLabelText("Data File"), {
       target: { files: [new File(["content"], "dataset.zip", { type: "application/zip" })] }

@@ -1,5 +1,5 @@
 import { waitFor } from "@testing-library/react";
-import { robotCloudApi } from "@/api/client";
+import { resetRobotCloudApiBaseUrl, robotCloudApi, setRobotCloudApiBaseUrl } from "@/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
 import {
   AdminUser,
@@ -122,8 +122,10 @@ describe("robotCloudApi", () => {
 
   afterEach(() => {
     global.fetch = originalFetch as typeof fetch;
+    resetRobotCloudApiBaseUrl();
     useAuthStore.getState().reset();
     localStorage.clear();
+    delete window.robotcloudDesktop;
     lastXhr = null;
     nextXhrResponseText = null;
     xhrQueue = [];
@@ -154,7 +156,7 @@ describe("robotCloudApi", () => {
     expect(init?.method).toBe("POST");
     expect(JSON.parse(init?.body as string)).toMatchObject({
       ...credentials,
-      device_type: "desktop",
+      device_type: "browser",
       replace_existing_device: false
     });
     expect(JSON.parse(init?.body as string).device_id).toEqual(expect.any(String));
@@ -164,6 +166,32 @@ describe("robotCloudApi", () => {
       phone: "123",
       role: "plus",
       expireAt: "2026-01-01T00:00:00Z"
+    });
+  });
+
+  it("loginWithPassword sends desktop device type inside desktop bridge", async () => {
+    window.robotcloudDesktop = {
+      isDesktop: true
+    } as unknown as NonNullable<typeof window.robotcloudDesktop>;
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          token: "abc",
+          user_id: 9,
+          phone: "123",
+          role: "plus",
+          expire_at: null
+        }
+      })
+    } as unknown as Response);
+
+    await robotCloudApi.loginWithPassword({ phone: "123", password: "pwd" });
+    const [, init] = mockedFetch.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      device_type: "desktop"
     });
   });
 
@@ -209,7 +237,7 @@ describe("robotCloudApi", () => {
     expect(body).toMatchObject({
       phone: "13800000001",
       code: "000000",
-      device_type: "desktop",
+      device_type: "browser",
       replace_existing_device: false
     });
     expect(body.device_id).toEqual(expect.any(String));
@@ -379,6 +407,9 @@ describe("robotCloudApi", () => {
               gpu_total: 2,
               gpu_free: 1,
               gpu_busy: 1,
+              gpu_slot_total: 4,
+              gpu_slot_free: 3,
+              gpu_slot_busy: 1,
               status: "online",
               version: "1.0.0",
               public_base_url: "https://agent.example.test",
@@ -396,6 +427,9 @@ describe("robotCloudApi", () => {
     expect(result.items[0]).toMatchObject({
       nodeName: "gpu-node-1",
       publicBaseUrl: "https://agent.example.test",
+      gpuSlotTotal: 4,
+      gpuSlotFree: 3,
+      gpuSlotBusy: 1,
       canUpload: true,
       isDefault: true
     });
@@ -999,6 +1033,7 @@ describe("robotCloudApi", () => {
           {
             task_id: 7,
             dataset_id: 2,
+            job_name: "cube-pickup-v1",
             model_type: "YOLO",
             status: "queued",
             progress: 0.4,
@@ -1019,6 +1054,7 @@ describe("robotCloudApi", () => {
       {
         id: 7,
         datasetId: 2,
+        jobName: "cube-pickup-v1",
         model: "YOLO",
         status: "queued",
         progress: 40,
@@ -1031,20 +1067,28 @@ describe("robotCloudApi", () => {
 
   it("createTrainingJob posts transformed payload", async () => {
     setAuthenticatedUser();
-    const config: TrainingConfig = { model: "YOLO", datasetId: "1", learningRate: 0.1, steps: 10, batchSize: 8 };
+    const config: TrainingConfig = {
+      jobName: "cube-pickup-v1",
+      model: "YOLO",
+      datasetId: "1",
+      learningRate: 0.1,
+      steps: 10,
+      batchSize: 8
+    };
     await robotCloudApi.createTrainingJob(config);
     const [, init] = mockedFetch.mock.calls[0];
     expect(JSON.parse(init?.body as string)).toEqual({
       dataset_id: 1,
+      job_name: "cube-pickup-v1",
       model_type: "YOLO",
       params: { learning_rate: 0.1, steps: 10, batch_size: 8 }
     });
   });
 
-  it("createTrainingJob posts Pi0.5 lightweight fine-tune payload", async () => {
+  it("createTrainingJob posts pi05 lightweight fine-tune payload", async () => {
     setAuthenticatedUser();
     const config: TrainingConfig = {
-      model: "Pi0.5",
+      model: "pi05",
       datasetId: "6",
       learningRate: 0.000025,
       steps: 5000,
@@ -1056,7 +1100,7 @@ describe("robotCloudApi", () => {
     const [, init] = mockedFetch.mock.calls[0];
     expect(JSON.parse(init?.body as string)).toEqual({
       dataset_id: 6,
-      model_type: "Pi0.5",
+      model_type: "pi05",
       params: {
         learning_rate: 0.000025,
         steps: 5000,
@@ -1086,7 +1130,7 @@ describe("robotCloudApi", () => {
       }
     };
     const config: TrainingConfig = {
-      model: "Pi0.5",
+      model: "pi05",
       datasetId: "6",
       learningRate: 0.000025,
       steps: 5000,
@@ -1097,7 +1141,7 @@ describe("robotCloudApi", () => {
     const [, init] = mockedFetch.mock.calls[0];
     expect(JSON.parse(init?.body as string)).toEqual({
       dataset_id: 6,
-      model_type: "Pi0.5",
+      model_type: "pi05",
       params
     });
   });
@@ -1150,6 +1194,7 @@ describe("robotCloudApi", () => {
           {
             task_id: 5,
             model_id: 3,
+            model_type: "act",
             dataset_id: 2,
             status: "running",
             result_path: null,
@@ -1171,6 +1216,7 @@ describe("robotCloudApi", () => {
       {
         id: 5,
         modelId: 3,
+        modelType: "act",
         datasetId: 2,
         status: "running",
         progress: undefined,
@@ -1183,6 +1229,30 @@ describe("robotCloudApi", () => {
         startedAt: "2024-01-01T00:00:05Z"
       }
     ]);
+  });
+
+  it("uses a runtime API base override for desktop requests", async () => {
+    setAuthenticatedUser();
+    setRobotCloudApiBaseUrl("http://127.0.0.1:8000/api/v1/");
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({ code: 0, data: { items: [], total: 0 } })
+    } as unknown as Response);
+
+    await robotCloudApi.fetchInferenceJobs();
+
+    const [url] = mockedFetch.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8000/api/v1/inference/list?page=1&size=20");
+  });
+
+  it("reports the API base when a network request fails", async () => {
+    setAuthenticatedUser();
+    mockedFetch.mockRejectedValueOnce(new TypeError("Load failed"));
+
+    await expect(robotCloudApi.fetchInferenceJobs()).rejects.toThrow(
+      `Cannot reach RobotCloud API at ${API_BASE}: Load failed`
+    );
   });
 
   it("runInference posts model id only", async () => {

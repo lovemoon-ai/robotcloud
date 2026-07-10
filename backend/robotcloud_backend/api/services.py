@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import secrets
 from datetime import timedelta
@@ -30,11 +31,13 @@ from .models import (
     UserSession,
     WorkerNode,
 )
+from .limits import phone_defaults_to_plus, user_has_no_limits
 from .scheduler import _normalize_policy_name
 from ..sms import SmsGateway
 from ..payment.alipay import get_alipay
 
 
+logger = logging.getLogger("robotcloud.api.services")
 TOKEN_TIMEOUT_SECONDS = 7 * 24 * 60 * 60  # 7 days
 VERIFICATION_CODE_TIMEOUT_SECONDS = 5 * 60  # 5 minutes
 DEFAULT_DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS = 2 * 60 * 60  # 2 hours
@@ -53,6 +56,23 @@ SO101_TRAINING_MODEL_REQUIREMENTS = {
     "evo1": {"task": True},
     "fastwam": {"task": True},
 }
+
+
+def _canonical_model_type(model_type: str) -> str:
+    key = re.sub(r"[\s_-]+", "", str(model_type or "").strip().lower())
+    if key == "act":
+        return "act"
+    if key in {"diffusionpolicy", "diffusion", "dp"}:
+        return "diffusion"
+    if key == "smolvla":
+        return "smolvla"
+    if key == "pi0":
+        return "pi0"
+    if key in {"pi0.5", "pi05"}:
+        return "pi05"
+    if "gr00t" in key or "groot" in key:
+        return "groot"
+    return key
 
 
 class RobotCloudService:
@@ -142,10 +162,12 @@ class RobotCloudService:
     def _normalize_device_type(self, device_type: Any) -> str:
         candidate = str(device_type or "").strip().lower()
         if not candidate:
-            return UserSession.DEVICE_DESKTOP
+            return UserSession.DEVICE_BROWSER
+        if candidate in {UserSession.DEVICE_BROWSER, "web", "browser"}:
+            return UserSession.DEVICE_BROWSER
         if candidate in {UserSession.DEVICE_MOBILE, "phone", "tablet"}:
             return UserSession.DEVICE_MOBILE
-        if candidate in {UserSession.DEVICE_DESKTOP, "pc", "web"}:
+        if candidate in {UserSession.DEVICE_DESKTOP, "pc", "desktop-app", "tauri"}:
             return UserSession.DEVICE_DESKTOP
         raise ValueError("Invalid device type")
 
@@ -166,14 +188,11 @@ class RobotCloudService:
     def _bypasses_single_device_limit(self, user: User) -> bool:
         return user.phone in self._single_device_bypass_phones()
 
-    def _plus_whitelist_phones(self) -> set[str]:
-        values = getattr(settings, "AUTH_PLUS_WHITELIST_PHONES", [])
-        if isinstance(values, str):
-            values = values.split(",")
-        return {str(item).strip() for item in values if str(item).strip()}
-
     def _is_plus_whitelisted(self, phone: str) -> bool:
-        return phone in self._plus_whitelist_phones()
+        return phone_defaults_to_plus(phone)
+
+    def _has_no_limits(self, user: User) -> bool:
+        return user_has_no_limits(user)
 
     def _apply_plus_whitelist(self, user: User) -> User:
         if not self._is_plus_whitelisted(user.phone):
@@ -269,6 +288,32 @@ class RobotCloudService:
             return max(len(payload), 0)
         return 0
 
+    def _normalize_gpu_slot_total(self, gpu_total: int, gpu_slot_total: Any = None) -> int:
+        try:
+            slot_total = int(gpu_slot_total)
+        except (TypeError, ValueError):
+            slot_total = gpu_total
+        return max(slot_total, gpu_total, 1)
+
+    def _refresh_worker_usage(self, node: WorkerNode) -> None:
+        physical_gpu_indices: set[int] = set()
+        slot_busy = 0
+        for task in TrainTask.objects.filter(assigned_node=node.node_name, status="running"):
+            gpus = self._parse_assigned_gpus(task.assigned_gpus) or [0]
+            physical_gpu_indices.update(gpus)
+            slot_busy += max(len(gpus), 1)
+        for task in InferenceTask.objects.filter(assigned_node=node.node_name, status="running"):
+            gpus = self._parse_assigned_gpus(task.assigned_gpus) or [0]
+            physical_gpu_indices.update(gpus)
+            slot_busy += max(len(gpus), 1)
+
+        node.gpu_slot_total = self._normalize_gpu_slot_total(node.gpu_total, node.gpu_slot_total)
+        node.gpu_busy = min(len(physical_gpu_indices), node.gpu_total)
+        node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
+        node.gpu_slot_busy = min(slot_busy, node.gpu_slot_total)
+        node.gpu_slot_free = max(node.gpu_slot_total - node.gpu_slot_busy, 0)
+        node.save(update_fields=["gpu_busy", "gpu_free", "gpu_slot_total", "gpu_slot_busy", "gpu_slot_free", "updated_at"])
+
     def _release_worker_slot(self, task: TrainTask) -> None:
         if not task.assigned_node:
             return
@@ -276,10 +321,7 @@ class RobotCloudService:
             node = WorkerNode.objects.get(node_name=task.assigned_node)
         except WorkerNode.DoesNotExist:
             return
-        if node.gpu_busy > 0:
-            node.gpu_busy -= 1
-        node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
-        node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+        self._refresh_worker_usage(node)
 
     def _release_inference_slot(self, task: InferenceTask) -> None:
         if not task.assigned_node:
@@ -288,10 +330,7 @@ class RobotCloudService:
             node = WorkerNode.objects.get(node_name=task.assigned_node)
         except WorkerNode.DoesNotExist:
             return
-        if node.gpu_busy > 0:
-            node.gpu_busy -= 1
-        node.gpu_free = max(node.gpu_total - node.gpu_busy, 0)
-        node.save(update_fields=["gpu_busy", "gpu_free", "updated_at"])
+        self._refresh_worker_usage(node)
 
     def _parse_assigned_gpus(self, value: Optional[str]) -> list[int]:
         if not value:
@@ -350,6 +389,9 @@ class RobotCloudService:
             "gpu_total": node.gpu_total,
             "gpu_free": node.gpu_free,
             "gpu_busy": node.gpu_busy,
+            "gpu_slot_total": node.gpu_slot_total or node.gpu_total,
+            "gpu_slot_free": node.gpu_slot_free if node.gpu_slot_total else node.gpu_free,
+            "gpu_slot_busy": node.gpu_slot_busy if node.gpu_slot_total else node.gpu_busy,
             "status": node.status,
             "version": node.version,
             "public_base_url": node.public_base_url,
@@ -907,11 +949,14 @@ class RobotCloudService:
         alipay = get_alipay()
         if alipay.is_configured():
             if not data.get("sign") or not alipay.verify_notify(data):
+                logger.warning("Rejected Alipay notify: invalid signature for out_trade_no=%s", out_trade_no)
                 return False
         elif not getattr(settings, "DEBUG", False):
+            logger.warning("Rejected Alipay notify: Alipay is not configured")
             return False
 
         if not out_trade_no:
+            logger.warning("Rejected Alipay notify: missing out_trade_no")
             return False
 
         if trade_status not in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
@@ -920,6 +965,7 @@ class RobotCloudService:
         try:
             payment = Payment.objects.get(payment_id=out_trade_no)
         except Payment.DoesNotExist:
+            logger.warning("Rejected Alipay notify: payment not found for out_trade_no=%s", out_trade_no)
             return False
 
         if payment.status == Payment.STATUS_SUCCEEDED:
@@ -932,6 +978,12 @@ class RobotCloudService:
             total_cents = 0
 
         if total_cents > 0 and total_cents != payment.amount_cents:
+            logger.warning(
+                "Rejected Alipay notify: amount mismatch for out_trade_no=%s expected=%s actual=%s",
+                out_trade_no,
+                payment.amount_cents,
+                total_cents,
+            )
             return False
 
         # Update payment status and auto-apply upgrade
@@ -1370,13 +1422,17 @@ class RobotCloudService:
         dataset_id: int,
         model_type: str,
         params: Dict[str, Any],
+        job_name: str = "",
     ) -> Dict[str, Any]:
         if not model_type:
             raise ValueError("Model type required")
+        model_type = _canonical_model_type(model_type)
+        job_name = str(job_name or "").strip()[:128]
         user = self._get_user_by_token(token)
-        completed_models = user.train_tasks.filter(status="completed").count()
-        if completed_models >= 5:
-            raise ValueError("Saved model limit reached (5)")
+        if not self._has_no_limits(user):
+            completed_models = user.train_tasks.filter(status="completed").count()
+            if completed_models >= 5:
+                raise ValueError("Saved model limit reached (5)")
         dataset = self._get_dataset_for_user(user, dataset_id)
         if dataset.status != Dataset.STATUS_READY:
             raise ValueError("Dataset is not ready")
@@ -1385,6 +1441,7 @@ class RobotCloudService:
             task = TrainTask.objects.create(
                 dataset=dataset,
                 user=user,
+                job_name=job_name,
                 model_type=model_type,
                 params=params or {},
                 status="queued",
@@ -1492,6 +1549,7 @@ class RobotCloudService:
         api_port: int,
         public_base_url: str = "",
         upload_enabled: bool = True,
+        gpu_slot_total: Optional[int] = None,
     ) -> Dict[str, Any]:
         if not node_name:
             raise ValueError("Node name required")
@@ -1502,6 +1560,7 @@ class RobotCloudService:
         if api_port <= 0:
             raise ValueError("Agent port must be positive")
         public_base_url = self._normalize_public_base_url(public_base_url)
+        slot_total = self._normalize_gpu_slot_total(gpu_total, gpu_slot_total)
         now = timezone.now()
         with transaction.atomic():
             node, created = WorkerNode.objects.select_for_update().get_or_create(
@@ -1511,6 +1570,9 @@ class RobotCloudService:
                     "gpu_total": gpu_total,
                     "gpu_busy": 0,
                     "gpu_free": gpu_total,
+                    "gpu_slot_total": slot_total,
+                    "gpu_slot_busy": 0,
+                    "gpu_slot_free": slot_total,
                     "version": version or "",
                     "auth_token": self._generate_agent_token(),
                     "status": WorkerNode.STATUS_ONLINE,
@@ -1525,6 +1587,9 @@ class RobotCloudService:
                 node.gpu_total = gpu_total
                 node.gpu_busy = min(node.gpu_busy, gpu_total)
                 node.gpu_free = max(gpu_total - node.gpu_busy, 0)
+                node.gpu_slot_total = slot_total
+                node.gpu_slot_busy = min(node.gpu_slot_busy, slot_total)
+                node.gpu_slot_free = max(slot_total - node.gpu_slot_busy, 0)
                 node.version = version or ""
                 node.status = WorkerNode.STATUS_ONLINE
                 node.last_heartbeat = now
@@ -1537,6 +1602,9 @@ class RobotCloudService:
                         "gpu_total",
                         "gpu_busy",
                         "gpu_free",
+                        "gpu_slot_total",
+                        "gpu_slot_busy",
+                        "gpu_slot_free",
                         "version",
                         "status",
                         "last_heartbeat",
@@ -1552,6 +1620,7 @@ class RobotCloudService:
                 "agent_id": node.node_name,
                 "token": token,
                 "gpu_total": node.gpu_total,
+                "gpu_slot_total": node.gpu_slot_total,
                 "api_port": node.api_port,
                 "public_base_url": node.public_base_url,
                 "upload_enabled": node.upload_enabled,
@@ -1565,25 +1634,48 @@ class RobotCloudService:
         gpu_free: Any,
         gpu_busy: Any,
         version: Optional[str] = None,
+        gpu_slot_total: Any = None,
+        gpu_slot_free: Any = None,
+        gpu_slot_busy: Any = None,
     ) -> Dict[str, Any]:
         node = self._get_worker_by_token(token)
         now = timezone.now()
         if gpu_total > 0:
             node.gpu_total = gpu_total
+        node.gpu_slot_total = self._normalize_gpu_slot_total(node.gpu_total, gpu_slot_total or node.gpu_slot_total)
         free_count = self._normalize_gpu_payload(gpu_free)
         busy_count = self._normalize_gpu_payload(gpu_busy)
         if busy_count > node.gpu_total:
             busy_count = node.gpu_total
         if free_count > node.gpu_total:
             free_count = node.gpu_total
+        slot_free_count = self._normalize_gpu_payload(gpu_slot_free)
+        slot_busy_count = busy_count if gpu_slot_busy is None else self._normalize_gpu_payload(gpu_slot_busy)
+        if slot_busy_count > node.gpu_slot_total:
+            slot_busy_count = node.gpu_slot_total
+        if slot_free_count > node.gpu_slot_total:
+            slot_free_count = node.gpu_slot_total
         node.gpu_busy = busy_count
         node.gpu_free = max(node.gpu_total - busy_count, 0) if free_count == 0 else free_count
+        node.gpu_slot_busy = slot_busy_count
+        node.gpu_slot_free = max(node.gpu_slot_total - slot_busy_count, 0) if slot_free_count == 0 else slot_free_count
         node.last_heartbeat = now
         node.status = WorkerNode.STATUS_ONLINE
         if version is not None:
             node.version = version
         node.save(
-            update_fields=["gpu_total", "gpu_busy", "gpu_free", "last_heartbeat", "status", "version", "updated_at"]
+            update_fields=[
+                "gpu_total",
+                "gpu_busy",
+                "gpu_free",
+                "gpu_slot_total",
+                "gpu_slot_busy",
+                "gpu_slot_free",
+                "last_heartbeat",
+                "status",
+                "version",
+                "updated_at",
+            ]
         )
         return self._response({"status": "ok", "node": node.node_name})
 
@@ -1689,13 +1781,15 @@ class RobotCloudService:
     # -------------------- Inference Module --------------------
     def create_inference_task(self, token: str, model_id: int, dataset_id: Optional[int]) -> Dict[str, Any]:
         user = self._get_user_by_token(token)
-        if user.role == User.ROLE_FREE:
+        has_no_limits = self._has_no_limits(user)
+        if user.role == User.ROLE_FREE and not has_no_limits:
             raise PermissionError("Inference is not available for free users")
         if model_id is None:
             raise ValueError("model_id required")
-        queued_count = user.inference_tasks.filter(status="queued").count()
-        if queued_count >= 3:
-            raise ValueError("Queued inference task limit reached (3)")
+        if not has_no_limits:
+            queued_count = user.inference_tasks.filter(status="queued").count()
+            if queued_count >= 3:
+                raise ValueError("Queued inference task limit reached (3)")
         dataset = self._get_dataset_for_user(user, dataset_id) if dataset_id is not None else None
         train_task = self._get_train_task(int(model_id), user)
         if train_task.status != "completed":
@@ -1716,7 +1810,9 @@ class RobotCloudService:
         queryset = user.inference_tasks.all().order_by("-created_at")
         total = queryset.count()
         start = (page - 1) * size
-        items = [self._inference_to_dict(t) for t in queryset[start : start + size]]
+        tasks = list(queryset[start : start + size])
+        model_types = self._inference_model_types(user, tasks)
+        items = [self._inference_to_dict(task, model_types.get(task.model_id)) for task in tasks]
         return self._response({"items": items, "total": total})
 
     def inference_result(self, token: str, task_id: int) -> Dict[str, Any]:
@@ -1725,6 +1821,7 @@ class RobotCloudService:
         return self._response(
             {
                 "task_id": task.id,
+                "model_type": self._inference_model_type(task),
                 "status": task.status,
                 "checkpoint_path": task.checkpoint_path,
                 "server_host": task.server_host,
@@ -1929,8 +2026,13 @@ class RobotCloudService:
         dataset = task.dataset
         result = {
             "model_id": task.id,
-            "name": f"{task.model_type}-{dataset.name}" if dataset else f"{task.model_type}-{task.id}",
-            "model_type": task.model_type,
+            "name": task.job_name
+            or (
+                f"{_canonical_model_type(task.model_type)}-{dataset.name}"
+                if dataset
+                else f"{_canonical_model_type(task.model_type)}-{task.id}"
+            ),
+            "model_type": _canonical_model_type(task.model_type),
             "dataset_id": task.dataset_id,
             "dataset_name": dataset.name if dataset else None,
             "model_path": task.model_path,
@@ -2187,7 +2289,8 @@ class RobotCloudService:
         return {
             "task_id": task.id,
             "dataset_id": task.dataset_id,
-            "model_type": task.model_type,
+            "job_name": task.job_name,
+            "model_type": _canonical_model_type(task.model_type),
             "status": task.status,
             "progress": task.progress,
             "checkpoint_path": task.checkpoint_path,
@@ -2201,10 +2304,11 @@ class RobotCloudService:
             "created_at": task.created_at.isoformat(),
         }
 
-    def _inference_to_dict(self, task: InferenceTask) -> Dict[str, Any]:
+    def _inference_to_dict(self, task: InferenceTask, model_type: Optional[str]) -> Dict[str, Any]:
         return {
             "task_id": task.id,
             "model_id": task.model_id,
+            "model_type": model_type,
             "dataset_id": task.dataset_id,
             "status": task.status,
             "progress": task.progress,
@@ -2218,6 +2322,27 @@ class RobotCloudService:
             "started_at": task.started_at.isoformat() if task.started_at else None,
             "finished_at": task.finished_at.isoformat() if task.finished_at else None,
             "created_at": task.created_at.isoformat(),
+        }
+
+    def _inference_model_type(self, task: InferenceTask) -> Optional[str]:
+        model_type = (
+            TrainTask.objects.filter(id=task.model_id, user=task.user)
+            .values_list("model_type", flat=True)
+            .first()
+        )
+        return _canonical_model_type(model_type) if model_type else None
+
+    def _inference_model_types(self, user: User, tasks: Iterable[InferenceTask]) -> Dict[int, str]:
+        model_ids = {task.model_id for task in tasks}
+        if not model_ids:
+            return {}
+        return {
+            model_id: _canonical_model_type(model_type)
+            for model_id, model_type in TrainTask.objects.filter(id__in=model_ids, user=user).values_list(
+                "id",
+                "model_type",
+            )
+            if model_type
         }
 
     def _simulation_to_dict(self, task: SimulationTask) -> Dict[str, Any]:

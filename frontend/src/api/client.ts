@@ -1,4 +1,3 @@
-import getConfig from "next/config";
 import { useAuthStore } from "@/store/useAuthStore";
 import {
   AdminUser,
@@ -24,22 +23,8 @@ import { getTrainingModelDefaults } from "@/training/models";
 
 const DEFAULT_API_BASE = "http://localhost:6150/api/v1";
 
-type RuntimeConfig = {
-  publicRuntimeConfig?: {
-    apiBaseUrl?: string;
-  };
-};
-
-const runtimeConfig: RuntimeConfig | undefined = (() => {
-  try {
-    return getConfig();
-  } catch {
-    return undefined;
-  }
-})();
-
-const RAW_API_BASE = runtimeConfig?.publicRuntimeConfig?.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
-const API_BASE = RAW_API_BASE.replace(/\/$/, "");
+const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
+const CONFIGURED_API_BASE = RAW_API_BASE.replace(/\/$/, "");
 const DEVICE_ID_STORAGE_KEY = "robotcloud-device-id";
 export const PI05_BASE_MODEL = "lerobot/pi05_base";
 export const PI05_DEFAULT_LEARNING_RATE = 0.000025;
@@ -48,7 +33,7 @@ export const PI05_DEFAULT_RENAME_MAP = {
   "observation.images.wrist": "observation.images.left_wrist_0_rgb"
 } as const;
 
-type LoginDeviceType = "mobile" | "desktop";
+type LoginDeviceType = "browser" | "mobile" | "desktop";
 type LoginOptions = {
   replaceExistingDevice?: boolean;
 };
@@ -112,12 +97,23 @@ function getDeviceId(): string {
 }
 
 function getDeviceType(): LoginDeviceType {
+  if (typeof window !== "undefined") {
+    if (
+      window.robotcloudDesktop?.isDesktop ||
+      window.location.protocol === "tauri:" ||
+      window.location.hostname === "tauri.localhost" ||
+      (window.location.protocol === "app:" && window.location.hostname === "local")
+    ) {
+      return "desktop";
+    }
+    return "browser";
+  }
   if (typeof navigator === "undefined") {
     return "desktop";
   }
   return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(navigator.userAgent)
     ? "mobile"
-    : "desktop";
+    : "browser";
 }
 
 function getLoginDeviceContext(): { deviceId: string; deviceType: LoginDeviceType } {
@@ -131,6 +127,21 @@ interface ApiResponse<T> {
   code: number;
   message?: string;
   data: T;
+}
+
+let apiBaseOverride: string | null = null;
+
+export function setRobotCloudApiBaseUrl(apiBaseUrl: string | null | undefined) {
+  const normalized = apiBaseUrl?.trim().replace(/\/$/, "");
+  apiBaseOverride = normalized || null;
+}
+
+export function resetRobotCloudApiBaseUrl() {
+  apiBaseOverride = null;
+}
+
+export function getRobotCloudApiBaseUrl() {
+  return apiBaseOverride ?? CONFIGURED_API_BASE;
 }
 
 type BackendDataset = {
@@ -156,6 +167,9 @@ type BackendAgent = {
   gpu_total: number;
   gpu_free: number;
   gpu_busy: number;
+  gpu_slot_total?: number;
+  gpu_slot_free?: number;
+  gpu_slot_busy?: number;
   status: string;
   version: string;
   public_base_url: string;
@@ -196,6 +210,7 @@ type BackendDatasetUploadComplete = {
 type BackendTrainingTask = {
   task_id: number;
   dataset_id: number;
+  job_name?: string;
   model_type: string;
   status: string;
   progress: number;
@@ -205,6 +220,7 @@ type BackendTrainingTask = {
 type BackendInferenceTask = {
   task_id: number;
   model_id: number;
+  model_type?: string | null;
   dataset_id?: number | null;
   status: string;
   progress?: number;
@@ -411,6 +427,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = useAuthStore.getState().token;
   const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
   const headers = new Headers(init?.headers ?? {});
+  const apiBase = getRobotCloudApiBaseUrl();
 
   if (!isFormData && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -419,11 +436,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const url = `${API_BASE}${path}`;
-  const response = await fetch(url, {
-    ...init,
-    headers
-  });
+  const url = `${apiBase}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers
+    });
+  } catch (error) {
+    const message = error instanceof Error && error.message ? error.message : "network request failed";
+    throw new Error(`Cannot reach RobotCloud API at ${apiBase}: ${message}`);
+  }
 
   if (!response.ok) {
     const raw = await readResponseText(response);
@@ -849,6 +872,9 @@ function mapAgent(item: BackendAgent): GpuAgent {
     gpuTotal: item.gpu_total,
     gpuFree: item.gpu_free,
     gpuBusy: item.gpu_busy,
+    gpuSlotTotal: item.gpu_slot_total ?? item.gpu_total,
+    gpuSlotFree: item.gpu_slot_free ?? item.gpu_free,
+    gpuSlotBusy: item.gpu_slot_busy ?? item.gpu_busy,
     status: item.status,
     version: item.version,
     publicBaseUrl: item.public_base_url,
@@ -1138,6 +1164,7 @@ export const robotCloudApi = {
     return data.items.map((task) => ({
       id: task.task_id,
       datasetId: task.dataset_id,
+      jobName: task.job_name ?? "",
       model: task.model_type,
       status: task.status,
       progress: Math.round(task.progress * 100),
@@ -1153,6 +1180,10 @@ export const robotCloudApi = {
       model_type: config.model,
       params
     };
+    const jobName = config.jobName?.trim();
+    if (jobName) {
+      Object.assign(payload, { job_name: jobName });
+    }
     return request<{ task_id: number; status: string }>("/training/create", {
       method: "POST",
       body: JSON.stringify(payload)
@@ -1164,6 +1195,7 @@ export const robotCloudApi = {
       id: task.task_id,
       datasetId: task.dataset_id ?? null,
       modelId: task.model_id,
+      modelType: task.model_type ?? undefined,
       status: task.status,
       progress: task.progress,
       serverHost: task.server_host ?? undefined,

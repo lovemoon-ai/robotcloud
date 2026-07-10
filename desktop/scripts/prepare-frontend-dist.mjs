@@ -8,6 +8,10 @@ const repoRoot = path.resolve(desktopRoot, "..");
 const frontendRoot = path.join(repoRoot, "frontend");
 const frontendOut = path.join(frontendRoot, "out");
 const desktopDist = path.join(desktopRoot, "src-tauri", "frontend-dist");
+const desktopApiBaseUrl =
+  process.env.ROBOTCLOUD_DESKTOP_API_BASE_URL || "https://robotcloud.conductor-ai.top/api/v1";
+const desktopWebBaseUrl =
+  process.env.ROBOTCLOUD_DESKTOP_WEB_BASE_URL || "https://robotcloud.conductor-ai.top";
 
 function commandName(command) {
   return process.platform === "win32" ? `${command}.cmd` : command;
@@ -51,38 +55,29 @@ if (!fs.existsSync(path.join(frontendRoot, "node_modules", "next"))) {
 }
 
 run(process.execPath, [path.join(frontendRoot, "scripts", "build-web-export.mjs")], frontendRoot, {
-  ROBOTCLOUD_FRONTEND_BASE_PATH: ""
+  NEXT_PUBLIC_API_BASE_URL: desktopApiBaseUrl,
+  NEXT_PUBLIC_ROBOTCLOUD_WEB_BASE_URL: desktopWebBaseUrl,
+  PUBLIC_API_BASE_URL: desktopApiBaseUrl,
+  PUBLIC_WEB_BASE_URL: desktopWebBaseUrl,
+  ROBOTCLOUD_API_BASE_URL: desktopApiBaseUrl,
+  ROBOTCLOUD_FRONTEND_BASE_PATH: "",
+  ROBOTCLOUD_WEB_BASE_URL: desktopWebBaseUrl
 });
 
 fs.rmSync(desktopDist, { recursive: true, force: true });
 fs.mkdirSync(desktopDist, { recursive: true });
 
-for (const entry of [
-  "_next",
-  "so101",
-  "icons",
-  "favicon.ico",
-  "icon.png",
-  "manifest.webmanifest",
-  "sw.js",
-  "404.html",
-  "404"
-]) {
-  const source = path.join(frontendOut, entry);
-  if (!fs.existsSync(source)) {
-    continue;
-  }
-  fs.cpSync(source, path.join(desktopDist, entry), {
-    recursive: true,
-    force: true,
-    verbatimSymlinks: true
-  });
-}
+fs.cpSync(frontendOut, desktopDist, {
+  recursive: true,
+  force: true,
+  verbatimSymlinks: true
+});
 
 const so101Entry = path.join(desktopDist, "so101", "index.html");
+const dashboardEntry = path.join(desktopDist, "dashboard", "index.html");
 const nextAssets = path.join(desktopDist, "_next");
-if (!fs.existsSync(so101Entry) || !fs.existsSync(nextAssets)) {
-  throw new Error("Desktop frontend export is missing so101/index.html or _next assets.");
+if (!fs.existsSync(so101Entry) || !fs.existsSync(dashboardEntry) || !fs.existsSync(nextAssets)) {
+  throw new Error("Desktop frontend export is missing required app pages or _next assets.");
 }
 
-console.log(`Prepared local SO101 frontend at ${desktopDist}`);
+console.log(`Prepared local desktop frontend at ${desktopDist}`);

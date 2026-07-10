@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { robotCloudApi } from "@/api/client";
+import { resetRobotCloudApiBaseUrl, robotCloudApi } from "@/api/client";
 import { writePreparedDatasetUpload } from "@/desktop/preparedDatasetUpload";
-import { isLocalDesktopFrontend, navigateToCloudPath } from "@/desktop/navigation";
+import { navigateToCloudPath, shouldUseLocalDesktopNavigation } from "@/desktop/navigation";
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
 import {
   inferenceJobServerAddress,
-  selectCurrentActiveInferenceJob,
+  lerobotPolicyTypeFromModelType,
+  normalizeInferenceServerAddress,
   selectCurrentRunningInferenceJob
 } from "@/inference/jobs";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -35,6 +36,7 @@ type FormState = {
   episodeTimeS: number;
   minEpisodeTimeS: number;
   maxEpisodeTimeS: number;
+  stationaryHoldTimeS: number;
   resetTimeS: number;
   teleopTimeS: number;
   displayData: boolean;
@@ -42,6 +44,7 @@ type FormState = {
   task: string;
   inferServerAddress: string;
   inferPolicyType: string;
+  inferPolicyDevice: string;
   inferPretrainedNameOrPath: string;
   inferActionsPerChunk: string;
   inferChunkSizeThreshold: string;
@@ -53,6 +56,9 @@ type SO101ConnectionState = {
   form: FormState;
   cameraCount: number;
   raw: string | null;
+};
+type PendingDatasetUpload = DatasetPrepareUploadConfig & {
+  createdAt: number;
 };
 
 type TerminalPhase = "preparing" | "starting" | "ready" | "failed" | "closed";
@@ -85,11 +91,13 @@ type ConfigFieldId =
   | "episodeTimeS"
   | "minEpisodeTimeS"
   | "maxEpisodeTimeS"
+  | "stationaryHoldTimeS"
   | "resetTimeS"
   | "teleopTimeS"
   | "task"
   | "inferServerAddress"
   | "inferPolicyType"
+  | "inferPolicyDevice"
   | "inferPretrainedNameOrPath"
   | "inferActionsPerChunk"
   | "inferChunkSizeThreshold"
@@ -112,12 +120,6 @@ type TerminalStoreSnapshot = {
   runtimeProgress: RuntimeProgressEvent | null;
   runtimeProgressLog: string[];
 };
-type UploadReview = {
-  datasetRepoId: string;
-  datasetRoot: string;
-  stats: DatasetUploadInspection;
-  issues: string[];
-};
 type ActionId =
   | "info"
   | "find-port"
@@ -133,6 +135,8 @@ type ActionId =
 type ShellDialect = "posix" | "powershell";
 
 const CONNECTION_STORAGE_KEY = "robotcloud-so101-connection";
+const DATASET_UPLOAD_PENDING_STORAGE_KEY = "robotcloud:so101-upload-pending";
+const DATASET_UPLOAD_PENDING_TTL_MS = 6 * 60 * 60 * 1000;
 const CONNECTION_STORAGE_VERSION = 5;
 const DEFAULT_CAMERA_COUNT = 2;
 const DEFAULT_MAX_RELATIVE_TARGET = 5;
@@ -143,6 +147,8 @@ const MAX_CAMERAS = 3;
 const MIN_UPLOAD_EPISODES = 1;
 const MIN_UPLOAD_DURATION_SECONDS = 1;
 const CLEAR_CURRENT_TERMINAL_INPUT = "\x01\x0b";
+const RUNTIME_UPDATE_COMMAND = "robotcloud-runtime-update";
+const PREPARE_UPLOAD_COMMAND = "robotcloud-prepare-upload";
 const numericTextInputProps = {
   type: "text",
   inputMode: "numeric"
@@ -187,6 +193,7 @@ const initialForm: FormState = {
   episodeTimeS: 10,
   minEpisodeTimeS: 2,
   maxEpisodeTimeS: 60,
+  stationaryHoldTimeS: 2,
   resetTimeS: 2,
   teleopTimeS: 5,
   displayData: true,
@@ -194,6 +201,7 @@ const initialForm: FormState = {
   task: "",
   inferServerAddress: "h20.conductor-ai.top:5161",
   inferPolicyType: "pi05",
+  inferPolicyDevice: "cuda",
   inferPretrainedNameOrPath: "backend/storage/train_runs/task_14/checkpoints/last/pretrained_model",
   inferActionsPerChunk: "50",
   inferChunkSizeThreshold: "0.5",
@@ -226,11 +234,13 @@ const configFieldIds = new Set<string>([
   "episodeTimeS",
   "minEpisodeTimeS",
   "maxEpisodeTimeS",
+  "stationaryHoldTimeS",
   "resetTimeS",
   "teleopTimeS",
   "task",
   "inferServerAddress",
   "inferPolicyType",
+  "inferPolicyDevice",
   "inferPretrainedNameOrPath",
   "inferActionsPerChunk",
   "inferChunkSizeThreshold",
@@ -263,11 +273,13 @@ const configFieldByLabel: Record<string, ConfigFieldId> = {
   "Episode seconds": "episodeTimeS",
   "Min episode seconds": "minEpisodeTimeS",
   "Max episode seconds": "maxEpisodeTimeS",
+  "Stationary action seconds": "stationaryHoldTimeS",
   "Reset seconds": "resetTimeS",
   "Teleop seconds": "teleopTimeS",
   "Task label": "task",
   "Server address": "inferServerAddress",
   "Policy type": "inferPolicyType",
+  "Policy device": "inferPolicyDevice",
   "Pretrained name or path": "inferPretrainedNameOrPath",
   "Actions per chunk": "inferActionsPerChunk",
   "Chunk size threshold": "inferChunkSizeThreshold",
@@ -308,6 +320,15 @@ export function shellArg(value: string, dialect: ShellDialect = "posix") {
     return `'${value.replace(/'/g, "''")}'`;
   }
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function encodeUploadCommandPayload(config: DatasetPrepareUploadConfig) {
+  return encodeURIComponent(JSON.stringify(config));
+}
+
+export function buildPrepareUploadCommand(config: DatasetPrepareUploadConfig, status: DesktopStatus | null) {
+  const dialect = shellDialect(status);
+  return `${PREPARE_UPLOAD_COMMAND} ${shellArg(encodeUploadCommandPayload(config), dialect)}`;
 }
 
 function cameraRef(value: string) {
@@ -358,6 +379,15 @@ function requireValue(value: string, label: string, field = configFieldForLabel(
     throw new Error(`先配置 ${label}`);
   }
   return trimmed;
+}
+
+function requireInferenceServerAddress(value: string, label: string, field = configFieldForLabel(label)) {
+  const normalized = normalizeInferenceServerAddress(requireValue(value, label, field));
+  if (!normalized) {
+    if (field) throw new ConfigValidationError(label, field);
+    throw new Error(`先配置 ${label}`);
+  }
+  return normalized;
 }
 
 function requireNumber(
@@ -426,26 +456,6 @@ export function resolvedDatasetRoot(form: FormState, status: DesktopStatus | nul
 
 function finiteNumber(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value);
-}
-
-function formatBytes(value: number) {
-  if (!Number.isFinite(value) || value <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let cursor = value;
-  let unitIndex = 0;
-  while (cursor >= 1024 && unitIndex < units.length - 1) {
-    cursor /= 1024;
-    unitIndex += 1;
-  }
-  return `${cursor >= 10 || unitIndex === 0 ? cursor.toFixed(0) : cursor.toFixed(1)} ${units[unitIndex]}`;
-}
-
-function formatDuration(seconds: number | null | undefined) {
-  if (!finiteNumber(seconds)) return "Unknown";
-  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = Math.round(seconds % 60).toString().padStart(2, "0");
-  return `${minutes}:${remainingSeconds}`;
 }
 
 function versionText(value: string | null | undefined) {
@@ -584,13 +594,18 @@ export function parseConnectionSettings(raw: string | null) {
       episodeTimeS: toFiniteNumber(parsed.episodeTimeS, initialForm.episodeTimeS),
       minEpisodeTimeS: toFiniteNumber(parsed.minEpisodeTimeS, initialForm.minEpisodeTimeS),
       maxEpisodeTimeS: toFiniteNumber(parsed.maxEpisodeTimeS, initialForm.maxEpisodeTimeS),
+      stationaryHoldTimeS: toFiniteNumber(parsed.stationaryHoldTimeS, initialForm.stationaryHoldTimeS),
       resetTimeS: toFiniteNumber(parsed.resetTimeS, initialForm.resetTimeS),
       teleopTimeS: toFiniteNumber(parsed.teleopTimeS, initialForm.teleopTimeS),
       displayData: toBoolean(parsed.displayData, initialForm.displayData),
       useLerobotRecorder: toBoolean(parsed.useLerobotRecorder, initialForm.useLerobotRecorder),
       task: typeof parsed.task === "string" ? parsed.task : initialForm.task,
-      inferServerAddress: typeof parsed.inferServerAddress === "string" ? parsed.inferServerAddress : initialForm.inferServerAddress,
+      inferServerAddress:
+        typeof parsed.inferServerAddress === "string"
+          ? normalizeInferenceServerAddress(parsed.inferServerAddress)
+          : initialForm.inferServerAddress,
       inferPolicyType: typeof parsed.inferPolicyType === "string" ? parsed.inferPolicyType : initialForm.inferPolicyType,
+      inferPolicyDevice: typeof parsed.inferPolicyDevice === "string" ? parsed.inferPolicyDevice : initialForm.inferPolicyDevice,
       inferPretrainedNameOrPath: typeof parsed.inferPretrainedNameOrPath === "string" ? parsed.inferPretrainedNameOrPath : initialForm.inferPretrainedNameOrPath,
       inferActionsPerChunk: typeof parsed.inferActionsPerChunk === "string" ? parsed.inferActionsPerChunk : initialForm.inferActionsPerChunk,
       inferChunkSizeThreshold: typeof parsed.inferChunkSizeThreshold === "string" ? parsed.inferChunkSizeThreshold : initialForm.inferChunkSizeThreshold,
@@ -620,13 +635,15 @@ export function serializeConnectionSettings(form: FormState, cameraCount: number
     episodeTimeS: form.episodeTimeS,
     minEpisodeTimeS: form.minEpisodeTimeS,
     maxEpisodeTimeS: form.maxEpisodeTimeS,
+    stationaryHoldTimeS: form.stationaryHoldTimeS,
     resetTimeS: form.resetTimeS,
     teleopTimeS: form.teleopTimeS,
     displayData: form.displayData,
     useLerobotRecorder: form.useLerobotRecorder,
     task: form.task,
-    inferServerAddress: form.inferServerAddress,
+    inferServerAddress: normalizeInferenceServerAddress(form.inferServerAddress),
     inferPolicyType: form.inferPolicyType,
+    inferPolicyDevice: form.inferPolicyDevice,
     inferPretrainedNameOrPath: form.inferPretrainedNameOrPath,
     inferActionsPerChunk: form.inferActionsPerChunk,
     inferChunkSizeThreshold: form.inferChunkSizeThreshold,
@@ -670,6 +687,55 @@ function writeDesktopConnectionSettings(raw: string) {
   window.robotcloudDesktop?.so101.setSettings?.(raw).catch(() => undefined);
 }
 
+function parsePendingDatasetUpload(raw: string | null): PendingDatasetUpload | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingDatasetUpload>;
+    if (
+      typeof parsed.datasetRoot !== "string" ||
+      typeof parsed.datasetRepoId !== "string" ||
+      typeof parsed.createdAt !== "number" ||
+      !Number.isFinite(parsed.createdAt)
+    ) {
+      return null;
+    }
+    const ageMs = Date.now() - parsed.createdAt;
+    if (ageMs < 0 || ageMs > DATASET_UPLOAD_PENDING_TTL_MS) {
+      return null;
+    }
+    return {
+      datasetRoot: parsed.datasetRoot,
+      datasetRepoId: parsed.datasetRepoId,
+      task: typeof parsed.task === "string" ? parsed.task : undefined,
+      createdAt: parsed.createdAt
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readPendingDatasetUpload(): PendingDatasetUpload | null {
+  if (typeof window === "undefined" || typeof sessionStorage === "undefined") return null;
+  const pending = parsePendingDatasetUpload(sessionStorage.getItem(DATASET_UPLOAD_PENDING_STORAGE_KEY));
+  if (!pending) {
+    sessionStorage.removeItem(DATASET_UPLOAD_PENDING_STORAGE_KEY);
+  }
+  return pending;
+}
+
+function writePendingDatasetUpload(config: DatasetPrepareUploadConfig): void {
+  if (typeof sessionStorage === "undefined") return;
+  sessionStorage.setItem(DATASET_UPLOAD_PENDING_STORAGE_KEY, JSON.stringify({
+    ...config,
+    createdAt: Date.now()
+  }));
+}
+
+function clearPendingDatasetUpload(): void {
+  if (typeof sessionStorage === "undefined") return;
+  sessionStorage.removeItem(DATASET_UPLOAD_PENDING_STORAGE_KEY);
+}
+
 function cameraConfigValue(form: FormState, cameraCount: number, required = false) {
   const entries = form.cameras
     .slice(0, cameraCount)
@@ -708,6 +774,7 @@ function alignFormWithRunningInferenceJob(form: FormState, job: InferenceJob): F
   return {
     ...form,
     inferServerAddress: serverAddress,
+    inferPolicyType: job.modelType ? lerobotPolicyTypeFromModelType(job.modelType) : form.inferPolicyType,
     inferPretrainedNameOrPath: job.checkpointPath
   };
 }
@@ -819,9 +886,10 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
 
       if (!form.useLerobotRecorder) {
         // RobotCloud auto recorder (robotcloud_auto_record.py). Mirrors the Rust
-        // `record-auto` action: min/max episode time instead of episode/reset seconds.
+        // `record-auto` action: min/max/stationary episode time instead of episode/reset seconds.
         const minEpisodeTimeS = requireNumber(form.minEpisodeTimeS, "Min episode seconds", { min: Number.MIN_VALUE });
         const maxEpisodeTimeS = requireNumber(form.maxEpisodeTimeS, "Max episode seconds", { min: Number.MIN_VALUE });
+        const stationaryHoldTimeS = requireNumber(form.stationaryHoldTimeS, "Stationary action seconds", { min: Number.MIN_VALUE });
         const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
         if (!cameraArg) throw new Error("先配置 Head camera");
         const parts = [
@@ -843,6 +911,7 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
           "--dataset.rgb_encoder.vcodec=h264",
           `--min_episode_time_s=${minEpisodeTimeS}`,
           `--max_episode_time_s=${maxEpisodeTimeS}`,
+          `--stationary_hold_time_s=${stationaryHoldTimeS}`,
           `--display_data=${form.displayData ? "true" : "false"}`
         ];
         if (datasetRoot) parts.splice(9, 0, `--dataset.root=${quote(datasetRoot)}`);
@@ -883,13 +952,14 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
       if (!cameraArg) throw new Error("先配置 Head camera");
       return [
         lerobotCommand(status, "lerobot-robot-client"),
-        `--server_address=${quote(requireValue(form.inferServerAddress, "Server address"))}`,
+        `--server_address=${quote(requireInferenceServerAddress(form.inferServerAddress, "Server address"))}`,
         "--robot.type=so101_follower",
         `--robot.port=${quote(followerPort())}`,
         `--robot.id=${quote(robotId())}`,
         cameraArg,
         `--task=${quote(requireValue(form.task, "Task label"))}`,
         `--policy_type=${quote(requireValue(form.inferPolicyType, "Policy type"))}`,
+        `--policy_device=${quote(requireValue(form.inferPolicyDevice, "Policy device"))}`,
         `--pretrained_name_or_path=${quote(requireValue(form.inferPretrainedNameOrPath, "Pretrained name or path"))}`,
         `--actions_per_chunk=${requireNumericText(form.inferActionsPerChunk, "Actions per chunk", { integer: true, min: 1 })}`,
         `--chunk_size_threshold=${requireNumericText(form.inferChunkSizeThreshold, "Chunk size threshold", { min: 0 })}`,
@@ -905,9 +975,13 @@ export const so101TestExports = {
   parseConnectionSettings,
   serializeConnectionSettings,
   removeCameraAtIndex,
+  alignFormWithRunningInferenceJob,
   resolvedDatasetRoot,
   buildActionCommand,
+  buildPrepareUploadCommand,
   CLEAR_CURRENT_TERMINAL_INPUT,
+  RUNTIME_UPDATE_COMMAND,
+  PREPARE_UPLOAD_COMMAND,
   datasetUploadValidationIssues,
   shellArg,
   resetPersistentTerminalForTest
@@ -1269,7 +1343,7 @@ export function SO101Client() {
     () =>
       locale === "zh"
         ? {
-            recorderModeLabel: "使用 LeRobot 原版录制工具（不勾选则用 RobotCloud 自动录制，姿势静止 3 秒自动切分下一条）",
+            recorderModeLabel: "使用 LeRobot 原版录制工具（不勾选则用 RobotCloud 自动录制，动作静止达到设定时间后自动切分下一条）",
             versionTitle: "版本",
             builtInLerobot: "内置 LeRobot",
             appVersion: "应用版本",
@@ -1280,7 +1354,7 @@ export function SO101Client() {
           }
         : {
             recorderModeLabel:
-              "Use the original LeRobot recorder (unchecked uses RobotCloud auto recording and starts the next episode after the pose stays still for 3 seconds)",
+              "Use the original LeRobot recorder (unchecked uses RobotCloud auto recording and starts the next episode after the action stays still for the configured time)",
             versionTitle: "Version",
             builtInLerobot: "Built-in LeRobot",
             appVersion: "App version",
@@ -1297,16 +1371,17 @@ export function SO101Client() {
   const [connectionLoaded, setConnectionLoaded] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(true);
   const [selectedAction, setSelectedAction] = useState<ActionId | null>(null);
-  const [uploadPreparing, setUploadPreparing] = useState(false);
+  const [uploadPreparing, setUploadPreparing] = useState(() => Boolean(readPendingDatasetUpload()));
   const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [actionConfigError, setActionConfigError] = useState<ActionConfigError | null>(null);
   const [highlightedField, setHighlightedField] = useState<ConfigFieldId | null>(null);
-  const [uploadReview, setUploadReview] = useState<UploadReview | null>(null);
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [terminalState, setTerminalState] = useState<TerminalStoreSnapshot>(() => persistentTerminalSnapshot());
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
   const configInputRefs = useRef<Partial<Record<ConfigFieldId, HTMLInputElement | null>>>({});
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runtimeUpdateProgressOffRef = useRef<(() => void) | null>(null);
+  const uploadCommandPendingRef = useRef(uploadPreparing);
   const [portChecks, setPortChecks] = useState<Record<PortKey, CheckState>>({
     followerPort: idleCheck,
     leaderPort: idleCheck
@@ -1390,10 +1465,10 @@ export function SO101Client() {
 
   useEffect(() => {
     if (!token) {
-      if (isLocalDesktopFrontend()) {
-        navigateToCloudPath("/login?next=%2Fso101");
-      } else {
+      if (shouldUseLocalDesktopNavigation()) {
         router.replace("/login?next=%2Fso101");
+      } else {
+        navigateToCloudPath("/login?next=%2Fso101");
       }
     }
   }, [router, token]);
@@ -1409,6 +1484,8 @@ export function SO101Client() {
       if (highlightTimerRef.current) {
         clearTimeout(highlightTimerRef.current);
       }
+      runtimeUpdateProgressOffRef.current?.();
+      runtimeUpdateProgressOffRef.current = null;
     };
   }, []);
 
@@ -1528,6 +1605,7 @@ export function SO101Client() {
   };
 
   const refreshStatus = useCallback(async () => {
+    resetRobotCloudApiBaseUrl();
     if (!window.robotcloudDesktop) {
       setStatus({
         isDesktop: false,
@@ -1551,37 +1629,67 @@ export function SO101Client() {
       });
       return;
     }
-    setStatus(await window.robotcloudDesktop.status());
+    const desktopStatus = await window.robotcloudDesktop.status();
+    setStatus(desktopStatus);
+  }, []);
+
+  const writeTerminalCommand = useCallback(async (
+    command: string,
+    options: { focusTerminal?: boolean; submit?: boolean } = {}
+  ) => {
+    const sessionId = persistentTerminalStore.sessionId;
+    if (!sessionId || !window.robotcloudDesktop) {
+      throw new Error("Terminal is not ready.");
+    }
+    const suffix = options.submit ? "\r" : "";
+    await window.robotcloudDesktop.terminal.write(sessionId, `${CLEAR_CURRENT_TERMINAL_INPUT}${command}${suffix}`);
+    if (options.focusTerminal) {
+      persistentTerminalStore.term?.focus();
+    }
   }, []);
 
   const updateRuntime = useCallback(async () => {
-    const runtimeBridge = window.robotcloudDesktop?.runtime;
+    const bridge = window.robotcloudDesktop;
+    const runtimeBridge = bridge?.runtime;
     if (!runtimeBridge?.update) return;
 
+    runtimeUpdateProgressOffRef.current?.();
+    runtimeUpdateProgressOffRef.current = null;
     setRuntimeUpdating(true);
-    setPersistentTerminalState("preparing", null);
-    setPersistentRuntimeProgress({
-      phase: "updating",
-      message: "Updating LeRobot runtime...",
-      command: null,
-      stream: null,
-      output: null,
-      current: null,
-      total: null
-    });
-    const offProgress = runtimeBridge.onProgress?.((event) => setPersistentRuntimeProgress(event));
-    try {
-      await runtimeBridge.update();
-      await refreshStatus();
-      setPersistentRuntimeProgress(null);
-      setPersistentTerminalState("ready", null);
-    } catch (error) {
-      setPersistentTerminalState("failed", messageFromUnknownError(error));
-    } finally {
+    setPersistentTerminalError(null);
+    let offProgress: (() => void) | null = null;
+    const finishUpdating = () => {
       offProgress?.();
+      if (runtimeUpdateProgressOffRef.current === offProgress) {
+        runtimeUpdateProgressOffRef.current = null;
+      }
       setRuntimeUpdating(false);
+    };
+    offProgress = runtimeBridge.onProgress?.((event) => {
+      if (event.phase === "ready") {
+        refreshStatus()
+          .catch((error) => setPersistentTerminalError(messageFromUnknownError(error)))
+          .finally(finishUpdating);
+      } else if (event.phase === "failed") {
+        setPersistentTerminalError(event.message);
+        finishUpdating();
+      }
+    }) ?? null;
+    runtimeUpdateProgressOffRef.current = offProgress;
+    try {
+      await writeTerminalCommand(RUNTIME_UPDATE_COMMAND, { focusTerminal: true, submit: true });
+      if (!offProgress) {
+        setRuntimeUpdating(false);
+      }
+    } catch (error) {
+      offProgress?.();
+      if (runtimeUpdateProgressOffRef.current === offProgress) {
+        runtimeUpdateProgressOffRef.current = null;
+      }
+      setRuntimeUpdating(false);
+      setPersistentTerminalError(messageFromUnknownError(error));
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, writeTerminalCommand]);
 
   useEffect(() => {
     if (!token || !bridgeReady) return;
@@ -1601,16 +1709,64 @@ export function SO101Client() {
     };
   }, [bridgeReady, refreshStatus, terminalContainerEl, token]);
 
-  const writeTerminalCommand = useCallback(async (command: string, options: { focusTerminal?: boolean } = {}) => {
-    const sessionId = persistentTerminalStore.sessionId;
-    if (!sessionId || !window.robotcloudDesktop) {
-      throw new Error("Terminal is not ready.");
+  const finishPreparedDatasetUpload = useCallback((prepared: PreparedDatasetUpload) => {
+    if (!uploadCommandPendingRef.current && !readPendingDatasetUpload()) return;
+    uploadCommandPendingRef.current = false;
+    clearPendingDatasetUpload();
+    setUploadPreparing(false);
+    setPersistentTerminalError(null);
+    void writePreparedDatasetUpload(prepared)
+      .then(() => {
+        if (shouldUseLocalDesktopNavigation()) {
+          router.push("/datasets?source=so101");
+        } else {
+          navigateToCloudPath("/datasets?source=so101");
+        }
+      })
+      .catch((error) => {
+        setPersistentTerminalError(messageFromUnknownError(error));
+      });
+  }, [router]);
+
+  useEffect(() => {
+    if (!token || !bridgeReady) return;
+    const datasetBridge = window.robotcloudDesktop?.dataset;
+    const onPreparedUpload = datasetBridge?.onPreparedUpload;
+    const onPrepareUploadError = datasetBridge?.onPrepareUploadError;
+    if (!onPreparedUpload || !onPrepareUploadError) return;
+
+    let cancelled = false;
+    const pendingUpload = readPendingDatasetUpload();
+    uploadCommandPendingRef.current = Boolean(pendingUpload);
+    if (pendingUpload) {
+      setUploadPreparing(true);
+      datasetBridge.getPreparedUpload?.()
+        .then((prepared) => {
+          if (!cancelled && prepared) {
+            finishPreparedDatasetUpload(prepared);
+          }
+        })
+        .catch(() => undefined);
     }
-    await window.robotcloudDesktop.terminal.write(sessionId, `${CLEAR_CURRENT_TERMINAL_INPUT}${command}`);
-    if (options.focusTerminal) {
-      persistentTerminalStore.term?.focus();
-    }
-  }, []);
+
+    const offPreparedUpload = onPreparedUpload((prepared) => {
+      finishPreparedDatasetUpload(prepared);
+    });
+
+    const offPrepareUploadError = onPrepareUploadError((event) => {
+      if (!uploadCommandPendingRef.current && !readPendingDatasetUpload()) return;
+      uploadCommandPendingRef.current = false;
+      clearPendingDatasetUpload();
+      setUploadPreparing(false);
+      setPersistentTerminalError(event.message);
+    });
+
+    return () => {
+      cancelled = true;
+      offPreparedUpload();
+      offPrepareUploadError();
+    };
+  }, [bridgeReady, finishPreparedDatasetUpload, token]);
 
   const writeActionCommand = useCallback(async (
     action: ActionId,
@@ -1631,16 +1787,18 @@ export function SO101Client() {
   }, [cameraCount, form, status, writeTerminalCommand]);
 
   const resolveInferActionForm = async () => {
-    const jobs = await robotCloudApi.fetchInferenceJobs();
-    const runningJob = selectCurrentRunningInferenceJob(jobs);
-    if (!runningJob) {
-      const activeJob = selectCurrentActiveInferenceJob(jobs);
-      if (activeJob) {
-        throw new Error(`Inference job #${activeJob.id} 当前是 ${activeJob.status}，请等 Inference 页面显示 running 和服务地址后再运行 Infer。`);
+    resetRobotCloudApiBaseUrl();
+    try {
+      const jobs = await robotCloudApi.fetchInferenceJobs();
+      const runningJob = selectCurrentRunningInferenceJob(jobs);
+      if (runningJob && inferenceJobServerAddress(runningJob) && runningJob.checkpointPath) {
+        return alignFormWithRunningInferenceJob(form, runningJob);
       }
-      throw new Error("没有 active inference job。请先在 Inference 页面启动推理任务，并等待状态变为 running。");
+    } catch {
+      // The Infer card can run from manually entered values; job lookup only
+      // auto-fills fields when a complete running inference job is available.
     }
-    return alignFormWithRunningInferenceJob(form, runningJob);
+    return form;
   };
 
   const runAction = async (action: ActionId) => {
@@ -1675,61 +1833,34 @@ export function SO101Client() {
     };
   }, [selectedAction, terminalPhase, writeActionCommand]);
 
-  const requestDatasetUploadReview = async () => {
+  const startDatasetUploadFromTerminal = async () => {
     try {
-      if (!window.robotcloudDesktop?.dataset) {
+      const datasetBridge = window.robotcloudDesktop?.dataset;
+      if (!datasetBridge) {
         throw new Error("Desktop dataset bridge is not ready.");
       }
-      const inspectUpload = window.robotcloudDesktop.dataset.inspectUpload;
-      if (!inspectUpload) {
-        throw new Error("Desktop app needs to be updated before upload validation is available.");
+      if (!datasetBridge.onPreparedUpload || !datasetBridge.onPrepareUploadError) {
+        throw new Error("Desktop app needs to be updated before terminal upload is available.");
       }
       const datasetRepoId = requireValue(form.datasetRepoId, "Dataset repo id");
       const datasetRoot = requireValue(resolvedDatasetRoot(form, status), "Dataset root");
       setUploadPreparing(true);
       setActionConfigError(null);
       setPersistentTerminalError(null);
-      const stats = await inspectUpload({
+      const uploadConfig = {
         datasetRoot,
-        datasetRepoId
-      });
-      setUploadReview({
         datasetRepoId,
-        datasetRoot: stats.datasetRoot || datasetRoot,
-        stats,
-        issues: datasetUploadValidationIssues(stats)
-      });
-    } catch (error) {
-      setPersistentTerminalError(messageFromUnknownError(error));
-    } finally {
-      setUploadPreparing(false);
-    }
-  };
-
-  const prepareDatasetUpload = async () => {
-    if (!uploadReview || uploadReview.issues.length > 0) return;
-    try {
-      if (!window.robotcloudDesktop?.dataset) {
-        throw new Error("Desktop dataset bridge is not ready.");
-      }
-      setUploadPreparing(true);
-      setPersistentTerminalError(null);
-      const prepared = await window.robotcloudDesktop.dataset.prepareUpload({
-        datasetRoot: uploadReview.datasetRoot,
-        datasetRepoId: uploadReview.datasetRepoId,
         task: form.task
-      });
-      await writePreparedDatasetUpload(prepared);
-      if (isLocalDesktopFrontend()) {
-        navigateToCloudPath("/datasets?source=so101");
-      } else {
-        router.push("/datasets?source=so101");
-      }
+      };
+      writePendingDatasetUpload(uploadConfig);
+      uploadCommandPendingRef.current = true;
+      await writeTerminalCommand(buildPrepareUploadCommand(uploadConfig, status), { focusTerminal: true, submit: true });
     } catch (error) {
+      uploadCommandPendingRef.current = false;
+      clearPendingDatasetUpload();
+      setUploadPreparing(false);
       if (handleConfigValidationError(error)) return;
       setPersistentTerminalError(messageFromUnknownError(error));
-    } finally {
-      setUploadPreparing(false);
     }
   };
 
@@ -2221,6 +2352,18 @@ export function SO101Client() {
                     />
                     {renderConfigFieldError("maxEpisodeTimeS")}
                   </label>
+                  <label className="text-sm">
+                    <span className="text-muted">Stationary action seconds</span>
+                    <input
+                      ref={registerConfigInput("stationaryHoldTimeS")}
+                      {...numericTextInputProps}
+                      value={form.stationaryHoldTimeS}
+                      onChange={(event) => updateField("stationaryHoldTimeS", Number(event.target.value))}
+                      className={configInputClass("stationaryHoldTimeS")}
+                      {...configInputA11y("stationaryHoldTimeS")}
+                    />
+                    {renderConfigFieldError("stationaryHoldTimeS")}
+                  </label>
                 </>
               )}
               <label className="text-sm md:col-span-2">
@@ -2251,11 +2394,11 @@ export function SO101Client() {
             <div className="mt-4 flex justify-end">
               <button
                 type="button"
-                onClick={requestDatasetUploadReview}
-                disabled={uploadPreparing}
+                onClick={startDatasetUploadFromTerminal}
+                disabled={uploadPreparing || terminalPhase !== "ready"}
                 className="rounded-md gradient-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {uploadPreparing ? "Checking..." : "Upload"}
+                {uploadPreparing ? "Packaging..." : "Upload"}
               </button>
             </div>
           </section>
@@ -2284,6 +2427,17 @@ export function SO101Client() {
                   {...configInputA11y("inferPolicyType")}
                 />
                 {renderConfigFieldError("inferPolicyType")}
+              </label>
+              <label className="text-sm">
+                <span className="text-muted">policy_device</span>
+                <input
+                  ref={registerConfigInput("inferPolicyDevice")}
+                  value={form.inferPolicyDevice}
+                  onChange={(event) => updateField("inferPolicyDevice", event.target.value)}
+                  className={configInputClass("inferPolicyDevice")}
+                  {...configInputA11y("inferPolicyDevice")}
+                />
+                {renderConfigFieldError("inferPolicyDevice")}
               </label>
               <label className="text-sm">
                 <span className="text-muted">pretrained_name_or_path</span>
@@ -2337,90 +2491,6 @@ export function SO101Client() {
           </section>
       </section>
 
-      {uploadReview ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="upload-review-title"
-            className="w-full max-w-lg rounded-lg border border-theme bg-card p-5 shadow-xl"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 id="upload-review-title" className="text-lg font-semibold accent-text">Recording upload review</h2>
-                <p className="mt-1 break-all text-xs text-muted">{uploadReview.datasetRoot}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setUploadReview(null)}
-                aria-label="Close upload review"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-theme text-lg font-semibold accent-text transition hover:accent-bg"
-              >
-                ×
-              </button>
-            </div>
-
-            <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">Episodes</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{uploadReview.stats.episodeCount}</dd>
-              </div>
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">Duration</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{formatDuration(uploadReview.stats.durationSeconds)}</dd>
-              </div>
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">Files</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{uploadReview.stats.fileCount}</dd>
-              </div>
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">Size</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{formatBytes(uploadReview.stats.totalBytes)}</dd>
-              </div>
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">Frames</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{finiteNumber(uploadReview.stats.totalFrames) ? uploadReview.stats.totalFrames : "Unknown"}</dd>
-              </div>
-              <div className="rounded-md border border-theme bg-surface p-3">
-                <dt className="text-xs uppercase tracking-wide text-muted">FPS</dt>
-                <dd className="mt-1 text-xl font-semibold text-body">{finiteNumber(uploadReview.stats.fps) ? uploadReview.stats.fps : "Unknown"}</dd>
-              </div>
-            </dl>
-
-            {uploadReview.issues.length ? (
-              <div className="mt-4 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
-                <p className="font-semibold">Upload blocked</p>
-                <ul className="mt-2 list-disc space-y-1 pl-5">
-                  {uploadReview.issues.map((issue) => (
-                    <li key={issue}>{issue}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p className="mt-4 rounded-md border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-300">Ready to upload.</p>
-            )}
-
-            <div className="mt-5 flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setUploadReview(null)}
-                className="rounded-md border border-theme px-4 py-2 text-sm font-semibold accent-text transition hover:accent-bg"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={prepareDatasetUpload}
-                disabled={uploadPreparing || uploadReview.issues.length > 0}
-                className="rounded-md gradient-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {uploadPreparing ? "Packaging..." : "Upload"}
-              </button>
-            </div>
-          </section>
-        </div>
-      ) : null}
-
       <section className="grid gap-3 md:grid-cols-2">
         {runtimeStatusCards.map((card) => (
           <div key={card.key} className="rounded-lg border border-theme bg-card p-4">
@@ -2434,7 +2504,7 @@ export function SO101Client() {
                     aria-label={runtimeUpdating ? copy.updatingRuntime : copy.updateRuntime}
                     title={runtimeUpdating ? copy.updatingRuntime : copy.updateRuntime}
                     onClick={updateRuntime}
-                    disabled={runtimeUpdating}
+                    disabled={runtimeUpdating || terminalPhase !== "ready"}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-theme accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <RuntimeUpdateIcon className={`h-4 w-4 ${runtimeUpdating ? "animate-spin" : ""}`} />

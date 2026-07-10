@@ -29,7 +29,8 @@ const PI05_PRESETS = {
 } as const;
 
 const DEFAULT_TRAINING_VALUES: TrainingConfig = {
-  model: "ACT",
+  jobName: "",
+  model: "act",
   datasetId: "",
   learningRate: 0.001,
   steps: 5000,
@@ -151,6 +152,8 @@ function TrainPageContent() {
         title: "模型训练",
         subtitle: "配置训练参数，实时查看任务状态与进度。",
         formHeading: "创建训练任务",
+        jobNameLabel: "任务名称",
+        jobNamePlaceholder: "例如：pi05-grasp-v1",
         modelLabel: "模型模板",
         datasetLabel: "数据集 ID",
         datasetRequired: "请输入数据集 ID",
@@ -186,7 +189,7 @@ function TrainPageContent() {
         submitting: "创建中...",
         queueHeading: "训练任务队列",
         totalLabel: (count: number) => `共 ${count} 个任务`,
-        stats: (datasetId: string) => `数据集 ID：${datasetId}`,
+        stats: (datasetId: string, model: string) => `模型：${model} · 数据集 ID：${datasetId}`,
         statusLabel: {
           queued: "等待中",
           running: "训练中",
@@ -209,6 +212,8 @@ function TrainPageContent() {
         title: "Model Training",
         subtitle: "Configure training parameters and monitor progress in real time.",
         formHeading: "Create Training Job",
+        jobNameLabel: "Job Name",
+        jobNamePlaceholder: "e.g. pi05-grasp-v1",
         modelLabel: "Model Template",
         datasetLabel: "Dataset ID",
         datasetRequired: "Enter a dataset ID",
@@ -244,7 +249,7 @@ function TrainPageContent() {
         submitting: "Creating...",
         queueHeading: "Training Queue",
         totalLabel: (count: number) => `Total ${count} task${count === 1 ? "" : "s"}`,
-        stats: (datasetId: string) => `Dataset: ${datasetId}`,
+        stats: (datasetId: string, model: string) => `Model: ${model} · Dataset: ${datasetId}`,
         statusLabel: {
           queued: "Queued",
           running: "Training",
@@ -475,6 +480,15 @@ function TrainPageContent() {
         <form onSubmit={onSubmit} className="space-y-3 rounded-xl border border-theme bg-card p-5">
           <h2 className="text-xl font-semibold accent-text">{copy.formHeading}</h2>
           <label className="block text-sm">
+            <span className="text-muted">{copy.jobNameLabel}</span>
+            <input
+              {...form.register("jobName")}
+              maxLength={128}
+              placeholder={copy.jobNamePlaceholder}
+              className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2"
+            />
+          </label>
+          <label className="block text-sm">
             <span className="text-muted">{copy.modelLabel}</span>
             <select {...form.register("model")} className="mt-1 w-full rounded-md border border-theme bg-surface/50 p-2">
               {LEROBOT_TRAINING_MODELS.map((model) => (
@@ -645,10 +659,11 @@ function TrainPageContent() {
             <div className="grid max-h-[24rem] gap-2 overflow-y-auto pr-2">
               {data?.map((job) => {
                 const displayStatus = getDisplayStatus(job);
+                const title = job.jobName || `Task #${job.id}`;
                 return (
-                  <Card key={job.id} title={`${job.model} · ${copy.statusLabel[displayStatus]}`} compact>
+                  <Card key={job.id} title={`${title} · ${copy.statusLabel[displayStatus]}`} compact>
                     <div className="flex items-center justify-between text-[10px] text-muted">
-                      <span>{copy.stats(job.datasetId.toString())}</span>
+                      <span>{copy.stats(job.datasetId.toString(), job.model)}</span>
                       <div className="flex items-center gap-3">
                         {job.status === "queued" ? (
                           <span>{copy.logsLabel(false)}</span>

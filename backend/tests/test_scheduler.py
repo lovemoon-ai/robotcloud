@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 from robotcloud_backend.api.models import Dataset, InferenceTask, TrainTask, User, WorkerNode
@@ -341,6 +342,71 @@ def test_scheduler_routes_agent_stored_dataset_to_storage_node(
     )
     assert status_resp.status_code == 200
     assert status_resp.json()["data"]["assigned_node"] == "gpu-node-2"
+
+
+@override_settings(AUTH_NO_LIMITS_WHITELIST_PHONES="13800000008")
+def test_scheduler_overcommits_training_slots_on_single_gpu_node(
+    client: APIClient, sms_gateway: InMemorySmsGateway, monkeypatch
+) -> None:
+    token, dataset_id = _setup_user_and_dataset(client, sms_gateway, "13800000008")
+
+    register_resp = client.post(
+        "/api/v1/internal/agent/register",
+        {
+            "node_name": "h20",
+            "ip": "10.0.0.14",
+            "gpu_total": 1,
+            "gpu_slot_total": 4,
+            "version": "1.0.0",
+            "port": 5000,
+        },
+        format="json",
+    )
+    assert register_resp.status_code == 200
+    agent_token = register_resp.json()["data"]["token"]
+
+    task_ids: list[int] = []
+    for _ in range(4):
+        create_resp = client.post(
+            "/api/v1/training/create",
+            {"dataset_id": dataset_id, "model_type": "yolov8", "params": {"epochs": 2}},
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        assert create_resp.status_code == 200
+        task_ids.append(create_resp.json()["data"]["task_id"])
+
+    dispatched_task_ids: list[int] = []
+
+    def _fake_dispatch(url, json=None, headers=None, timeout=None, **kwargs):
+        assert url == "http://10.0.0.14:5000/api/v1/agent/run"
+        assert headers and headers.get("X-Agent-Token") == agent_token
+        assert json["gpus"] == [0]
+        dispatched_task_ids.append(json["task_id"])
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"status": "accepted"}
+
+        return _Response()
+
+    monkeypatch.setattr("robotcloud_backend.api.scheduler.requests.post", _fake_dispatch)
+
+    scheduler = SchedulerService(loop_interval=0.01)
+    assigned = scheduler.perform_scheduling_cycle()
+
+    assert assigned == 4
+    assert set(dispatched_task_ids) == set(task_ids)
+    assert TrainTask.objects.filter(id__in=task_ids, status="running").count() == 4
+    node = WorkerNode.objects.get(node_name="h20")
+    assert node.gpu_total == 1
+    assert node.gpu_busy == 1
+    assert node.gpu_slot_total == 4
+    assert node.gpu_slot_busy == 4
+    assert node.gpu_slot_free == 0
 
 
 def test_scheduler_applies_safe_pi05_defaults(
