@@ -132,6 +132,7 @@ type ActionId =
   | "record"
   | "infer";
 type ConfigSectionId = "connection" | "cameras" | "record" | "infer";
+type RightPanelCardId = "commands" | ConfigSectionId | "status";
 type ActionDefinition = {
   id: ActionId;
   label: string;
@@ -234,6 +235,14 @@ const actionGroups: Array<{ label: ActionDefinition["group"]; actionIds: ActionI
   { label: "Operate", actionIds: ["teleop", "save-pose"] },
   { label: "Data", actionIds: ["record"] },
   { label: "Inference", actionIds: ["infer"] }
+];
+const rightPanelNavItems: Array<{ id: RightPanelCardId; label: string }> = [
+  { id: "commands", label: "Commands" },
+  { id: "connection", label: "Connection" },
+  { id: "cameras", label: "Cameras" },
+  { id: "record", label: "Record" },
+  { id: "infer", label: "Infer" },
+  { id: "status", label: "Status" }
 ];
 const actionDefinitionById = Object.fromEntries(
   actionDefinitions.map((action) => [action.id, action])
@@ -1381,6 +1390,7 @@ export function SO101Client() {
   const [connectionLoaded, setConnectionLoaded] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(true);
   const [selectedAction, setSelectedAction] = useState<ActionId | null>(null);
+  const [activeRightPanelCard, setActiveRightPanelCard] = useState<RightPanelCardId>("commands");
   const [uploadPreparing, setUploadPreparing] = useState(() => Boolean(readPendingDatasetUpload()));
   const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [actionConfigError, setActionConfigError] = useState<ActionConfigError | null>(null);
@@ -1389,6 +1399,7 @@ export function SO101Client() {
   const [terminalState, setTerminalState] = useState<TerminalStoreSnapshot>(() => persistentTerminalSnapshot());
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
   const configInputRefs = useRef<Partial<Record<ConfigFieldId, HTMLInputElement | null>>>({});
+  const rightPanelCardRefs = useRef<Partial<Record<RightPanelCardId, HTMLElement | null>>>({});
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runtimeUpdateProgressOffRef = useRef<(() => void) | null>(null);
   const uploadCommandPendingRef = useRef(uploadPreparing);
@@ -1413,6 +1424,13 @@ export function SO101Client() {
   const bridgeReady = desktopBridgeAvailability === "available";
   const registerConfigInput = (field: ConfigFieldId) => (node: HTMLInputElement | null) => {
     configInputRefs.current[field] = node;
+  };
+  const registerRightPanelCard = (card: RightPanelCardId) => (node: HTMLElement | null) => {
+    rightPanelCardRefs.current[card] = node;
+  };
+  const jumpToRightPanelCard = (card: RightPanelCardId) => {
+    setActiveRightPanelCard(card);
+    rightPanelCardRefs.current[card]?.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
   };
   const fieldErrorId = (field: ConfigFieldId) => `so101-${field}-error`;
   const configInputClass = (field: ConfigFieldId, backgroundClass = "bg-surface") => {
@@ -1995,7 +2013,13 @@ export function SO101Client() {
     const selectedClass = selectedConfigSections.has(section)
       ? "border-primary/70 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]"
       : "border-theme";
-    return `rounded-lg border ${selectedClass} bg-card p-4`;
+    return `scroll-mt-14 rounded-lg border ${selectedClass} bg-card p-4`;
+  };
+  const rightPanelNavButtonClass = (card: RightPanelCardId) => {
+    const activeClass = activeRightPanelCard === card
+      ? "border-primary text-body"
+      : "border-transparent text-muted hover:border-theme hover:text-body";
+    return `min-w-max flex-1 border-b-2 px-2 pb-2 pt-1 text-center text-xs font-semibold transition ${activeClass}`;
   };
   const actionButtonClass = (actionId: ActionId) => {
     const selectedClass = selectedAction === actionId ? "border-primary bg-surface" : "border-theme bg-card";
@@ -2007,7 +2031,7 @@ export function SO101Client() {
   };
 
   const renderConnectionCard = () => (
-    <section className={configCardClass("connection")}>
+    <section ref={registerRightPanelCard("connection")} className={configCardClass("connection")}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-semibold accent-text">Connection</h2>
       </div>
@@ -2065,7 +2089,7 @@ export function SO101Client() {
   );
 
   const renderCamerasCard = () => (
-    <section className={configCardClass("cameras")}>
+    <section ref={registerRightPanelCard("cameras")} className={configCardClass("cameras")}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-semibold accent-text">Cameras</h2>
       </div>
@@ -2188,7 +2212,7 @@ export function SO101Client() {
   );
 
   const renderRecordCard = () => (
-    <section className={configCardClass("record")}>
+    <section ref={registerRightPanelCard("record")} className={configCardClass("record")}>
       <h2 className="text-lg font-semibold accent-text">Record</h2>
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
         <label className="text-sm">
@@ -2331,7 +2355,7 @@ export function SO101Client() {
   );
 
   const renderInferCard = () => (
-    <section className={configCardClass("infer")}>
+    <section ref={registerRightPanelCard("infer")} className={configCardClass("infer")}>
       <h2 className="text-lg font-semibold accent-text">Infer</h2>
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
         <label className="text-sm md:col-span-2 xl:col-span-1 2xl:col-span-2">
@@ -2506,7 +2530,23 @@ export function SO101Client() {
       </section>
 
       <aside className="space-y-4 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto xl:pr-1">
-        <section className="rounded-lg border border-theme bg-card p-4">
+        <nav aria-label="SO101 panel sections" className="sticky top-0 z-20 border-b border-theme bg-surface/95 backdrop-blur">
+          <div className="flex w-full overflow-x-auto">
+            {rightPanelNavItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => jumpToRightPanelCard(item.id)}
+                aria-label={`Show ${item.label} card`}
+                className={rightPanelNavButtonClass(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </nav>
+
+        <section ref={registerRightPanelCard("commands")} className="scroll-mt-14 rounded-lg border border-theme bg-card p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <h2 className="text-lg font-semibold accent-text">Quick Commands</h2>
@@ -2567,7 +2607,7 @@ export function SO101Client() {
         {renderRecordCard()}
         {renderInferCard()}
 
-        <section className="grid gap-3">
+        <section ref={registerRightPanelCard("status")} className="grid scroll-mt-14 gap-3">
           {runtimeStatusCards.map((card) => (
             <div key={card.key} className="rounded-lg border border-theme bg-card p-4">
               <div className="flex items-center justify-between gap-3">

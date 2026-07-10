@@ -760,7 +760,7 @@ describe("SO101 terminal session", () => {
       expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
 
-    const camerasSection = view.getByText("Cameras").closest("section");
+    const camerasSection = view.getByRole("heading", { name: "Cameras" }).closest("section");
     expect(camerasSection).not.toBeNull();
 
     const cameraLabel = within(camerasSection as HTMLElement).getByText("Camera 0");
@@ -779,6 +779,39 @@ describe("SO101 terminal session", () => {
     expect(cameraSectionControls.getByLabelText("Width")).toHaveValue("640");
     expect(cameraSectionControls.getByLabelText("Height")).toHaveValue("480");
     expect(cameraSectionControls.getByLabelText("FPS")).toHaveValue("30");
+  });
+
+  it("uses a right panel line navigation to jump between cards", async () => {
+    installDesktopBridge();
+    const scrollIntoView = jest.fn();
+    const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView
+    });
+
+    try {
+      const view = render(<SO101Client />);
+
+      await waitFor(() => {
+        expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+      });
+
+      const panelNav = view.getByRole("navigation", { name: "SO101 panel sections" });
+      expect(within(panelNav).getByRole("button", { name: "Show Commands card" })).toBeInTheDocument();
+      fireEvent.click(within(panelNav).getByRole("button", { name: "Show Cameras card" }));
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start", inline: "nearest" });
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+          configurable: true,
+          value: originalScrollIntoView
+        });
+      } else {
+        Reflect.deleteProperty(window.HTMLElement.prototype, "scrollIntoView");
+      }
+    }
   });
 
   it("writes an infer action command from the current cards", async () => {
