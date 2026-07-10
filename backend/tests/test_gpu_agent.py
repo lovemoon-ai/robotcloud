@@ -282,8 +282,8 @@ def test_training_job_builds_command_with_dataset_arg(tmp_path: Path) -> None:
     assert command[-2:] == ["--foo", "bar"]
 
 
-def test_inference_job_runtime_limit_is_twenty_minutes() -> None:
-    assert InferenceJob.MAX_RUNTIME_SECONDS == 20 * 60
+def test_inference_job_runtime_limit_is_ten_minutes() -> None:
+    assert InferenceJob.MAX_RUNTIME_SECONDS == 10 * 60
 
 
 def test_agent_reports_inference_public_host(tmp_path: Path) -> None:
