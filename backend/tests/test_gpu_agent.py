@@ -186,6 +186,50 @@ def test_agent_resumable_dataset_upload(tmp_path: Path) -> None:
     assert backend_session.complete_payload["file_size"] == len(payload)
 
 
+def test_agent_imports_dataset_upload_from_local_path(tmp_path: Path) -> None:
+    source_path = tmp_path / "source" / "episodes.zip"
+    source_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(source_path, "w") as archive:
+        archive.writestr("data/episode_000001.parquet", b"episode")
+        archive.writestr("meta/info.json", b"{}")
+
+    backend_session = _BackendSession()
+    agent = Agent(_agent_config(tmp_path), session=backend_session)  # type: ignore[arg-type]
+    agent.agent_token = "agent-token"
+    server = AgentHTTPServer(("127.0.0.1", 0), AgentHTTPRequestHandler, agent)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    headers = {
+        "Authorization": "Bearer upload-token",
+        "X-Dataset-Id": "42",
+        "X-Filename": "episodes.zip",
+    }
+
+    try:
+        response = requests.post(
+            f"{base_url}/api/v1/agent/datasets/upload/import",
+            json={"source_path": str(source_path), "file_size": source_path.stat().st_size},
+            headers=headers,
+            timeout=5,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert backend_session.complete_payload is not None
+    assert backend_session.complete_payload["storage_path"] == str(source_path.resolve())
+    assert backend_session.complete_payload["content_md5"] == hashlib.md5(source_path.read_bytes()).hexdigest()
+    assert backend_session.complete_payload["file_size"] == source_path.stat().st_size
+    metadata = backend_session.complete_payload["metadata"]
+    assert metadata["file_name"] == "episodes.zip"
+    assert metadata["total_files"] == 2
+    assert metadata["by_type"]["metadata"] == 1
+
+
 def test_agent_cancel_resumable_dataset_upload_removes_upload_dir(tmp_path: Path) -> None:
     agent = Agent(_agent_config(tmp_path), session=_BackendSession())  # type: ignore[arg-type]
     agent.agent_token = "agent-token"

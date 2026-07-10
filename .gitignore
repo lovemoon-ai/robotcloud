@@ -36,3 +36,6 @@ desktop/src-tauri/resources/runtime/macos/
 
 # gpu-agent logs
 logs/
+
+# local manual upload token
+scripts/manual-upload/.token

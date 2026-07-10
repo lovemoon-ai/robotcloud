@@ -35,6 +35,9 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/v1/agent/datasets/upload":
             self._handle_direct_dataset_upload(parsed)
             return
+        if parsed.path == "/api/v1/agent/datasets/upload/import":
+            self._handle_resumable_dataset_upload_import(parsed)
+            return
         if parsed.path == "/api/v1/agent/datasets/upload/complete":
             self._handle_resumable_dataset_upload_complete(parsed)
             return
@@ -223,6 +226,7 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             "/api/v1/agent/datasets/upload",
             "/api/v1/agent/datasets/upload/status",
             "/api/v1/agent/datasets/upload/chunk",
+            "/api/v1/agent/datasets/upload/import",
             "/api/v1/agent/datasets/upload/complete",
         }
         if parsed.path not in upload_paths:
@@ -560,6 +564,69 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             },
             include_cors=True,
         )
+
+    def _handle_resumable_dataset_upload_import(self, parsed) -> None:
+        context = self._read_direct_upload_context(parsed)
+        if context is None:
+            return
+        dataset_id = int(context["dataset_id"])
+        upload_token = str(context["upload_token"])
+
+        try:
+            content_length = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        raw = self.rfile.read(content_length) if content_length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self._send_json(400, {"detail": "Invalid JSON payload"}, include_cors=True)
+            return
+        source_path_raw = payload.get("source_path")
+        if not isinstance(source_path_raw, str) or not source_path_raw.strip():
+            self._send_json(400, {"detail": "source_path required"}, include_cors=True)
+            return
+
+        try:
+            source_path = Path(source_path_raw).expanduser().resolve()
+            stat_result = source_path.stat()
+        except OSError as exc:
+            self._send_json(400, {"detail": f"Dataset file not found: {exc}"}, include_cors=True)
+            return
+        if not source_path.is_file():
+            self._send_json(400, {"detail": "source_path must be a file"}, include_cors=True)
+            return
+
+        expected_size_raw = payload.get("file_size") or self.headers.get("X-File-Size")
+        try:
+            expected_size = int(expected_size_raw) if expected_size_raw is not None else 0
+        except (TypeError, ValueError):
+            expected_size = 0
+        actual_size = stat_result.st_size
+        if expected_size > 0 and actual_size != expected_size:
+            self._send_json(
+                409,
+                {"detail": "Upload size mismatch", "uploaded_bytes": actual_size, "total_size": expected_size},
+                include_cors=True,
+            )
+            return
+
+        try:
+            content_md5 = self.server.agent.md5_of_file(source_path)
+            metadata = self.server.agent.inspect_dataset_file(source_path)
+            metadata["file_name"] = str(context["filename"])
+            completed = self.server.agent.complete_dataset_upload(
+                dataset_id=dataset_id,
+                upload_token=upload_token,
+                storage_path=str(source_path),
+                content_md5=content_md5,
+                file_size=actual_size,
+                metadata=metadata,
+            )
+        except (OSError, ValueError) as exc:
+            self._send_json(400, {"detail": str(exc)}, include_cors=True)
+            return
+        self._send_json(200, {"status": "ok", **completed}, include_cors=True)
 
     def _handle_resumable_dataset_upload_complete(self, parsed) -> None:
         context = self._read_direct_upload_context(parsed)
