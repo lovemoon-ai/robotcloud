@@ -462,6 +462,19 @@ function versionText(value: string | null | undefined) {
   return value && value.trim() ? value : "unknown";
 }
 
+// Render an ISO build timestamp in Beijing time (UTC+8, no DST).
+function buildTimeText(value: string | null | undefined) {
+  if (!value || !value.trim()) return "unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const beijing = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const formatted =
+    `${beijing.getUTCFullYear()}-${pad(beijing.getUTCMonth() + 1)}-${pad(beijing.getUTCDate())} ` +
+    `${pad(beijing.getUTCHours())}:${pad(beijing.getUTCMinutes())}:${pad(beijing.getUTCSeconds())}`;
+  return `${formatted} (北京时间)`;
+}
+
 export function datasetUploadValidationIssues(stats: DatasetUploadInspection) {
   const issues: string[] = [];
   if (stats.fileCount < 1) {
@@ -1970,7 +1983,7 @@ export function SO101Client() {
       { label: copy.builtInLerobot, value: versionText(status?.lerobotVersion) },
       { label: copy.appVersion, value: versionText(status?.appVersion) },
       { label: copy.buildCommit, value: versionText(status?.appBuildCommit) },
-      { label: copy.buildTime, value: versionText(status?.appBuildTime) }
+      { label: copy.buildTime, value: buildTimeText(status?.appBuildTime) }
     ],
     [copy.appVersion, copy.buildCommit, copy.buildTime, copy.builtInLerobot, status]
   );

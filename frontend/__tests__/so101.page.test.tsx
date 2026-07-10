@@ -431,7 +431,7 @@ describe("SO101 terminal session", () => {
       expect(buildInfo).toHaveTextContent("Build commit");
       expect(buildInfo).toHaveTextContent("abc1234");
       expect(buildInfo).toHaveTextContent("Build time");
-      expect(buildInfo).toHaveTextContent("2026-07-08T01:02:03Z");
+      expect(buildInfo).toHaveTextContent("2026-07-08 09:02:03 (北京时间)");
     });
     expect(view.queryByText(/Action commands/i)).not.toBeInTheDocument();
     expect(view.queryByText(/Cloud API/i)).not.toBeInTheDocument();
