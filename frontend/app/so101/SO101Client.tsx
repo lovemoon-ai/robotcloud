@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { robotCloudApi, setRobotCloudApiBaseUrl } from "@/api/client";
+import { resetRobotCloudApiBaseUrl, robotCloudApi } from "@/api/client";
 import { writePreparedDatasetUpload } from "@/desktop/preparedDatasetUpload";
 import { navigateToCloudPath, shouldUseLocalDesktopNavigation } from "@/desktop/navigation";
 import { useDesktopBridgeAvailability } from "@/hooks/useDesktopBridgeAvailable";
@@ -1587,8 +1587,8 @@ export function SO101Client() {
   };
 
   const refreshStatus = useCallback(async () => {
+    resetRobotCloudApiBaseUrl();
     if (!window.robotcloudDesktop) {
-      setRobotCloudApiBaseUrl(null);
       setStatus({
         isDesktop: false,
         platform: "browser",
@@ -1612,7 +1612,6 @@ export function SO101Client() {
       return;
     }
     const desktopStatus = await window.robotcloudDesktop.status();
-    setRobotCloudApiBaseUrl(desktopStatus.apiBaseUrl);
     setStatus(desktopStatus);
   }, []);
 
@@ -1770,9 +1769,7 @@ export function SO101Client() {
   }, [cameraCount, form, status, writeTerminalCommand]);
 
   const resolveInferActionForm = async () => {
-    if (status?.apiBaseUrl) {
-      setRobotCloudApiBaseUrl(status.apiBaseUrl);
-    }
+    resetRobotCloudApiBaseUrl();
     try {
       const jobs = await robotCloudApi.fetchInferenceJobs();
       const runningJob = selectCurrentRunningInferenceJob(jobs);

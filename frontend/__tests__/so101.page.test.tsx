@@ -1,6 +1,6 @@
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { SO101Client, so101TestExports } from "../app/so101/SO101Client";
-import { robotCloudApi } from "@/api/client";
+import { getRobotCloudApiBaseUrl, resetRobotCloudApiBaseUrl, robotCloudApi } from "@/api/client";
 import { inferenceJobServerAddress } from "@/inference/jobs";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
@@ -49,6 +49,7 @@ afterEach(() => {
   jest.restoreAllMocks();
   so101TestExports.resetPersistentTerminalForTest();
   resetDesktopBridgeAvailabilityForTest();
+  resetRobotCloudApiBaseUrl();
   useAuthStore.getState().reset();
   useLocaleStore.getState().reset();
   window.localStorage.clear();
@@ -336,6 +337,17 @@ describe("SO101 terminal session", () => {
     expect(secondRender.getByTestId("mock-xterm")).toHaveTextContent("first output");
     expect(terminalStart).toHaveBeenCalledTimes(1);
     expect(terminalStop).not.toHaveBeenCalled();
+  });
+
+  it("does not replace the cloud API base with the desktop local status URL", async () => {
+    installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+    expect(getRobotCloudApiBaseUrl()).not.toBe(desktopStatus.apiBaseUrl);
   });
 
   it("reconnects to the existing desktop terminal session after a full frontend reload", async () => {
