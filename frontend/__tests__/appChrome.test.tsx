@@ -251,14 +251,15 @@ describe("AppChrome shell", () => {
     expect(window.localStorage.getItem("robotcloud-sidebar-collapsed")).toBe("0");
   });
 
-  it("hides SO101 Desktop navigation in a browser", () => {
+  it("hides Robot navigation in a browser", () => {
     render(
       <AppChrome>
         <div>placeholder</div>
       </AppChrome>
     );
 
-    expect(screen.queryAllByRole("link", { name: "SO101 Desktop" })).toHaveLength(0);
+    expect(screen.queryAllByRole("link", { name: "Robot" })).toHaveLength(0);
+    expect(screen.queryAllByRole("link", { name: "SO101" })).toHaveLength(0);
   });
 
   it("keeps Plans out of the primary navigation until Settings is active", () => {
@@ -384,7 +385,7 @@ describe("AppChrome shell", () => {
     expect(within(mobileNav).queryByRole("link", { name: "Training" })).not.toBeInTheDocument();
   });
 
-  it("shows SO101 Desktop navigation in RobotCloud Desktop", async () => {
+  it("shows Robot navigation in RobotCloud Desktop", async () => {
     window.robotcloudDesktop = {
       isDesktop: true,
       status: jest.fn().mockResolvedValue({
@@ -424,11 +425,58 @@ describe("AppChrome shell", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getAllByRole("link", { name: "SO101 Desktop" }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole("link", { name: "Robot" }).length).toBeGreaterThan(0);
     });
   });
 
-  it("keeps SO101 Desktop navigation after a successful Desktop detection", async () => {
+  it("shows SO101 as a secondary Robot item when Robot is active", async () => {
+    mockPathname = "/robot";
+    window.robotcloudDesktop = {
+      isDesktop: true,
+      status: jest.fn().mockResolvedValue({
+        isDesktop: true,
+        platform: "darwin",
+        appVersion: "test",
+        apiBaseUrl: "http://127.0.0.1:8000/api/v1",
+        webUrl: "http://127.0.0.1:3000/so101/",
+        runtimePath: null,
+        runtimeReady: false,
+        runtimeArchivePath: null,
+        runtimeArchiveReady: false,
+        scriptsDir: null,
+        scriptReady: false,
+        dataDir: ""
+      }),
+      so101: {
+        run: jest.fn(),
+        stop: jest.fn(),
+        onOutput: jest.fn(() => jest.fn()),
+        onExit: jest.fn(() => jest.fn())
+      },
+      terminal: {
+        start: jest.fn(),
+        write: jest.fn(),
+        resize: jest.fn(),
+        stop: jest.fn(),
+        onOutput: jest.fn(() => jest.fn()),
+        onExit: jest.fn(() => jest.fn())
+      }
+    } as unknown as DesktopBridge;
+
+    const { container } = render(
+      <AppChrome>
+        <div>placeholder</div>
+      </AppChrome>
+    );
+
+    const desktopNav = getDesktopNav(container);
+    await waitFor(() => {
+      expect(within(desktopNav).getByRole("link", { name: "Robot" })).toHaveAttribute("href", "/robot");
+      expect(within(desktopNav).getByRole("link", { name: "SO101" })).toHaveAttribute("href", "/so101");
+    });
+  });
+
+  it("keeps Robot navigation after a successful Desktop detection", async () => {
     jest.useFakeTimers();
     try {
       const status = jest.fn().mockResolvedValueOnce({
@@ -475,7 +523,7 @@ describe("AppChrome shell", () => {
         await Promise.resolve();
       });
 
-      expect(screen.getAllByRole("link", { name: "SO101 Desktop" }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole("link", { name: "Robot" }).length).toBeGreaterThan(0);
 
       await act(async () => {
         jest.advanceTimersByTime(2000);
@@ -483,7 +531,7 @@ describe("AppChrome shell", () => {
       });
 
       expect(status).toHaveBeenCalledTimes(1);
-      expect(screen.getAllByRole("link", { name: "SO101 Desktop" }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole("link", { name: "Robot" }).length).toBeGreaterThan(0);
     } finally {
       jest.useRealTimers();
     }

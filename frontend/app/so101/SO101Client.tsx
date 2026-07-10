@@ -2424,7 +2424,7 @@ export function SO101Client() {
       <main className="flex min-h-[calc(100vh-10rem)] items-center justify-center">
         <section className="w-full max-w-md rounded-lg border border-theme bg-card p-5 text-center">
           <p className="text-sm font-semibold accent-text">Login required</p>
-          <p className="mt-2 text-xs text-muted">Redirecting to login before starting SO101 Desktop.</p>
+          <p className="mt-2 text-xs text-muted">Redirecting to login before starting SO101.</p>
         </section>
       </main>
     );
@@ -2442,19 +2442,12 @@ export function SO101Client() {
   }
 
   return (
-    <main className="flex min-h-[calc(100vh-8rem)] flex-col gap-4">
+    <main className="flex min-h-[calc(100vh-7rem)] flex-col gap-3">
       <header className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-3xl font-bold text-body">SO101 Desktop Workbench</h1>
-        <button
-          type="button"
-          onClick={() => refreshStatus()}
-          className="rounded-md border border-theme px-3 py-2 text-sm font-semibold accent-text transition hover:accent-bg"
-        >
-          Refresh status
-        </button>
+        <h1 className="text-2xl font-bold text-body">SO101</h1>
       </header>
 
-      <section className="grid flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_25rem] 2xl:grid-cols-[minmax(0,1fr)_28rem]">
+      <section className="grid flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_25rem] 2xl:grid-cols-[minmax(0,1fr)_28rem]">
       <section className="flex min-h-[36rem] flex-col rounded-lg border border-theme bg-card p-4 xl:sticky xl:top-4 xl:h-[calc(100vh-9rem)] xl:min-h-0">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-xl font-semibold accent-text">Terminal</h2>

@@ -78,7 +78,7 @@ describe("SO101 page environment guard", () => {
     jest.useRealTimers();
   });
 
-  it("redirects unauthenticated users to login before starting SO101 Desktop", async () => {
+  it("redirects unauthenticated users to login before starting SO101", async () => {
     const { container } = render(<SO101Client />);
 
     expect(container).toHaveTextContent("Login required");
