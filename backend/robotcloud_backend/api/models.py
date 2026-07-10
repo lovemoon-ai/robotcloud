@@ -35,10 +35,12 @@ class User(models.Model):
 
 
 class UserSession(models.Model):
+    DEVICE_BROWSER = "browser"
     DEVICE_MOBILE = "mobile"
     DEVICE_DESKTOP = "desktop"
 
     DEVICE_TYPE_CHOICES = [
+        (DEVICE_BROWSER, "Browser"),
         (DEVICE_MOBILE, "Mobile"),
         (DEVICE_DESKTOP, "Desktop"),
     ]

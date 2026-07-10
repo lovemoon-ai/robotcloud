@@ -32,7 +32,7 @@ export const PI05_DEFAULT_RENAME_MAP = {
   "observation.images.side": "observation.images.left_wrist_0_rgb"
 } as const;
 
-type LoginDeviceType = "mobile" | "desktop";
+type LoginDeviceType = "browser" | "mobile" | "desktop";
 type LoginOptions = {
   replaceExistingDevice?: boolean;
 };
@@ -94,12 +94,23 @@ function getDeviceId(): string {
 }
 
 function getDeviceType(): LoginDeviceType {
+  if (typeof window !== "undefined") {
+    if (
+      window.robotcloudDesktop?.isDesktop ||
+      window.location.protocol === "tauri:" ||
+      window.location.hostname === "tauri.localhost" ||
+      (window.location.protocol === "app:" && window.location.hostname === "local")
+    ) {
+      return "desktop";
+    }
+    return "browser";
+  }
   if (typeof navigator === "undefined") {
     return "desktop";
   }
   return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(navigator.userAgent)
     ? "mobile"
-    : "desktop";
+    : "browser";
 }
 
 function getLoginDeviceContext(): { deviceId: string; deviceType: LoginDeviceType } {

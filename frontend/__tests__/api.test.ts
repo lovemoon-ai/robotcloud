@@ -125,6 +125,7 @@ describe("robotCloudApi", () => {
     resetRobotCloudApiBaseUrl();
     useAuthStore.getState().reset();
     localStorage.clear();
+    delete window.robotcloudDesktop;
     lastXhr = null;
     nextXhrResponseText = null;
     xhrQueue = [];
@@ -155,7 +156,7 @@ describe("robotCloudApi", () => {
     expect(init?.method).toBe("POST");
     expect(JSON.parse(init?.body as string)).toMatchObject({
       ...credentials,
-      device_type: "desktop",
+      device_type: "browser",
       replace_existing_device: false
     });
     expect(JSON.parse(init?.body as string).device_id).toEqual(expect.any(String));
@@ -165,6 +166,32 @@ describe("robotCloudApi", () => {
       phone: "123",
       role: "plus",
       expireAt: "2026-01-01T00:00:00Z"
+    });
+  });
+
+  it("loginWithPassword sends desktop device type inside desktop bridge", async () => {
+    window.robotcloudDesktop = {
+      isDesktop: true
+    } as unknown as NonNullable<typeof window.robotcloudDesktop>;
+    mockedFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          token: "abc",
+          user_id: 9,
+          phone: "123",
+          role: "plus",
+          expire_at: null
+        }
+      })
+    } as unknown as Response);
+
+    await robotCloudApi.loginWithPassword({ phone: "123", password: "pwd" });
+    const [, init] = mockedFetch.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      device_type: "desktop"
     });
   });
 
@@ -210,7 +237,7 @@ describe("robotCloudApi", () => {
     expect(body).toMatchObject({
       phone: "13800000001",
       code: "000000",
-      device_type: "desktop",
+      device_type: "browser",
       replace_existing_device: false
     });
     expect(body.device_id).toEqual(expect.any(String));

@@ -146,10 +146,12 @@ class RobotCloudService:
     def _normalize_device_type(self, device_type: Any) -> str:
         candidate = str(device_type or "").strip().lower()
         if not candidate:
-            return UserSession.DEVICE_DESKTOP
+            return UserSession.DEVICE_BROWSER
+        if candidate in {UserSession.DEVICE_BROWSER, "web", "browser"}:
+            return UserSession.DEVICE_BROWSER
         if candidate in {UserSession.DEVICE_MOBILE, "phone", "tablet"}:
             return UserSession.DEVICE_MOBILE
-        if candidate in {UserSession.DEVICE_DESKTOP, "pc", "web"}:
+        if candidate in {UserSession.DEVICE_DESKTOP, "pc", "desktop-app", "tauri"}:
             return UserSession.DEVICE_DESKTOP
         raise ValueError("Invalid device type")
 
