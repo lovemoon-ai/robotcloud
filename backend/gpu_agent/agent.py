@@ -1540,7 +1540,7 @@ class TrainingJob(threading.Thread):
 class InferenceJob(threading.Thread):
     """Start an async inference policy server."""
 
-    MAX_RUNTIME_SECONDS = 600
+    MAX_RUNTIME_SECONDS = 20 * 60
 
     def __init__(
         self,

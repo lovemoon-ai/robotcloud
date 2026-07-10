@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Tuple
 import pytest
 import requests
 
-from gpu_agent.agent import Agent, AgentHTTPRequestHandler, AgentHTTPServer, TrainingJob
+from gpu_agent.agent import Agent, AgentHTTPRequestHandler, AgentHTTPServer, InferenceJob, TrainingJob
 from gpu_agent.config import AgentConfig
 
 
@@ -230,6 +230,10 @@ def test_training_job_builds_command_with_dataset_arg(tmp_path: Path) -> None:
     assert any(tok == "--epochs=5" for tok in command)
     assert any(tok == f"--dataset={dataset_path}" for tok in command)
     assert command[-2:] == ["--foo", "bar"]
+
+
+def test_inference_job_runtime_limit_is_twenty_minutes() -> None:
+    assert InferenceJob.MAX_RUNTIME_SECONDS == 20 * 60
 
 
 def test_training_job_parses_progress_from_logs(tmp_path: Path) -> None:
