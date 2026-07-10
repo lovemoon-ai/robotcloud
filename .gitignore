@@ -3,6 +3,8 @@ __pycache__
 *.egg-info
 frontend/.next
 frontend/node_modules
+frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo
 *.swp
 *.swo
 .env
