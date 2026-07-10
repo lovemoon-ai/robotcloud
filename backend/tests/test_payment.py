@@ -3,6 +3,8 @@ from urllib.parse import urlencode
 from django.test import override_settings
 from rest_framework.test import APIClient
 
+from robotcloud_backend.payment.alipay import AlipayClient
+
 
 @override_settings(DEBUG=True)
 def test_payment_flow_and_upgrade_guardrails(client: APIClient, create_user_token, auth_header) -> None:
@@ -129,6 +131,34 @@ def test_wechat_not_supported(client: APIClient, create_user_token, auth_header)
     )
     assert create_resp.status_code == 400
     assert "alipay" in create_resp.json()["detail"].lower()
+
+
+def test_alipay_verify_notify_removes_signature_before_sdk_verify(monkeypatch) -> None:
+    seen = {}
+
+    class FakeAlipaySdk:
+        def verify(self, data, signature) -> bool:
+            seen["data"] = dict(data)
+            seen["signature"] = signature
+            data.pop("sign_type", None)
+            return signature == "valid-sign" and "sign" not in data
+
+    client = AlipayClient(app_id="app", private_key="private", public_key="public")
+    monkeypatch.setattr(client, "_get_sdk", lambda: FakeAlipaySdk())
+    payload = {
+        "out_trade_no": "payment-id",
+        "trade_status": "TRADE_SUCCESS",
+        "total_amount": "1000.00",
+        "sign": "valid-sign",
+        "sign_type": "RSA2",
+    }
+
+    assert client.verify_notify(payload) is True
+    assert seen["signature"] == "valid-sign"
+    assert "sign" not in seen["data"]
+    assert seen["data"]["sign_type"] == "RSA2"
+    assert payload["sign"] == "valid-sign"
+    assert payload["sign_type"] == "RSA2"
 
 
 def test_alipay_payment_flow(client: APIClient, create_user_token, auth_header) -> None:
