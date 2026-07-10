@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import secrets
 from datetime import timedelta
@@ -35,6 +36,7 @@ from ..sms import SmsGateway
 from ..payment.alipay import get_alipay
 
 
+logger = logging.getLogger("robotcloud.api.services")
 TOKEN_TIMEOUT_SECONDS = 7 * 24 * 60 * 60  # 7 days
 VERIFICATION_CODE_TIMEOUT_SECONDS = 5 * 60  # 5 minutes
 DEFAULT_DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS = 2 * 60 * 60  # 2 hours
@@ -807,11 +809,14 @@ class RobotCloudService:
         alipay = get_alipay()
         if alipay.is_configured():
             if not data.get("sign") or not alipay.verify_notify(data):
+                logger.warning("Rejected Alipay notify: invalid signature for out_trade_no=%s", out_trade_no)
                 return False
         elif not getattr(settings, "DEBUG", False):
+            logger.warning("Rejected Alipay notify: Alipay is not configured")
             return False
 
         if not out_trade_no:
+            logger.warning("Rejected Alipay notify: missing out_trade_no")
             return False
 
         if trade_status not in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
@@ -820,6 +825,7 @@ class RobotCloudService:
         try:
             payment = Payment.objects.get(payment_id=out_trade_no)
         except Payment.DoesNotExist:
+            logger.warning("Rejected Alipay notify: payment not found for out_trade_no=%s", out_trade_no)
             return False
 
         if payment.status == Payment.STATUS_SUCCEEDED:
@@ -832,6 +838,12 @@ class RobotCloudService:
             total_cents = 0
 
         if total_cents > 0 and total_cents != payment.amount_cents:
+            logger.warning(
+                "Rejected Alipay notify: amount mismatch for out_trade_no=%s expected=%s actual=%s",
+                out_trade_no,
+                payment.amount_cents,
+                total_cents,
+            )
             return False
 
         # Update payment status and auto-apply upgrade
