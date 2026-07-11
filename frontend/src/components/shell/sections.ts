@@ -21,10 +21,17 @@ type GetSectionsOptions = {
 const sectionsByLocale = {
   zh: [
     {
-      title: "SO101 Desktop",
-      description: "Local setup, calibration, teleoperation, recording, and terminal tools.",
-      href: "/so101",
-      desktopOnly: true
+      title: "Robot",
+      description: "本地机器人配置、操作、录制与终端工具。",
+      href: "/robot",
+      desktopOnly: true,
+      children: [
+        {
+          title: "SO101",
+          description: "配置、校准、遥操作、录制数据并运行本地 LeRobot 命令。",
+          href: "/so101"
+        }
+      ]
     },
     {
       title: "数据管理",
@@ -66,10 +73,17 @@ const sectionsByLocale = {
   ],
   en: [
     {
-      title: "SO101 Desktop",
-      description: "Set up, calibrate, teleoperate, record data, and run local LeRobot commands.",
-      href: "/so101",
-      desktopOnly: true
+      title: "Robot",
+      description: "Local robot setup, operation, recording, and terminal tools.",
+      href: "/robot",
+      desktopOnly: true,
+      children: [
+        {
+          title: "SO101",
+          description: "Set up, calibrate, teleoperate, record data, and run local LeRobot commands.",
+          href: "/so101"
+        }
+      ]
     },
     {
       title: "Datasets",

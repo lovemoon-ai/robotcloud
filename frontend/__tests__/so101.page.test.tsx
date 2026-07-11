@@ -79,7 +79,7 @@ describe("SO101 page environment guard", () => {
     jest.useRealTimers();
   });
 
-  it("redirects unauthenticated users to login before starting SO101 Desktop", async () => {
+  it("redirects unauthenticated users to login before starting SO101", async () => {
     const { container } = render(<SO101Client />);
 
     expect(container).toHaveTextContent("Login required");
@@ -772,12 +772,12 @@ describe("SO101 terminal session", () => {
       expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
 
-    const connectionSection = view.getByText("Connection").closest("section");
-    expect(connectionSection).not.toBeNull();
+    const camerasSection = view.getByRole("heading", { name: "Cameras" }).closest("section");
+    expect(camerasSection).not.toBeNull();
 
-    const cameraLabel = within(connectionSection as HTMLElement).getByText("Head camera");
-    expect(within(connectionSection as HTMLElement).getByText("Wrist camera")).toBeInTheDocument();
-    const addCameraButton = within(connectionSection as HTMLElement).getByRole("button", { name: "Add camera" });
+    const cameraLabel = within(camerasSection as HTMLElement).getByText("Head camera");
+    expect(within(camerasSection as HTMLElement).getByText("Wrist camera")).toBeInTheDocument();
+    const addCameraButton = within(camerasSection as HTMLElement).getByRole("button", { name: "Add camera" });
     const cameraCard = cameraLabel.closest(".rounded-md") as HTMLElement;
     const cameraControls = within(cameraCard);
 
@@ -791,6 +791,102 @@ describe("SO101 terminal session", () => {
     expect(cameraControls.getByLabelText("Width")).toHaveValue("640");
     expect(cameraControls.getByLabelText("Height")).toHaveValue("480");
     expect(cameraControls.getByLabelText("FPS")).toHaveValue("30");
+  });
+
+  it("uses a right panel line navigation to jump between cards", async () => {
+    installDesktopBridge();
+    const scrollIntoView = jest.fn();
+    const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView
+    });
+
+    try {
+      const view = render(<SO101Client />);
+
+      await waitFor(() => {
+        expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+      });
+
+      const panelNav = view.getByRole("navigation", { name: "SO101 panel sections" });
+      const commandsLine = within(panelNav).getByRole("button", { name: "Show Commands card" });
+      const camerasLine = within(panelNav).getByRole("button", { name: "Show Cameras card" });
+      expect(commandsLine).toBeInTheDocument();
+      expect(commandsLine.textContent).toBe("");
+      expect(camerasLine.textContent).toBe("");
+      fireEvent.click(camerasLine);
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start", inline: "nearest" });
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+          configurable: true,
+          value: originalScrollIntoView
+        });
+      } else {
+        Reflect.deleteProperty(window.HTMLElement.prototype, "scrollIntoView");
+      }
+    }
+  });
+
+  it("updates the right panel line navigation from page scroll", async () => {
+    installDesktopBridge();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    }) as typeof window.requestAnimationFrame;
+
+    try {
+      const view = render(<SO101Client />);
+
+      await waitFor(() => {
+        expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+      });
+
+      const rect = (top: number, height = 40) => ({
+        bottom: top + height,
+        height,
+        left: 0,
+        right: 320,
+        toJSON: () => ({}),
+        top,
+        width: 320,
+        x: 0,
+        y: top
+      });
+      const setRect = (element: Element | null, top: number, height?: number) => {
+        expect(element).not.toBeNull();
+        Object.defineProperty(element, "getBoundingClientRect", {
+          configurable: true,
+          value: () => rect(top, height)
+        });
+      };
+
+      const panelNav = view.getByRole("navigation", { name: "SO101 panel sections" });
+      const commandsLine = within(panelNav).getByRole("button", { name: "Show Commands card" }).querySelector("span");
+      const camerasLine = within(panelNav).getByRole("button", { name: "Show Cameras card" }).querySelector("span");
+
+      setRect(panelNav, 0, 32);
+      setRect(view.getByRole("heading", { name: "Quick Commands" }).closest("section"), -260);
+      setRect(view.getByRole("heading", { name: "Connection" }).closest("section"), -120);
+      setRect(view.getByRole("heading", { name: "Cameras" }).closest("section"), 20);
+      setRect(view.getByRole("heading", { name: "Record" }).closest("section"), 220);
+      setRect(view.getByRole("heading", { name: "Infer" }).closest("section"), 420);
+      setRect(view.getByText("Runtime").closest("section"), 620);
+
+      act(() => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+
+      await waitFor(() => {
+        expect(camerasLine).toHaveClass("h-1.5");
+      });
+      expect(commandsLine).toHaveClass("h-px");
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+    }
   });
 
   it("writes an infer action command from the current cards", async () => {
@@ -1072,6 +1168,50 @@ describe("SO101 terminal session", () => {
     expect(view.getAllByLabelText("Width")[0]).toHaveValue("640");
     expect(view.getAllByLabelText("Height")[0]).toHaveValue("480");
     expect(view.getAllByLabelText("FPS")[0]).toHaveValue("30");
+  });
+
+  it("shows check results inside the button before restoring the check label", async () => {
+    const { validateCamera } = installDesktopBridge();
+    validateCamera.mockResolvedValue({
+      ok: true,
+      message: "Camera is available: 0",
+      width: 640,
+      height: 480,
+      fps: 30
+    });
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    jest.useFakeTimers();
+    try {
+      const checkButton = view
+        .getAllByRole("button", { name: "Check" })
+        .find((button) => !button.hasAttribute("disabled"));
+      expect(checkButton).toBeDefined();
+
+      await act(async () => {
+        fireEvent.click(checkButton as HTMLElement);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(validateCamera).toHaveBeenCalledWith("0", 640, 480, 30);
+      expect(checkButton).toHaveAccessibleName("Check passed");
+      expect(checkButton).toHaveTextContent("✓");
+
+      act(() => {
+        jest.advanceTimersByTime(3000);
+      });
+
+      expect(checkButton).toHaveAccessibleName("Check");
+      expect(checkButton).toHaveTextContent("Check");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("fills blank camera dimensions from a successful camera check", async () => {

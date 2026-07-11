@@ -156,6 +156,7 @@ function RobotIcon({ active, className }: NavIconProps) {
 }
 
 const iconByHref: Record<string, ComponentType<NavIconProps>> = {
+  "/robot": RobotIcon,
   "/so101": RobotIcon,
   "/datasets": DatabaseIcon,
   "/train": TrainingIcon,
@@ -300,6 +301,7 @@ export function AppChrome({ children }: AppChromeProps) {
   const navItems = getSections(locale, { includeDesktopOnly: isDesktopBridgeAvailable });
   const mobileNavItems = getMobileNavEntries(navItems, pathname);
   const homeHref = desktopAwareHref("/dashboard", isDesktopBridgeAvailable);
+  const wideContent = normalizedPathname === "/so101" || normalizedPathname.startsWith("/so101/");
 
   const copy = {
     homeAria: isZh ? "RobotCloud 控制面板" : "RobotCloud workspace",
@@ -523,7 +525,9 @@ export function AppChrome({ children }: AppChromeProps) {
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 pb-[calc(5.75rem+env(safe-area-inset-bottom))] md:px-8 md:pb-8">
+          <main className={`mx-auto w-full flex-1 py-6 pb-[calc(5.75rem+env(safe-area-inset-bottom))] md:pb-8 ${
+            wideContent ? "max-w-none px-2 md:px-3" : "max-w-6xl px-4 md:px-8"
+          }`}>
             {children}
           </main>
 
