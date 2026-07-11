@@ -32,6 +32,7 @@ from .models import (
     WorkerNode,
 )
 from .limits import phone_defaults_to_plus, user_has_no_limits
+from .scheduler import _normalize_policy_name
 from ..sms import SmsGateway
 from ..payment.alipay import get_alipay
 
@@ -42,6 +43,19 @@ VERIFICATION_CODE_TIMEOUT_SECONDS = 5 * 60  # 5 minutes
 DEFAULT_DATASET_UPLOAD_SESSION_TIMEOUT_SECONDS = 2 * 60 * 60  # 2 hours
 DEFAULT_DATASET_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 DEVICE_LIMIT_MESSAGE = "Device limit reached for this device type"
+SO101_REQUIRED_CAMERA_FEATURES = ("observation.images.head", "observation.images.wrist")
+SO101_TRAINING_MODEL_REQUIREMENTS = {
+    "multi_task_dit": {"task": False},
+    "molmoact2": {"task": True},
+    "vla_jepa": {"task": False},
+    "pi0_fast": {"task": True},
+    "groot": {"task": True},
+    "xvla": {"task": True},
+    "eo1": {"task": True},
+    "wall_x": {"task": True},
+    "evo1": {"task": True},
+    "fastwam": {"task": True},
+}
 
 
 def _canonical_model_type(model_type: str) -> str:
@@ -499,15 +513,71 @@ class RobotCloudService:
             return "metadata"
         return "file"
 
+    def _is_archive_member(self, name: str, suffix: str) -> bool:
+        normalized = name.replace("\\", "/").lstrip("/")
+        return normalized == suffix or normalized.endswith(f"/{suffix}")
+
+    def _extract_lerobot_metadata(
+        self,
+        names: Iterable[str],
+        read_member: Any,
+    ) -> Dict[str, Any]:
+        member_names = list(names)
+        info_name = next(
+            (name for name in member_names if self._is_archive_member(name, "meta/info.json")),
+            None,
+        )
+        has_tasks_file = any(self._is_archive_member(name, "meta/tasks.parquet") for name in member_names)
+        info: Dict[str, Any] = {}
+        if info_name:
+            try:
+                raw_info = json.loads(read_member(info_name).decode("utf-8"))
+                if isinstance(raw_info, dict):
+                    info = raw_info
+            except (OSError, KeyError, UnicodeDecodeError, json.JSONDecodeError):
+                info = {}
+
+        features_raw = info.get("features") if isinstance(info, dict) else None
+        if isinstance(features_raw, dict):
+            feature_names = sorted(str(key) for key in features_raw.keys())
+        elif isinstance(features_raw, list):
+            feature_names = sorted(str(item) for item in features_raw)
+        else:
+            feature_names = []
+
+        camera_features = sorted(
+            feature for feature in feature_names if feature.startswith("observation.images.")
+        )
+        task_count_raw = info.get("total_tasks") if isinstance(info, dict) else None
+        try:
+            task_count = int(task_count_raw) if task_count_raw is not None else 0
+        except (TypeError, ValueError):
+            task_count = 0
+
+        if not info_name and not has_tasks_file:
+            return {}
+        return {
+            "lerobot_info_present": bool(info_name),
+            "lerobot_camera_keys": camera_features,
+            "lerobot_features": feature_names,
+            "lerobot_has_task": has_tasks_file or task_count > 0,
+            "lerobot_task_count": task_count,
+        }
+
     def _compute_dataset_metadata(self, dataset: Dataset, file_path: Path) -> Dict[str, Any]:
         file_size = file_path.stat().st_size if file_path.exists() else 0
         total_files = 0
         by_type: Dict[str, int] = {}
         preview_entries: list[Dict[str, str]] = []
+        lerobot_metadata: Dict[str, Any] = {}
         if file_path.suffix.lower() == ".zip" and file_path.exists():
             try:
                 with ZipFile(file_path) as archive:
                     members = [item for item in archive.infolist() if not item.is_dir()]
+                    lerobot_metadata = self._extract_lerobot_metadata(
+                        [member.filename for member in members],
+                        archive.read,
+                    )
             except BadZipFile:
                 members = []
             for member in members:
@@ -523,13 +593,15 @@ class RobotCloudService:
             by_type[file_type] = by_type.get(file_type, 0) + 1
             preview_entries = [{"name": name, "type": file_type}]
             total_files = 1
-        return {
+        metadata = {
             "file_name": file_path.name,
             "file_size": file_size,
             "total_files": total_files,
             "by_type": by_type,
             "preview": preview_entries,
         }
+        metadata.update(lerobot_metadata)
+        return metadata
 
     def _ensure_dataset_metadata(self, dataset: Dataset, force: bool = False) -> Dict[str, Any]:
         metadata = dataset.metadata or {}
@@ -559,6 +631,74 @@ class RobotCloudService:
             url = f"/datasets/{dataset.id}/files/{quote(name, safe='')}"
             payload.append({"name": name, "type": file_type, "url": url})
         return payload
+
+    def _metadata_camera_features(self, metadata: Dict[str, Any]) -> set[str]:
+        raw_values = metadata.get("lerobot_camera_keys") or []
+        if isinstance(raw_values, dict):
+            values = raw_values.keys()
+        elif isinstance(raw_values, (list, tuple, set)):
+            values = raw_values
+        else:
+            values = []
+        features: set[str] = set()
+        for value in values:
+            key = str(value).strip()
+            if not key:
+                continue
+            if key.startswith("observation.images."):
+                features.add(key)
+            elif "." not in key:
+                features.add(f"observation.images.{key}")
+        return features
+
+    def _metadata_has_lerobot_task(self, metadata: Dict[str, Any]) -> bool:
+        if metadata.get("lerobot_has_task") is True:
+            return True
+        try:
+            if int(metadata.get("lerobot_task_count") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+        preview_entries = metadata.get("preview") or []
+        if not isinstance(preview_entries, list):
+            return False
+        for entry in preview_entries:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "")
+            if self._is_archive_member(name, "meta/tasks.parquet"):
+                return True
+        return False
+
+    def _validate_training_dataset_for_model(self, dataset: Dataset, model_type: str) -> None:
+        policy_type = _normalize_policy_name(model_type)
+        requirements = SO101_TRAINING_MODEL_REQUIREMENTS.get(policy_type)
+        if not requirements:
+            return
+
+        metadata = dataset.metadata or {}
+        if dataset.storage_backend == Dataset.STORAGE_BACKEND_LOCAL:
+            needs_refresh = not self._metadata_camera_features(metadata) or (
+                requirements.get("task") and "lerobot_has_task" not in metadata
+            )
+            if needs_refresh:
+                try:
+                    metadata = self._ensure_dataset_metadata(dataset, force=True)
+                except ValueError:
+                    metadata = dataset.metadata or {}
+
+        camera_features = self._metadata_camera_features(metadata)
+        missing_cameras = [feature for feature in SO101_REQUIRED_CAMERA_FEATURES if feature not in camera_features]
+        if missing_cameras:
+            present = ", ".join(sorted(camera_features)) or "none"
+            missing = ", ".join(missing_cameras)
+            raise ValueError(
+                f"{model_type} requires SO101 LeRobot camera features "
+                f"{', '.join(SO101_REQUIRED_CAMERA_FEATURES)}; missing {missing} (present: {present})"
+            )
+
+        if requirements.get("task") and not self._metadata_has_lerobot_task(metadata):
+            raise ValueError(f"{model_type} requires SO101 task metadata from meta/tasks.parquet")
 
     # -------------------- Auth Module --------------------
     def send_code(self, phone: str) -> Dict[str, Any]:
@@ -1296,6 +1436,7 @@ class RobotCloudService:
         dataset = self._get_dataset_for_user(user, dataset_id)
         if dataset.status != Dataset.STATUS_READY:
             raise ValueError("Dataset is not ready")
+        self._validate_training_dataset_for_model(dataset, model_type)
         with transaction.atomic():
             task = TrainTask.objects.create(
                 dataset=dataset,

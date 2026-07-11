@@ -36,6 +36,7 @@ function getDesktopNav(container: HTMLElement) {
 describe("AppChrome shell", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    resetDesktopBridgeAvailabilityForTest();
     useAuthStore.getState().reset();
     useAuthStore.getState().setAuth({
       token: "token",

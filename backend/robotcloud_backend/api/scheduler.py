@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections import defaultdict
+from copy import deepcopy
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -22,36 +24,139 @@ PI05_DEFAULT_LEARNING_RATE = 2.5e-5
 PI05_DEFAULT_BATCH_SIZE = 1
 PI05_MAX_BATCH_SIZE = 16
 PI05_DEFAULT_RENAME_MAP = {
-    "observation.images.front": "observation.images.base_0_rgb",
-    "observation.images.side": "observation.images.left_wrist_0_rgb",
+    "observation.images.head": "observation.images.base_0_rgb",
+    "observation.images.wrist": "observation.images.left_wrist_0_rgb",
 }
 LEGACY_DEFAULT_LEARNING_RATE = 0.001
 DEFAULT_INFERENCE_SERVER_PORT = 5161
 
 
+LEROBOT_POLICY_ALIASES = {
+    "act": "act",
+    "dp": "diffusion",
+    "diffusion": "diffusion",
+    "diffusionpolicy": "diffusion",
+    "vqbet": "vqbet",
+    "tdmpc": "tdmpc",
+    "multitaskdit": "multi_task_dit",
+    "multitaskditpolicy": "multi_task_dit",
+    "pi0": "pi0",
+    "pi0fast": "pi0_fast",
+    "pi05": "pi05",
+    "smolvla": "smolvla",
+    "gr00t": "groot",
+    "groot": "groot",
+    "gr00tn17": "groot",
+    "grootn17": "groot",
+    "xvla": "xvla",
+    "eo1": "eo1",
+    "molmoact2": "molmoact2",
+    "walloss": "wall_x",
+    "wallx": "wall_x",
+    "evo1": "evo1",
+    "vlajepa": "vla_jepa",
+    "lingbotva": "lingbot_va",
+    "fastwam": "fastwam",
+}
+
+
+SO101_POLICY_DEFAULT_PARAMS: Dict[str, Dict[str, object]] = {
+    "multi_task_dit": {
+        "policy.n_obs_steps": 2,
+        "policy.horizon": 32,
+        "policy.n_action_steps": 24,
+        "policy.image_resize_shape": [256, 256],
+        "policy.image_crop_shape": [224, 224],
+        "policy.use_separate_rgb_encoder_per_camera": True,
+    },
+    "molmoact2": {
+        "policy.setup_type": "so101",
+        "policy.control_mode": "joint_6dof",
+        "policy.n_obs_steps": 1,
+        "policy.chunk_size": 30,
+        "policy.n_action_steps": 30,
+    },
+    "vla_jepa": {
+        "policy.n_obs_steps": 1,
+        "policy.chunk_size": 7,
+        "policy.n_action_steps": 7,
+        "policy.enable_world_model": False,
+    },
+    "pi0_fast": {
+        "policy.max_state_dim": 32,
+        "policy.max_action_dim": 32,
+        "policy.max_action_tokens": 256,
+        "policy.empty_cameras": 0,
+        "policy.chunk_size": 50,
+        "policy.n_action_steps": 50,
+    },
+    "groot": {
+        "policy.embodiment_tag": "new_embodiment",
+        "policy.chunk_size": 40,
+        "policy.n_action_steps": 40,
+        "policy.tune_llm": False,
+        "policy.tune_visual": False,
+        "policy.tune_projector": True,
+        "policy.tune_diffusion_model": True,
+    },
+    "xvla": {
+        "policy.use_proprio": True,
+        "policy.action_mode": "ee6d",
+        "policy.max_state_dim": 32,
+        "policy.max_action_dim": 20,
+        "policy.empty_cameras": 0,
+        "policy.chunk_size": 32,
+        "policy.n_action_steps": 32,
+    },
+    "eo1": {
+        "policy.max_state_dim": 32,
+        "policy.max_action_dim": 32,
+        "policy.chunk_size": 8,
+        "policy.n_action_steps": 8,
+    },
+    "wall_x": {
+        "policy.max_state_dim": 20,
+        "policy.max_action_dim": 20,
+        "policy.chunk_size": 32,
+        "policy.n_action_steps": 32,
+    },
+    "evo1": {
+        "policy.max_state_dim": 24,
+        "policy.max_action_dim": 24,
+        "policy.max_views": 3,
+        "policy.empty_cameras": 0,
+        "policy.image_resolution": [448, 448],
+        "policy.chunk_size": 50,
+        "policy.n_action_steps": 50,
+    },
+    "fastwam": {
+        "policy.action_dim": 6,
+        "policy.proprio_dim": 6,
+        "policy.image_size": [224, 448],
+        "policy.action_horizon": 32,
+        "policy.n_action_steps": 32,
+        "policy.num_video_frames": 33,
+        "policy.action_video_freq_ratio": 4,
+    },
+}
+
+
 def _normalize_policy_name(model_type: str) -> str:
     """Map UI model_type to training policy identifiers.
 
-    Accepts canonical names like act, diffusion, smolvla, pi0, pi05, and
-    groot, while still tolerating legacy display labels. Returns one of:
-    act, dp, smolvla, pi0, pi0.5, groot.
-    The scheduler later maps these to lerobot-train's hydra policy selection key.
+    Accepts labels from the frontend and returns LeRobot's `policy.type` ids
+    supported by the default 0.6.0 training environment.
     """
-    key = (model_type or "").strip().lower()
-    if key in {"act"}:
-        return "act"
-    if key in {"diffusionpolicy", "diffusion", "dp"}:
-        return "dp"
-    if key in {"smolvla", "smol vla", "smol-vla"}:
-        return "smolvla"
-    if key in {"pi0", "pi-0", "pi_0"}:
-        return "pi0"
-    if key in {"pi0.5", "pi0_5", "pi0-5", "pi05", "pi-0.5", "pi_0_5"}:
-        return "pi0.5"
-    if "gr00t" in key or "groot" in key:
-        return "groot"
+    key = re.sub(r"[^a-z0-9]+", "", (model_type or "").strip().lower())
+    if key in LEROBOT_POLICY_ALIASES:
+        return LEROBOT_POLICY_ALIASES[key]
     # Fallback to act if unknown, to avoid script failure
     return "act"
+
+
+def _so101_policy_default_params(policy_type: str) -> Dict[str, object]:
+    """Return LeRobot 0.6.0 defaults for SO101 2/3-camera, 6DoF joint datasets."""
+    return deepcopy(SO101_POLICY_DEFAULT_PARAMS.get(policy_type, {}))
 
 
 class SchedulerService:
@@ -326,9 +431,10 @@ class SchedulerService:
         # Build direct lerobot-train parameters (forwarded by scripts/lerobot-train.sh)
         train_params: Dict[str, object] = {}
 
-        normalized = _normalize_policy_name(task.model_type)
-        is_pi05 = normalized == "pi0.5"
-        policy_type = {"dp": "diffusion", "pi0.5": "pi05"}.get(normalized, normalized)
+        # Policy selection maps to hydra key policy.type.
+        # SO101 defaults are intentionally applied before task params so callers can override them.
+        policy_type = _normalize_policy_name(task.model_type)
+        is_pi05 = policy_type == "pi05"
 
         if is_pi05:
             # pi05 should default to lightweight fine-tuning from the base checkpoint.
@@ -348,6 +454,7 @@ class SchedulerService:
             original_params.pop("policy.type", None)
             original_params.pop("--policy.type", None)
         else:
+            train_params.update(_so101_policy_default_params(policy_type))
             train_params["policy.type"] = policy_type
 
         # Provide a synthetic dataset repo id for traceability; can be overridden

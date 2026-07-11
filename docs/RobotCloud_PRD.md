@@ -116,8 +116,8 @@ RobotCloud 致力于打造一个一站式的
 
   功能项         描述
   -------------- ---------------------------------------------------------
-  模型选择       提供预设模板（act、diffusion、smolvla、pi0、pi05、groot）
-  参数配置       用户可自定义学习率、batch size、epoch等
+  模型选择       提供 LeRobot 0.6.0 SO101 训练模板（ACT、DiffusionPolicy、MultiTaskDiT、MolmoAct2、VLA-JEPA、Pi0Fast、GR00T N1.7、XVLA、EO-1、WALL-OSS、EVO1、FastWAM）
+  参数配置       用户可自定义学习率、batch size、steps；系统按模型自动补充 SO101 2/3 路 RGB 相机、6DoF joint state/action 所需参数
   训练任务调度   后端任务队列（Celery / Ray）分发GPU任务
   日志监控       实时可视化 loss、accuracy 曲线
   模型推理       支持对上传数据集进行推理，展示结果（2D框、3D点云检测）
