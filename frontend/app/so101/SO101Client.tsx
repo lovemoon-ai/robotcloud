@@ -1304,19 +1304,46 @@ function CheckButton({
   onClick: () => void;
   disabled?: boolean;
 }) {
+  const [showResult, setShowResult] = useState(false);
+  const resultPhase = state.phase === "valid" || state.phase === "invalid" ? state.phase : null;
+  const resultVisible = Boolean(resultPhase && showResult);
+  const buttonLabel = state.phase === "checking"
+    ? "Checking"
+    : resultVisible
+      ? resultPhase === "valid" ? "✓" : "×"
+      : "Check";
+  const buttonAriaLabel = state.phase === "checking"
+    ? "Checking"
+    : resultVisible
+      ? resultPhase === "valid" ? "Check passed" : "Check failed"
+      : "Check";
+  const resultClass = resultVisible
+    ? resultPhase === "valid"
+      ? "border-green-500/60 text-green-400"
+      : "border-red-500/60 text-red-400"
+    : "border-theme accent-text";
+
+  useEffect(() => {
+    if (!resultPhase) {
+      setShowResult(false);
+      return;
+    }
+    setShowResult(true);
+    const timer = setTimeout(() => setShowResult(false), 3000);
+    return () => clearTimeout(timer);
+  }, [resultPhase, state]);
+
   return (
-    <div className="flex shrink-0 items-center gap-2">
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={disabled || state.phase === "checking"}
-        className="rounded-md border border-theme px-3 py-2 text-xs font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {state.phase === "checking" ? "Checking" : "Check"}
-      </button>
-      {state.phase === "valid" ? <span className="text-lg font-bold text-green-500">✓</span> : null}
-      {state.phase === "invalid" ? <span className="text-sm font-semibold text-red-400">!</span> : null}
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || state.phase === "checking"}
+      aria-label={buttonAriaLabel}
+      title={resultVisible && state.message ? state.message : buttonAriaLabel}
+      className={`inline-flex h-9 w-20 shrink-0 items-center justify-center rounded-md border px-3 text-xs font-semibold transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50 ${resultClass}`}
+    >
+      {buttonLabel}
+    </button>
   );
 }
 
@@ -1400,6 +1427,7 @@ export function SO101Client() {
   const [terminalContainerEl, setTerminalContainerEl] = useState<HTMLDivElement | null>(null);
   const configInputRefs = useRef<Partial<Record<ConfigFieldId, HTMLInputElement | null>>>({});
   const rightPanelRef = useRef<HTMLElement | null>(null);
+  const rightPanelNavRef = useRef<HTMLElement | null>(null);
   const rightPanelCardRefs = useRef<Partial<Record<RightPanelCardId, HTMLElement | null>>>({});
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runtimeUpdateProgressOffRef = useRef<(() => void) | null>(null);
@@ -1436,7 +1464,8 @@ export function SO101Client() {
   const syncRightPanelCardFromScroll = useCallback(() => {
     const panel = rightPanelRef.current;
     if (!panel) return;
-    const currentLine = panel.getBoundingClientRect().top + 48;
+    const navBottom = rightPanelNavRef.current?.getBoundingClientRect().bottom;
+    const currentLine = (navBottom ?? panel.getBoundingClientRect().top) + 8;
     let next: RightPanelCardId = rightPanelNavItems[0].id;
 
     for (const item of rightPanelNavItems) {
@@ -1575,6 +1604,44 @@ export function SO101Client() {
       router.replace("/");
     }
   }, [desktopBridgeAvailability, router, token]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let frame: number | null = null;
+    const requestFrame = (callback: FrameRequestCallback) => (
+      typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame(callback)
+        : window.setTimeout(() => callback(Date.now()), 0)
+    );
+    const cancelFrame = (handle: number) => {
+      if (typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(handle);
+      } else {
+        window.clearTimeout(handle);
+      }
+    };
+    const scheduleSync = () => {
+      if (frame != null) return;
+      let didRun = false;
+      const nextFrame = requestFrame(() => {
+        didRun = true;
+        frame = null;
+        syncRightPanelCardFromScroll();
+      });
+      frame = didRun ? null : nextFrame;
+    };
+
+    scheduleSync();
+    window.addEventListener("scroll", scheduleSync, { passive: true });
+    window.addEventListener("resize", scheduleSync);
+    return () => {
+      if (frame != null) {
+        cancelFrame(frame);
+      }
+      window.removeEventListener("scroll", scheduleSync);
+      window.removeEventListener("resize", scheduleSync);
+    };
+  }, [syncRightPanelCardFromScroll]);
 
   const updateField = <K extends keyof Omit<FormState, "cameras">>(key: K, value: FormState[K]) => {
     connectionDirtyRef.current = true;
@@ -2032,7 +2099,7 @@ export function SO101Client() {
     return `scroll-mt-14 rounded-lg border ${selectedClass} bg-card p-4`;
   };
   const rightPanelNavButtonClass = (card: RightPanelCardId) => {
-    const activeClass = activeRightPanelCard === card ? "text-primary" : "text-muted hover:text-body";
+    const activeClass = activeRightPanelCard === card ? "text-zinc-200" : "text-zinc-500 hover:text-zinc-300";
     return `group flex h-7 min-w-0 flex-1 items-center px-1 transition ${activeClass}`;
   };
   const rightPanelNavLineClass = (card: RightPanelCardId) => {
@@ -2548,7 +2615,7 @@ export function SO101Client() {
       </section>
 
       <aside ref={rightPanelRef} onScroll={syncRightPanelCardFromScroll} className="space-y-4 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto xl:pr-1">
-        <nav aria-label="SO101 panel sections" className="sticky top-0 z-20 border-b border-theme bg-surface/95 backdrop-blur">
+        <nav ref={rightPanelNavRef} aria-label="SO101 panel sections" className="sticky top-0 z-20 py-1">
           <div className="flex w-full gap-1">
             {rightPanelNavItems.map((item) => (
               <button
