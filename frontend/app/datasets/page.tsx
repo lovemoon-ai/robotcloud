@@ -108,7 +108,7 @@ export default function DatasetsPage() {
           success: "数据集上传成功",
           missingFile: "请选择要上传的压缩文件。",
           preparedLabel: "已准备的数据包",
-          preparedSource: "来自 SO101 Desktop",
+          preparedSource: "来自 SO101",
           preparedClear: "移除",
           preparedReadError: "读取已打包数据失败，请返回 SO101 重新打包。",
           fallbackError: "上传失败，请稍后重试。"
@@ -170,7 +170,7 @@ export default function DatasetsPage() {
           success: "Dataset uploaded successfully",
           missingFile: "Select an archive file to upload.",
           preparedLabel: "Prepared package",
-          preparedSource: "From SO101 Desktop",
+          preparedSource: "From SO101",
           preparedClear: "Remove",
           preparedReadError: "Could not read the prepared package. Go back to SO101 and package it again.",
           fallbackError: "Upload failed, please try again later."
