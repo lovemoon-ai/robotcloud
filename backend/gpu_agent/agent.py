@@ -35,6 +35,9 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/v1/agent/datasets/upload":
             self._handle_direct_dataset_upload(parsed)
             return
+        if parsed.path == "/api/v1/agent/datasets/upload/import":
+            self._handle_resumable_dataset_upload_import(parsed)
+            return
         if parsed.path == "/api/v1/agent/datasets/upload/complete":
             self._handle_resumable_dataset_upload_complete(parsed)
             return
@@ -223,6 +226,7 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             "/api/v1/agent/datasets/upload",
             "/api/v1/agent/datasets/upload/status",
             "/api/v1/agent/datasets/upload/chunk",
+            "/api/v1/agent/datasets/upload/import",
             "/api/v1/agent/datasets/upload/complete",
         }
         if parsed.path not in upload_paths:
@@ -560,6 +564,69 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             },
             include_cors=True,
         )
+
+    def _handle_resumable_dataset_upload_import(self, parsed) -> None:
+        context = self._read_direct_upload_context(parsed)
+        if context is None:
+            return
+        dataset_id = int(context["dataset_id"])
+        upload_token = str(context["upload_token"])
+
+        try:
+            content_length = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        raw = self.rfile.read(content_length) if content_length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self._send_json(400, {"detail": "Invalid JSON payload"}, include_cors=True)
+            return
+        source_path_raw = payload.get("source_path")
+        if not isinstance(source_path_raw, str) or not source_path_raw.strip():
+            self._send_json(400, {"detail": "source_path required"}, include_cors=True)
+            return
+
+        try:
+            source_path = Path(source_path_raw).expanduser().resolve()
+            stat_result = source_path.stat()
+        except OSError as exc:
+            self._send_json(400, {"detail": f"Dataset file not found: {exc}"}, include_cors=True)
+            return
+        if not source_path.is_file():
+            self._send_json(400, {"detail": "source_path must be a file"}, include_cors=True)
+            return
+
+        expected_size_raw = payload.get("file_size") or self.headers.get("X-File-Size")
+        try:
+            expected_size = int(expected_size_raw) if expected_size_raw is not None else 0
+        except (TypeError, ValueError):
+            expected_size = 0
+        actual_size = stat_result.st_size
+        if expected_size > 0 and actual_size != expected_size:
+            self._send_json(
+                409,
+                {"detail": "Upload size mismatch", "uploaded_bytes": actual_size, "total_size": expected_size},
+                include_cors=True,
+            )
+            return
+
+        try:
+            content_md5 = self.server.agent.md5_of_file(source_path)
+            metadata = self.server.agent.inspect_dataset_file(source_path)
+            metadata["file_name"] = str(context["filename"])
+            completed = self.server.agent.complete_dataset_upload(
+                dataset_id=dataset_id,
+                upload_token=upload_token,
+                storage_path=str(source_path),
+                content_md5=content_md5,
+                file_size=actual_size,
+                metadata=metadata,
+            )
+        except (OSError, ValueError) as exc:
+            self._send_json(400, {"detail": str(exc)}, include_cors=True)
+            return
+        self._send_json(200, {"status": "ok", **completed}, include_cors=True)
 
     def _handle_resumable_dataset_upload_complete(self, parsed) -> None:
         context = self._read_direct_upload_context(parsed)
@@ -1540,7 +1607,8 @@ class TrainingJob(threading.Thread):
 class InferenceJob(threading.Thread):
     """Start an async inference policy server."""
 
-    MAX_RUNTIME_SECONDS = 600
+    MAX_RUNTIME_SECONDS = 10 * 60
+    STARTUP_TIMEOUT_SECONDS = 300
 
     def __init__(
         self,
@@ -1574,7 +1642,7 @@ class InferenceJob(threading.Thread):
         except OSError:
             pass
         host = str(self.params.get("host") or "0.0.0.0")
-        port = str(self.params.get("port") or self._pick_port())
+        port = int(self.params.get("port") or self._pick_port())
         self.server_port = port
         command = self._build_command(host, port)
         env = self._build_env()
@@ -1588,6 +1656,19 @@ class InferenceJob(threading.Thread):
                     stderr=logf,
                     text=True,
                 )
+                ready_error = self._wait_for_server_ready(host, port, self._startup_timeout_seconds())
+                if ready_error:
+                    self._terminate_process()
+                    self.agent.notify_inference_status(
+                        self.task_id,
+                        "failed",
+                        0.0,
+                        server_port=port,
+                        error_message=ready_error,
+                        log_path=str(self.log_path),
+                    )
+                    self.agent.finish_job(self.task_id)
+                    return
                 self.agent.notify_inference_status(
                     self.task_id,
                     "running",
@@ -1671,6 +1752,40 @@ class InferenceJob(threading.Thread):
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+
+    def _wait_for_server_ready(self, host: str, port: int, timeout: int) -> Optional[str]:
+        deadline = time.monotonic() + max(timeout, 1)
+        connect_host = self._connect_probe_host(host)
+        while time.monotonic() < deadline:
+            if self._stop_event.is_set():
+                return "inference task stopped before policy server became ready"
+            process = self._process
+            if process and process.poll() is not None:
+                return f"policy server exited before listening on port {port} (exit_code={process.returncode})"
+            if self._can_connect(connect_host, port):
+                return None
+            time.sleep(0.5)
+        return f"policy server did not listen on port {port} within {max(timeout, 1)} seconds"
+
+    def _startup_timeout_seconds(self) -> int:
+        try:
+            return max(int(os.getenv("AGENT_INFERENCE_STARTUP_TIMEOUT_SECONDS", self.STARTUP_TIMEOUT_SECONDS)), 1)
+        except (TypeError, ValueError):
+            return self.STARTUP_TIMEOUT_SECONDS
+
+    @staticmethod
+    def _connect_probe_host(host: str) -> str:
+        if host in {"", "0.0.0.0", "::"}:
+            return "127.0.0.1"
+        return host
+
+    @staticmethod
+    def _can_connect(host: str, port: int) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                return True
+        except OSError:
+            return False
 
     def _build_command(self, host: str, port: int) -> List[str]:
         base = shlex.split(self.cmd)
@@ -1799,6 +1914,7 @@ class Agent:
                         backend_base_url=self.config.backend_base_url,
                         node_name=self.config.node_name,
                         report_ip=self.config.report_ip,
+                        inference_public_host=self.config.inference_public_host,
                         listen_host=self.config.listen_host,
                         api_port=self.config.api_port,
                         public_base_url=self.config.public_base_url,
@@ -1891,7 +2007,7 @@ class Agent:
             "task_id": task_id,
             "status": status,
             "progress": round(progress, 4),
-            "server_host": self.config.report_ip,
+            "server_host": self.config.inference_public_host,
             "server_port": server_port,
             "error_message": error_message,
             "log_path": log_path,
@@ -2242,19 +2358,26 @@ class Agent:
         total_files = 0
         by_type: Dict[str, int] = {}
         preview_entries: List[Dict[str, str]] = []
+        lerobot_metadata: Dict[str, Any] = {}
         suffixes = [suffix.lower() for suffix in file_path.suffixes]
 
         if suffixes and suffixes[-1] == ".zip" and file_path.exists():
             try:
                 with zipfile.ZipFile(file_path, "r") as archive:
                     names = [item.filename for item in archive.infolist() if not item.is_dir()]
+                    lerobot_metadata = self._lerobot_metadata_from_members(names, archive.read)
             except zipfile.BadZipFile:
                 names = []
             total_files, by_type, preview_entries = self._metadata_from_names(names)
         elif file_path.exists() and (".tar" in suffixes or (suffixes and suffixes[-1] in {".gz", ".tgz"})):
             try:
                 with tarfile.open(file_path, "r:*") as archive:
-                    names = [item.name for item in archive.getmembers() if item.isfile()]
+                    members = [item for item in archive.getmembers() if item.isfile()]
+                    names = [item.name for item in members]
+                    lerobot_metadata = self._lerobot_metadata_from_members(
+                        names,
+                        lambda name: self._read_tar_member(archive, name),
+                    )
             except tarfile.TarError:
                 names = []
             total_files, by_type, preview_entries = self._metadata_from_names(names)
@@ -2265,12 +2388,64 @@ class Agent:
             by_type[file_type] = 1
             preview_entries = [{"name": file_path.name, "type": file_type}]
 
-        return {
+        metadata = {
             "file_name": file_path.name,
             "file_size": file_size,
             "total_files": total_files,
             "by_type": by_type,
             "preview": preview_entries,
+        }
+        metadata.update(lerobot_metadata)
+        return metadata
+
+    def _is_dataset_member(self, name: str, suffix: str) -> bool:
+        normalized = name.replace("\\", "/").lstrip("/")
+        return normalized == suffix or normalized.endswith(f"/{suffix}")
+
+    def _read_tar_member(self, archive: tarfile.TarFile, name: str) -> bytes:
+        member = archive.getmember(name)
+        source = archive.extractfile(member)
+        if source is None:
+            return b""
+        return source.read()
+
+    def _lerobot_metadata_from_members(self, names: List[str], read_member) -> Dict[str, Any]:
+        info_name = next((name for name in names if self._is_dataset_member(name, "meta/info.json")), None)
+        has_tasks_file = any(self._is_dataset_member(name, "meta/tasks.parquet") for name in names)
+        info: Dict[str, Any] = {}
+        if info_name:
+            try:
+                raw_info = json.loads(read_member(info_name).decode("utf-8"))
+                if isinstance(raw_info, dict):
+                    info = raw_info
+            except (OSError, KeyError, UnicodeDecodeError, json.JSONDecodeError):
+                info = {}
+
+        features_raw = info.get("features") if isinstance(info, dict) else None
+        if isinstance(features_raw, dict):
+            feature_names = sorted(str(key) for key in features_raw.keys())
+        elif isinstance(features_raw, list):
+            feature_names = sorted(str(item) for item in features_raw)
+        else:
+            feature_names = []
+
+        camera_features = sorted(
+            feature for feature in feature_names if feature.startswith("observation.images.")
+        )
+        task_count_raw = info.get("total_tasks") if isinstance(info, dict) else None
+        try:
+            task_count = int(task_count_raw) if task_count_raw is not None else 0
+        except (TypeError, ValueError):
+            task_count = 0
+
+        if not info_name and not has_tasks_file:
+            return {}
+        return {
+            "lerobot_info_present": bool(info_name),
+            "lerobot_camera_keys": camera_features,
+            "lerobot_features": feature_names,
+            "lerobot_has_task": has_tasks_file or task_count > 0,
+            "lerobot_task_count": task_count,
         }
 
     def _metadata_from_names(self, names: List[str]) -> tuple[int, Dict[str, int], List[Dict[str, str]]]:

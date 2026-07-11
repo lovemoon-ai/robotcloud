@@ -52,6 +52,7 @@ def _create_completed_training(client: APIClient, token: str, dataset_id: int) -
 
     # Mark the task as completed directly in the database
     task = TrainTask.objects.get(id=task_id)
+    assert task.model_type == "act"
     task.status = "completed"
     task.model_path = f"/storage/models/{task_id}.pt"
     task.save(update_fields=["status", "model_path"])
@@ -101,10 +102,10 @@ def test_list_models_with_completed_tasks(client: APIClient, sms_gateway: InMemo
 
     model = data["items"][0]
     assert model["model_id"] == model_id
-    assert model["model_type"] == "ACT"
+    assert model["model_type"] == "act"
     assert model["dataset_id"] == dataset_id
     assert model["dataset_name"] == "model_dataset"
-    assert model["name"] == "ACT-model_dataset"
+    assert model["name"] == "act-model_dataset"
     assert model["model_path"].endswith(f"{model_id}.pt")
     assert "created_at" in model
 
@@ -121,10 +122,10 @@ def test_get_model_detail(client: APIClient, sms_gateway: InMemorySmsGateway) ->
     assert resp.status_code == 200
     model = resp.json()["data"]
     assert model["model_id"] == model_id
-    assert model["model_type"] == "ACT"
+    assert model["model_type"] == "act"
     assert model["dataset_id"] == dataset_id
     assert model["dataset_name"] == "model_dataset"
-    assert model["name"] == "ACT-model_dataset"
+    assert model["name"] == "act-model_dataset"
     assert model["model_path"].endswith(f"{model_id}.pt")
     assert "params" in model
     assert model["params"]["learning_rate"] == 0.001

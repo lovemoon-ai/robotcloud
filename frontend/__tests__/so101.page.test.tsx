@@ -1,6 +1,6 @@
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { SO101Client, so101TestExports } from "../app/so101/SO101Client";
-import { robotCloudApi } from "@/api/client";
+import { getRobotCloudApiBaseUrl, resetRobotCloudApiBaseUrl, robotCloudApi } from "@/api/client";
 import { inferenceJobServerAddress } from "@/inference/jobs";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
@@ -49,6 +49,7 @@ afterEach(() => {
   jest.restoreAllMocks();
   so101TestExports.resetPersistentTerminalForTest();
   resetDesktopBridgeAvailabilityForTest();
+  resetRobotCloudApiBaseUrl();
   useAuthStore.getState().reset();
   useLocaleStore.getState().reset();
   window.localStorage.clear();
@@ -336,6 +337,17 @@ describe("SO101 terminal session", () => {
     expect(secondRender.getByTestId("mock-xterm")).toHaveTextContent("first output");
     expect(terminalStart).toHaveBeenCalledTimes(1);
     expect(terminalStop).not.toHaveBeenCalled();
+  });
+
+  it("does not replace the cloud API base with the desktop local status URL", async () => {
+    installDesktopBridge();
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+    expect(getRobotCloudApiBaseUrl()).not.toBe(desktopStatus.apiBaseUrl);
   });
 
   it("reconnects to the existing desktop terminal session after a full frontend reload", async () => {
@@ -763,22 +775,22 @@ describe("SO101 terminal session", () => {
     const camerasSection = view.getByRole("heading", { name: "Cameras" }).closest("section");
     expect(camerasSection).not.toBeNull();
 
-    const cameraLabel = within(camerasSection as HTMLElement).getByText("Camera 0");
+    const cameraLabel = within(camerasSection as HTMLElement).getByText("Head camera");
+    expect(within(camerasSection as HTMLElement).getByText("Wrist camera")).toBeInTheDocument();
     const addCameraButton = within(camerasSection as HTMLElement).getByRole("button", { name: "Add camera" });
-    const cameraSectionControls = within(camerasSection as HTMLElement);
     const cameraCard = cameraLabel.closest(".rounded-md") as HTMLElement;
     const cameraControls = within(cameraCard);
 
     expect(cameraLabel.compareDocumentPosition(addCameraButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(cameraControls.getByLabelText("Name")).toHaveValue("front");
+    expect(cameraControls.getByLabelText("Name")).toHaveValue("head");
     expect(
       cameraControls.getByLabelText("Name").compareDocumentPosition(cameraControls.getByLabelText("Camera id/path")) &
         Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
-    expect(cameraSectionControls.getByLabelText("Width")).toHaveAttribute("type", "text");
-    expect(cameraSectionControls.getByLabelText("Width")).toHaveValue("640");
-    expect(cameraSectionControls.getByLabelText("Height")).toHaveValue("480");
-    expect(cameraSectionControls.getByLabelText("FPS")).toHaveValue("30");
+    expect(cameraControls.getByLabelText("Width")).toHaveAttribute("type", "text");
+    expect(cameraControls.getByLabelText("Width")).toHaveValue("640");
+    expect(cameraControls.getByLabelText("Height")).toHaveValue("480");
+    expect(cameraControls.getByLabelText("FPS")).toHaveValue("30");
   });
 
   it("uses a right panel line navigation to jump between cards", async () => {
@@ -922,7 +934,7 @@ describe("SO101 terminal session", () => {
     );
     expect(terminalWrite).toHaveBeenLastCalledWith(
       "session-1",
-      expect.stringContaining("--robot.cameras='{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, side: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30} }'")
+      expect.stringContaining("--robot.cameras='{ head: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, wrist: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30}, z_side: {type: opencv, index_or_path: 2, width: 640, height: 480, fps: 30} }'")
     );
     expect(terminalWrite).toHaveBeenLastCalledWith(
       "session-1",
@@ -938,7 +950,7 @@ describe("SO101 terminal session", () => {
     );
   });
 
-  it("blocks infer action until an inference job is running", async () => {
+  it("writes an infer action command from card defaults when no inference job is running", async () => {
     const { terminalWrite } = installDesktopBridge();
     jest.spyOn(robotCloudApi, "fetchInferenceJobs").mockResolvedValue([
       {
@@ -961,11 +973,20 @@ describe("SO101 terminal session", () => {
     fireEvent.click(view.getByRole("button", { name: "Infer" }));
 
     await waitFor(() => {
-      expect(view.getByText(/Inference job #15 当前是 queued/)).toBeInTheDocument();
+      expect(robotCloudApi.fetchInferenceJobs).toHaveBeenCalled();
+      expect(terminalWrite).toHaveBeenCalledWith(
+        "session-1",
+        expect.stringContaining("lerobot.async_inference.robot_client")
+      );
     });
-    expect(terminalWrite).not.toHaveBeenCalledWith(
+    expect(view.queryByText(/Inference job #15 当前是 queued/)).not.toBeInTheDocument();
+    expect(terminalWrite).toHaveBeenLastCalledWith(
       "session-1",
-      expect.stringContaining("lerobot.async_inference.robot_client")
+      expect.stringContaining("--server_address='h20.conductor-ai.top:5161'")
+    );
+    expect(terminalWrite).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.stringContaining("--pretrained_name_or_path='backend/storage/train_runs/task_14/checkpoints/last/pretrained_model'")
     );
   });
 
@@ -1144,9 +1165,9 @@ describe("SO101 terminal session", () => {
     await waitFor(() => {
       expect(validateCamera).toHaveBeenCalledWith("0", 640, 480, 30);
     });
-    expect(view.getByLabelText("Width")).toHaveValue("640");
-    expect(view.getByLabelText("Height")).toHaveValue("480");
-    expect(view.getByLabelText("FPS")).toHaveValue("30");
+    expect(view.getAllByLabelText("Width")[0]).toHaveValue("640");
+    expect(view.getAllByLabelText("Height")[0]).toHaveValue("480");
+    expect(view.getAllByLabelText("FPS")[0]).toHaveValue("30");
   });
 
   it("shows check results inside the button before restoring the check label", async () => {
@@ -1209,8 +1230,8 @@ describe("SO101 terminal session", () => {
       expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
     });
 
-    fireEvent.change(view.getByLabelText("Width"), { target: { value: "" } });
-    fireEvent.change(view.getByLabelText("Height"), { target: { value: "" } });
+    fireEvent.change(view.getAllByLabelText("Width")[0], { target: { value: "" } });
+    fireEvent.change(view.getAllByLabelText("Height")[0], { target: { value: "" } });
 
     const checkButton = view
       .getAllByRole("button", { name: "Check" })
@@ -1221,9 +1242,9 @@ describe("SO101 terminal session", () => {
     await waitFor(() => {
       expect(validateCamera).toHaveBeenCalledWith("0", 0, 0, 0);
     });
-    expect(view.getByLabelText("Width")).toHaveValue("1280");
-    expect(view.getByLabelText("Height")).toHaveValue("720");
-    expect(view.getByLabelText("FPS")).toHaveValue("30");
+    expect(view.getAllByLabelText("Width")[0]).toHaveValue("1280");
+    expect(view.getAllByLabelText("Height")[0]).toHaveValue("720");
+    expect(view.getAllByLabelText("FPS")[0]).toHaveValue("30");
   });
 
   it("runs dataset upload packaging through the terminal card", async () => {
@@ -1345,7 +1366,17 @@ describe("SO101 terminal session", () => {
 });
 
 describe("SO101 command generation", () => {
-  const { buildActionCommand, buildPrepareUploadCommand, initialForm, parseConnectionSettings, removeCameraAtIndex, resolvedDatasetRoot, serializeConnectionSettings, shellArg } = so101TestExports;
+  const {
+    alignFormWithRunningInferenceJob,
+    buildActionCommand,
+    buildPrepareUploadCommand,
+    initialForm,
+    parseConnectionSettings,
+    removeCameraAtIndex,
+    resolvedDatasetRoot,
+    serializeConnectionSettings,
+    shellArg
+  } = so101TestExports;
 
   const desktopStatus: DesktopStatus = {
     isDesktop: true,
@@ -1458,14 +1489,16 @@ describe("SO101 command generation", () => {
         task: "Pick the cube"
       },
       desktopStatus,
-      1
+      2
     );
 
     expect(command).toContain("python -m lerobot.scripts.lerobot_record");
     expect(command).not.toContain("lerobot-record");
     expect(command).not.toContain("bash '/script'");
     expect(command).not.toContain("--action");
-    expect(command).toContain("--robot.cameras='{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30} }'");
+    expect(command).toContain(
+      "--robot.cameras='{ head: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, wrist: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30} }'"
+    );
     expect(command).toContain("--dataset.episode_time_s=12");
     expect(command).toContain("--dataset.reset_time_s=3");
     expect(command).toContain("--dataset.streaming_encoding=true");
@@ -1488,7 +1521,7 @@ describe("SO101 command generation", () => {
       "python -m lerobot.async_inference.robot_client " +
         "--server_address='h20.conductor-ai.top:5161' " +
         "--robot.type=so101_follower --robot.port='/dev/tty.usbmodem58FA1019921' --robot.id='so101_follower' " +
-        "--robot.cameras='{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, side: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30} }' " +
+        "--robot.cameras='{ head: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, wrist: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30} }' " +
         "--task='Put dice into the cup.' --policy_type='pi05' --policy_device='cuda' " +
         "--pretrained_name_or_path='backend/storage/train_runs/task_14/checkpoints/last/pretrained_model' " +
         "--actions_per_chunk=50 --chunk_size_threshold=0.5 --aggregate_fn_name='weighted_average' --debug_visualize_queue_size=True"
@@ -1532,6 +1565,28 @@ describe("SO101 command generation", () => {
     expect(command).toContain(
       "--robot.cameras='{ base_0_rgb: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, left_wrist_0_rgb: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30}, \"third camera\": {type: opencv, index_or_path: 2, width: 640, height: 480, fps: 30} }'"
     );
+  });
+
+  it("keeps 3 camera LeRobot feature keys in semantic order when sorted", () => {
+    const command = buildActionCommand(
+      "record",
+      {
+        ...initialForm,
+        followerPort: "/dev/cu.usbmodem-follower",
+        leaderPort: "/dev/cu.usbmodem-leader",
+        robotId: "robot-one",
+        teleopId: "leader-one",
+        datasetRepoId: "local/auto_dataset",
+        task: "Pick the cube"
+      },
+      desktopStatus,
+      3
+    );
+
+    expect(command).toContain("head:");
+    expect(command).toContain("wrist:");
+    expect(command).toContain("z_side:");
+    expect(["head", "wrist", "z_side"].sort()).toEqual(["head", "wrist", "z_side"]);
   });
 
   it("builds find-port commands through the lerobot python module", () => {
@@ -1731,9 +1786,9 @@ describe("SO101 command generation", () => {
       cameraCount: 3
     });
     expect(saved?.cameras[0]).toMatchObject({ id: "2", width: 800, height: 600, fps: 15 });
-    expect(saved?.cameras[0]).toMatchObject({ name: "front" });
-    expect(saved?.cameras[1]).toMatchObject({ name: "side", id: "1", width: 640, height: 480, fps: 30 });
-    expect(saved?.cameras[2]).toMatchObject({ name: "wrist", id: "2", width: 640, height: 480, fps: 30 });
+    expect(saved?.cameras[0]).toMatchObject({ name: "head" });
+    expect(saved?.cameras[1]).toMatchObject({ name: "wrist", id: "1", width: 640, height: 480, fps: 30 });
+    expect(saved?.cameras[2]).toMatchObject({ name: "z_side", id: "2", width: 640, height: 480, fps: 30 });
   });
 
   it("migrates legacy and incorrect saved defaults to the current SO101 defaults", () => {
@@ -1748,13 +1803,32 @@ describe("SO101 command generation", () => {
     );
 
     expect(saved).toMatchObject({
+      cameraCount: 2,
       episodes: 50,
       cameras: [
-        { name: "front", id: "0", width: 640, height: 480, fps: 30 },
-        { name: "side", id: "custom", width: 800, height: 600, fps: 15 },
-        { name: "wrist", id: "2", width: 640, height: 480, fps: 30 }
+        { name: "head", id: "0", width: 640, height: 480, fps: 30 },
+        { name: "wrist", id: "custom", width: 800, height: 600, fps: 15 },
+        { name: "z_side", id: "2", width: 640, height: 480, fps: 30 }
       ]
     });
+  });
+
+  it("migrates old default camera names to SO101 training feature names", () => {
+    const saved = parseConnectionSettings(
+      JSON.stringify({
+        storageVersion: 4,
+        cameraCount: 3,
+        cameras: [
+          { name: "front", id: "0", width: 640, height: 480, fps: 30 },
+          { name: "side", id: "1", width: 640, height: 480, fps: 30 },
+          { name: "custom_third", id: "2", width: 640, height: 480, fps: 30 }
+        ]
+      })
+    );
+
+    expect(saved?.cameras[0].name).toBe("head");
+    expect(saved?.cameras[1].name).toBe("wrist");
+    expect(saved?.cameras[2].name).toBe("custom_third");
   });
 
   it("normalizes persisted infer server URLs", () => {
@@ -1796,6 +1870,32 @@ describe("SO101 command generation", () => {
         createdAt: "2026-07-09T00:00:00Z"
       })
     ).toBe("h20.conductor-ai.top:5161");
+  });
+
+  it("uses the running inference job model type for infer policy type", () => {
+    const aligned = alignFormWithRunningInferenceJob(
+      {
+        ...initialForm,
+        inferPolicyType: "pi05"
+      },
+      {
+        id: 16,
+        datasetId: null,
+        modelId: 14,
+        modelType: "act",
+        status: "running",
+        serverHost: "h20.conductor-ai.top",
+        serverPort: 5161,
+        checkpointPath: "backend/storage/train_runs/task_14/checkpoints/last/pretrained_model",
+        createdAt: "2026-07-09T00:00:00Z"
+      }
+    );
+
+    expect(aligned.inferPolicyType).toBe("act");
+    expect(aligned.inferServerAddress).toBe("h20.conductor-ai.top:5161");
+    expect(aligned.inferPretrainedNameOrPath).toBe(
+      "backend/storage/train_runs/task_14/checkpoints/last/pretrained_model"
+    );
   });
 
   it("round-trips persisted SO101 settings", () => {
@@ -1875,7 +1975,7 @@ describe("SO101 command generation", () => {
     expect(removeCameraAtIndex(cameras, 1)).toEqual([
       { name: "front", id: "0", width: 1280, height: 720, fps: 30 },
       { name: "wrist", id: "2", width: 320, height: 240, fps: 10 },
-      { name: "wrist", id: "2", width: 640, height: 480, fps: 30 }
+      { name: "z_side", id: "2", width: 640, height: 480, fps: 30 }
     ]);
   });
 });

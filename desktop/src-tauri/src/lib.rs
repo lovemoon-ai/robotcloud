@@ -29,6 +29,7 @@ const MIN_DATASET_UPLOAD_DURATION_SECONDS: f64 = 1.0;
 const TERMINAL_REPLAY_LIMIT_BYTES: usize = 200_000;
 const RUNTIME_PROGRESS_OUTPUT_LIMIT_BYTES: usize = 120_000;
 const RUNTIME_READY_MARKER_VERSION: &str = "5";
+#[cfg(target_os = "windows")]
 const WINDOWS_SHIMS_MARKER_VERSION: &str = "3";
 const RUNTIME_IMPORT_CHECK: &str = "import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk";
 const RUNTIME_UPDATE_TERMINAL_COMMAND: &str = "robotcloud-runtime-update";
@@ -39,6 +40,7 @@ const TERMINAL_CONTROL_END: &str = "\x07";
 const TERMINAL_CONTROL_MAX_BODY_BYTES: usize = 64 * 1024;
 // The terminal command emits this OSC marker; the PTY reader strips it and runs
 // the Rust updater in the background so the webview never awaits extraction.
+#[cfg(test)]
 const RUNTIME_UPDATE_TERMINAL_CONTROL: &str = "\x1b]777;robotcloud-runtime-update\x07";
 
 const DEFAULT_BRIDGE_SCRIPT: &str = r#"
@@ -413,7 +415,9 @@ struct So101RunConfig {
     stationary_hold_time_s: Option<f64>,
     reset_time_s: Option<f64>,
     task: Option<String>,
+    #[allow(dead_code)]
     teleop_time_s: Option<f64>,
+    #[allow(dead_code)]
     max_relative_target: Option<f64>,
     display_data: Option<bool>,
 }
@@ -1673,12 +1677,20 @@ where
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn prepare_runtime_with_progress<F>(runtime: &Path, progress: &mut F) -> Result<(), String>
 where
     F: FnMut(RuntimeProgressEvent),
 {
-    #[cfg(target_os = "windows")]
     ensure_windows_console_shims(runtime, progress)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn prepare_runtime_with_progress<F>(_runtime: &Path, _progress: &mut F) -> Result<(), String>
+where
+    F: FnMut(RuntimeProgressEvent),
+{
     Ok(())
 }
 
@@ -2172,7 +2184,7 @@ fn camera_config_value(config: &So101RunConfig) -> String {
     }
 
     format!(
-        "{{ front: {{type: opencv, index_or_path: {}, width: {}, height: {}, fps: {}}}}}",
+        "{{ head: {{type: opencv, index_or_path: {}, width: {}, height: {}, fps: {}}}}}",
         camera_ref_for_config(config),
         config.width.unwrap_or(640),
         config.height.unwrap_or(480),

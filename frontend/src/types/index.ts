@@ -118,6 +118,7 @@ export interface InferenceJob {
   id: number;
   datasetId: number | null;
   modelId: number;
+  modelType?: string | null;
   status: string;
   progress?: number;
   serverHost?: string | null;

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import io
+import json
+import logging
+import socket
 import tarfile
 import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -12,7 +15,7 @@ from typing import Any, Dict, List, Tuple
 import pytest
 import requests
 
-from gpu_agent.agent import Agent, AgentHTTPRequestHandler, AgentHTTPServer, TrainingJob
+from gpu_agent.agent import Agent, AgentHTTPRequestHandler, AgentHTTPServer, InferenceJob, TrainingJob
 from gpu_agent.config import AgentConfig
 
 
@@ -24,6 +27,9 @@ class _StubAgent:
 
     def notify_status(self, task_id: int, status: str, progress: float, metrics: Dict[str, Any]) -> None:
         self._notifications.append((task_id, status, progress, metrics))
+
+    def notify_inference_status(self, *args: Any, **kwargs: Any) -> None:
+        self._notifications.append((args[0], args[1], args[2], kwargs))
 
     def finish_job(self, task_id: int) -> None:
         self.finished.append(task_id)
@@ -94,6 +100,7 @@ def _agent_config(tmp_path: Path) -> AgentConfig:
         backend_base_url="http://backend.example.test/api/v1",
         node_name="gpu-node-1",
         report_ip="127.0.0.1",
+        inference_public_host="127.0.0.1",
         listen_host="127.0.0.1",
         api_port=0,
         public_base_url="http://127.0.0.1",
@@ -108,6 +115,36 @@ def _agent_config(tmp_path: Path) -> AgentConfig:
         work_dir=tmp_path,
         dataset_cache_dir=tmp_path / "storage" / "datasets_cache",
     )
+
+
+def test_agent_dataset_inspection_extracts_lerobot_metadata(tmp_path: Path) -> None:
+    archive_path = tmp_path / "so101.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(
+            "dataset/meta/info.json",
+            json.dumps(
+                {
+                    "total_tasks": 1,
+                    "features": {
+                        "observation.images.head": {"dtype": "video"},
+                        "observation.images.wrist": {"dtype": "video"},
+                        "observation.state": {"dtype": "float32", "shape": [6]},
+                        "action": {"dtype": "float32", "shape": [6]},
+                    },
+                }
+            ).encode("utf-8"),
+        )
+        archive.writestr("dataset/meta/tasks.parquet", b"PAR1")
+
+    agent = Agent(_agent_config(tmp_path), session=_BackendSession())  # type: ignore[arg-type]
+    metadata = agent.inspect_dataset_file(archive_path)
+
+    assert metadata["lerobot_camera_keys"] == [
+        "observation.images.head",
+        "observation.images.wrist",
+    ]
+    assert metadata["lerobot_has_task"] is True
+    assert metadata["lerobot_task_count"] == 1
 
 
 def test_agent_resumable_dataset_upload(tmp_path: Path) -> None:
@@ -180,6 +217,50 @@ def test_agent_resumable_dataset_upload(tmp_path: Path) -> None:
     assert backend_session.complete_payload["file_size"] == len(payload)
 
 
+def test_agent_imports_dataset_upload_from_local_path(tmp_path: Path) -> None:
+    source_path = tmp_path / "source" / "episodes.zip"
+    source_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(source_path, "w") as archive:
+        archive.writestr("data/episode_000001.parquet", b"episode")
+        archive.writestr("meta/info.json", b"{}")
+
+    backend_session = _BackendSession()
+    agent = Agent(_agent_config(tmp_path), session=backend_session)  # type: ignore[arg-type]
+    agent.agent_token = "agent-token"
+    server = AgentHTTPServer(("127.0.0.1", 0), AgentHTTPRequestHandler, agent)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    headers = {
+        "Authorization": "Bearer upload-token",
+        "X-Dataset-Id": "42",
+        "X-Filename": "episodes.zip",
+    }
+
+    try:
+        response = requests.post(
+            f"{base_url}/api/v1/agent/datasets/upload/import",
+            json={"source_path": str(source_path), "file_size": source_path.stat().st_size},
+            headers=headers,
+            timeout=5,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert backend_session.complete_payload is not None
+    assert backend_session.complete_payload["storage_path"] == str(source_path.resolve())
+    assert backend_session.complete_payload["content_md5"] == hashlib.md5(source_path.read_bytes()).hexdigest()
+    assert backend_session.complete_payload["file_size"] == source_path.stat().st_size
+    metadata = backend_session.complete_payload["metadata"]
+    assert metadata["file_name"] == "episodes.zip"
+    assert metadata["total_files"] == 2
+    assert metadata["by_type"]["metadata"] == 1
+
+
 def test_agent_cancel_resumable_dataset_upload_removes_upload_dir(tmp_path: Path) -> None:
     agent = Agent(_agent_config(tmp_path), session=_BackendSession())  # type: ignore[arg-type]
     agent.agent_token = "agent-token"
@@ -230,6 +311,90 @@ def test_training_job_builds_command_with_dataset_arg(tmp_path: Path) -> None:
     assert any(tok == "--epochs=5" for tok in command)
     assert any(tok == f"--dataset={dataset_path}" for tok in command)
     assert command[-2:] == ["--foo", "bar"]
+
+
+def test_inference_job_runtime_limit_is_ten_minutes() -> None:
+    assert InferenceJob.MAX_RUNTIME_SECONDS == 10 * 60
+
+
+def test_agent_reports_inference_public_host(tmp_path: Path) -> None:
+    class CaptureSession:
+        def __init__(self) -> None:
+            self.payload: Dict[str, Any] | None = None
+
+        def post(
+            self,
+            url: str,
+            json: Dict[str, Any] | None = None,  # noqa: A002
+            headers: Dict[str, str] | None = None,
+            timeout: int | None = None,
+        ) -> _BackendResponse:
+            self.payload = json
+            return _BackendResponse({"code": 0, "data": {}})
+
+    config = _agent_config(tmp_path)
+    config = AgentConfig(
+        backend_base_url=config.backend_base_url,
+        node_name=config.node_name,
+        report_ip="127.0.0.1",
+        inference_public_host="h20.conductor-ai.top",
+        listen_host=config.listen_host,
+        api_port=config.api_port,
+        public_base_url=config.public_base_url,
+        upload_enabled=config.upload_enabled,
+        upload_allowed_origins=config.upload_allowed_origins,
+        gpu_total=config.gpu_total,
+        gpu_slot_total=config.gpu_slot_total,
+        heartbeat_interval=config.heartbeat_interval,
+        version=config.version,
+        step_delay=config.step_delay,
+        log_dir=config.log_dir,
+        work_dir=config.work_dir,
+        dataset_cache_dir=config.dataset_cache_dir,
+    )
+    session = CaptureSession()
+    agent = Agent(config, session=session)  # type: ignore[arg-type]
+    agent.agent_token = "agent-token"
+
+    agent.notify_inference_status(21, "running", 0, server_port=5161)
+
+    assert session.payload is not None
+    assert session.payload["server_host"] == "h20.conductor-ai.top"
+    assert session.payload["server_port"] == 5161
+
+
+def test_inference_job_waits_for_policy_server_port(tmp_path: Path) -> None:
+    agent = _StubAgent()
+    job = InferenceJob(
+        agent=agent,  # type: ignore[arg-type]
+        task_id=21,
+        gpus=[0],
+        params={},
+        cmd="python -m server",
+        log_dir=tmp_path / "logs",
+        work_dir=tmp_path,
+    )
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    listener.close()
+
+    def delayed_server() -> None:
+        time.sleep(0.2)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", port))
+            server.listen(1)
+            conn, _ = server.accept()
+            conn.close()
+
+    thread = threading.Thread(target=delayed_server, daemon=True)
+    thread.start()
+    started = time.monotonic()
+
+    assert job._wait_for_server_ready("0.0.0.0", port, 2) is None
+    assert time.monotonic() - started >= 0.15
+    thread.join(timeout=2)
 
 
 def test_training_job_parses_progress_from_logs(tmp_path: Path) -> None:

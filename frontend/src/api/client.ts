@@ -1,4 +1,3 @@
-import getConfig from "next/config";
 import { useAuthStore } from "@/store/useAuthStore";
 import {
   AdminUser,
@@ -20,34 +19,21 @@ import {
   UserSettings,
   UserRole
 } from "@/types";
+import { getTrainingModelDefaults } from "@/training/models";
 
 const DEFAULT_API_BASE = "http://localhost:6150/api/v1";
 
-type RuntimeConfig = {
-  publicRuntimeConfig?: {
-    apiBaseUrl?: string;
-  };
-};
-
-const runtimeConfig: RuntimeConfig | undefined = (() => {
-  try {
-    return getConfig();
-  } catch {
-    return undefined;
-  }
-})();
-
-const RAW_API_BASE = runtimeConfig?.publicRuntimeConfig?.apiBaseUrl ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
+const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE;
 const CONFIGURED_API_BASE = RAW_API_BASE.replace(/\/$/, "");
 const DEVICE_ID_STORAGE_KEY = "robotcloud-device-id";
 export const PI05_BASE_MODEL = "lerobot/pi05_base";
 export const PI05_DEFAULT_LEARNING_RATE = 0.000025;
 export const PI05_DEFAULT_RENAME_MAP = {
-  "observation.images.front": "observation.images.base_0_rgb",
-  "observation.images.side": "observation.images.left_wrist_0_rgb"
+  "observation.images.head": "observation.images.base_0_rgb",
+  "observation.images.wrist": "observation.images.left_wrist_0_rgb"
 } as const;
 
-type LoginDeviceType = "mobile" | "desktop";
+type LoginDeviceType = "browser" | "mobile" | "desktop";
 type LoginOptions = {
   replaceExistingDevice?: boolean;
 };
@@ -65,7 +51,9 @@ export function buildTrainingParams(config: TrainingConfig): Record<string, unkn
     balanced: 8,
     throughput: 16
   } satisfies Record<NonNullable<TrainingConfig["pi05Preset"]>, number>;
+  const modelDefaults = getTrainingModelDefaults(config.model);
   const params: Record<string, unknown> = {
+    ...modelDefaults.params,
     learning_rate: isPi05 ? config.learningRate || PI05_DEFAULT_LEARNING_RATE : config.learningRate,
     steps: config.steps,
     batch_size: isPi05
@@ -109,12 +97,23 @@ function getDeviceId(): string {
 }
 
 function getDeviceType(): LoginDeviceType {
+  if (typeof window !== "undefined") {
+    if (
+      window.robotcloudDesktop?.isDesktop ||
+      window.location.protocol === "tauri:" ||
+      window.location.hostname === "tauri.localhost" ||
+      (window.location.protocol === "app:" && window.location.hostname === "local")
+    ) {
+      return "desktop";
+    }
+    return "browser";
+  }
   if (typeof navigator === "undefined") {
     return "desktop";
   }
   return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(navigator.userAgent)
     ? "mobile"
-    : "desktop";
+    : "browser";
 }
 
 function getLoginDeviceContext(): { deviceId: string; deviceType: LoginDeviceType } {
@@ -221,6 +220,7 @@ type BackendTrainingTask = {
 type BackendInferenceTask = {
   task_id: number;
   model_id: number;
+  model_type?: string | null;
   dataset_id?: number | null;
   status: string;
   progress?: number;
@@ -341,6 +341,88 @@ function isAuthError(status: number, message: string): boolean {
   return false;
 }
 
+function looksLikeHtml(raw: string): boolean {
+  const prefix = raw.trimStart().slice(0, 80).toLowerCase();
+  return (
+    prefix.startsWith("<!doctype") ||
+    prefix.startsWith("<html") ||
+    prefix.startsWith("<head") ||
+    prefix.startsWith("<body")
+  );
+}
+
+function nonJsonResponseMessage(source: string, raw: string): string {
+  if (looksLikeHtml(raw)) {
+    return `${source} returned HTML instead of JSON. Check that the URL points to the API service, not the web app or a proxy error page.`;
+  }
+  return `${source} returned invalid JSON.`;
+}
+
+function isNonJsonResponseMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes("returned html instead of json") || normalized.includes("returned invalid json");
+}
+
+async function readResponseText(response: Response): Promise<string> {
+  if (typeof response.text === "function") {
+    const raw = await response.text();
+    if (raw || typeof response.json !== "function") {
+      return raw;
+    }
+    try {
+      const json = await response.json();
+      return JSON.stringify(json) ?? "";
+    } catch {
+      return raw;
+    }
+  }
+  if (typeof response.json === "function") {
+    const json = await response.json();
+    return JSON.stringify(json) ?? "";
+  }
+  return "";
+}
+
+function parseJsonBody(raw: string, source: string): unknown {
+  if (!raw.trim()) {
+    throw new Error(`${source} returned an empty response.`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(nonJsonResponseMessage(source, raw));
+  }
+}
+
+function responseErrorMessage(raw: string, fallbackMessage: string, source: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return fallbackMessage;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed?.detail === "string" && parsed.detail) {
+      return parsed.detail;
+    }
+    if (typeof parsed?.message === "string" && parsed.message) {
+      return parsed.message;
+    }
+  } catch {
+    if (looksLikeHtml(trimmed)) {
+      return `${nonJsonResponseMessage(source, trimmed)} ${fallbackMessage}`;
+    }
+  }
+  return trimmed;
+}
+
+function parseApiResponse<T>(raw: string, source: string): ApiResponse<T> {
+  const payload = parseJsonBody(raw, source) as Partial<ApiResponse<T>>;
+  if (!payload || typeof payload !== "object" || typeof payload.code !== "number") {
+    throw new Error(`${source} returned an invalid API response.`);
+  }
+  return payload as ApiResponse<T>;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = useAuthStore.getState().token;
   const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
@@ -354,9 +436,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
+  const url = `${apiBase}${path}`;
   let response: Response;
   try {
-    response = await fetch(`${apiBase}${path}`, {
+    response = await fetch(url, {
       ...init,
       headers
     });
@@ -366,23 +449,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const raw = await response.text();
-    let message = raw.trim();
-    if (message) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (typeof parsed.detail === "string" && parsed.detail) {
-          message = parsed.detail;
-        } else if (typeof parsed.message === "string" && parsed.message) {
-          message = parsed.message;
-        }
-      } catch {
-        // ignore JSON parse failure and use raw string
-      }
-    }
-    if (!message) {
-      message = `Request failed with status ${response.status}`;
-    }
+    const raw = await readResponseText(response);
+    const message = responseErrorMessage(raw, `Request failed with status ${response.status}`, `API request to ${url}`);
     // Auto-logout on invalid/expired token so UI can redirect to login
     if (isAuthError(response.status, message)) {
       try {
@@ -394,51 +462,39 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(message);
   }
 
-  const payload = (await response.json()) as ApiResponse<T>;
+  const payload = parseApiResponse<T>(await readResponseText(response), `API request to ${url}`);
   if (payload.code !== 0) {
     throw new Error(payload.message || "Request failed");
   }
   return payload.data;
 }
 
-function parseAgentJson<T>(raw: string, fallbackMessage: string): T {
+function parseAgentJson<T>(raw: string, fallbackMessage: string, source = "Agent upload endpoint"): T {
   if (!raw.trim()) {
     return {} as T;
   }
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed?.code === "number") {
-      if (parsed.code !== 0) {
-        throw new Error(parsed.message || fallbackMessage);
-      }
-      return parsed.data as T;
+  const parsed = parseJsonBody(raw, source);
+  if (typeof parsed === "object" && parsed !== null && typeof (parsed as { code?: unknown }).code === "number") {
+    const envelope = parsed as ApiResponse<T>;
+    if (envelope.code !== 0) {
+      throw new Error(envelope.message || fallbackMessage);
     }
-    return parsed as T;
-  } catch (error) {
-    if (error instanceof Error && error.message !== "Unexpected end of JSON input") {
-      throw error;
-    }
-    throw new Error("Invalid response format");
+    return envelope.data as T;
   }
+  return parsed as T;
 }
 
 async function agentFetchJson<T>(url: string, init: RequestInit): Promise<T> {
   throwIfAborted(init.signal ?? undefined);
   const response = await fetch(url, init);
-  const raw = await response.text();
+  const raw = await readResponseText(response);
   if (!response.ok) {
-    let message = raw.trim();
-    try {
-      const parsed = JSON.parse(raw);
-      message = parsed.detail || parsed.message || message;
-    } catch {
-      // use raw response body
-    }
+    const message = responseErrorMessage(raw, `Request failed with status ${response.status}`, `Agent upload endpoint ${url}`);
     const error = new Error(message || `Request failed with status ${response.status}`) as Error & { status?: number };
     error.status = response.status;
     throw error;
   }
-  return parseAgentJson<T>(raw, `Request failed with status ${response.status}`);
+  return parseAgentJson<T>(raw, `Request failed with status ${response.status}`, `Agent upload endpoint ${url}`);
 }
 
 function agentUploadEndpoint(session: BackendDatasetUploadSession, kind: "status" | "chunk" | "complete"): string {
@@ -581,8 +637,9 @@ function shouldRefreshStoredAgentUploadSession(error: unknown): boolean {
   }
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   return (
-    !Number.isFinite(status) &&
-    (message.includes("network error") || message.includes("load failed") || message.includes("failed to fetch"))
+    isNonJsonResponseMessage(message) ||
+    (!Number.isFinite(status) &&
+      (message.includes("network error") || message.includes("load failed") || message.includes("failed to fetch")))
   );
 }
 
@@ -1138,6 +1195,7 @@ export const robotCloudApi = {
       id: task.task_id,
       datasetId: task.dataset_id ?? null,
       modelId: task.model_id,
+      modelType: task.model_type ?? undefined,
       status: task.status,
       progress: task.progress,
       serverHost: task.server_host ?? undefined,

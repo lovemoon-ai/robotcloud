@@ -69,11 +69,11 @@
   "phone": "13800000000",
   "password": "123456",
   "device_id": "browser-or-app-installation-uuid",
-  "device_type": "desktop"
+  "device_type": "browser"
 }
 ```
 
-`device_type` 支持 `mobile` / `desktop`。同一用户同一时刻最多保留 1 个 `mobile` 会话和 1 个 `desktop` 会话；同一 `device_id` 重新登录会刷新该设备会话。可通过环境变量 `AUTH_SINGLE_DEVICE_BYPASS_PHONES` 配置逗号分隔手机号白名单，白名单用户不受该限制。可通过 `AUTH_PLUS_WHITELIST_PHONES` 配置逗号分隔手机号白名单，白名单用户注册或登录时默认获得 plus 权限。可通过 `AUTH_NO_LIMITS_WHITELIST_PHONES` 配置逗号分隔手机号白名单，白名单用户注册或登录时默认获得 plus 权限，并绕过数据集、模型、训练任务等账号资源数量限制；推理仍受同一时刻单实例端口限制。
+`device_type` 支持 `browser` / `desktop` / `mobile`。同一用户同一时刻最多保留 1 个 `browser` 会话和 1 个 `desktop` 会话，浏览器登录与桌面客户端登录互不挤下线；同一 `device_id` 重新登录会刷新该设备会话。可通过环境变量 `AUTH_SINGLE_DEVICE_BYPASS_PHONES` 配置逗号分隔手机号白名单，白名单用户不受该限制。可通过 `AUTH_PLUS_WHITELIST_PHONES` 配置逗号分隔手机号白名单，白名单用户注册或登录时默认获得 plus 权限。可通过 `AUTH_NO_LIMITS_WHITELIST_PHONES` 配置逗号分隔手机号白名单，白名单用户注册或登录时默认获得 plus 权限，并绕过数据集、模型、训练任务等账号资源数量限制；推理仍受同一时刻单实例端口限制。
 
 **响应**
 
@@ -177,14 +177,16 @@ Form-Data：
 {
   "dataset_id":42,
   "job_name":"pi05-grasp-v1",
-  "model_type":"yolov8",
+  "model_type":"pi05",
   "params":{
-    "epochs":50,
+    "steps":5000,
     "batch_size":8,
-    "lr":0.001
+    "learning_rate":0.000025
   }
 }
 ```
+
+`model_type` 使用后端/LeRobot CLI canonical 名称，例如 `act`、`diffusion`、`pi0`、`pi05`、`smolvla`、`groot`。
 
 ### 2. 获取任务列表
 
@@ -348,7 +350,7 @@ Response
   dataset_id   INT FK                                          
   user_id      INT FK                                          
   job_name     VARCHAR(128)                 可选实验/任务名称
-  model_type   VARCHAR(50)                                     
+  model_type   VARCHAR(50)                  canonical CLI model type
   params       JSON                                            
   status       ENUM('queued','running','completed','failed')   
   progress     FLOAT                                           
