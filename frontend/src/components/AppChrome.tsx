@@ -67,6 +67,15 @@ function SidebarToggleIcon({ className }: { className?: string }) {
   );
 }
 
+function RefreshIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" d="M20 11a8 8 0 0 0-14.12-4.5M4 5v4h4" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" d="M4 13a8 8 0 0 0 14.12 4.5M20 19v-4h-4" />
+    </svg>
+  );
+}
+
 function DashboardIcon({ active, className }: NavIconProps) {
   return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -299,7 +308,8 @@ export function AppChrome({ children }: AppChromeProps) {
     copyright: isZh
       ? "© 2025-2026 LoveMoon Ltd. 保留所有权利。"
       : "© 2025-2026 LoveMoon Ltd. All rights reserved.",
-    switchTo: isZh ? "切换到" : "Switch to"
+    switchTo: isZh ? "切换到" : "Switch to",
+    refresh: isZh ? "刷新页面" : "Refresh page"
   };
 
   const sidebarToggleCopy = isZh
@@ -361,6 +371,12 @@ export function AppChrome({ children }: AppChromeProps) {
       }
     }
   }, [authReady, isLoginRoute, pathname, router, token]);
+
+  const handleRefreshPage = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.location.reload();
+    }
+  }, []);
 
   const toggleSidebarCollapsed = useCallback(() => {
     const next = !isSidebarCollapsed;
@@ -489,7 +505,22 @@ export function AppChrome({ children }: AppChromeProps) {
           </nav>
 
           <div className={`border-t border-theme py-4 ${isSidebarCollapsed ? "px-2" : "px-4"}`}>
-            {!isSidebarCollapsed ? <p className="text-xs leading-relaxed text-muted">{copy.copyright}</p> : null}
+            <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "gap-3"}`}>
+              <button
+                type="button"
+                onClick={handleRefreshPage}
+                aria-label={copy.refresh}
+                title={copy.refresh}
+                className={`${
+                  isSidebarCollapsed ? iconRailClassName : "flex h-9 w-9 shrink-0 items-center justify-center"
+                } rounded-lg border border-theme bg-card text-muted transition hover:border-primary hover:bg-surface-secondary hover:text-body focus:outline-none focus:ring-2 focus:ring-primary/30`}
+              >
+                <RefreshIcon className="h-5 w-5" />
+              </button>
+              {!isSidebarCollapsed ? (
+                <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted">{copy.copyright}</p>
+              ) : null}
+            </div>
           </div>
         </aside>
 
