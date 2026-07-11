@@ -1307,11 +1307,7 @@ function CheckButton({
   const [showResult, setShowResult] = useState(false);
   const resultPhase = state.phase === "valid" || state.phase === "invalid" ? state.phase : null;
   const resultVisible = Boolean(resultPhase && showResult);
-  const buttonLabel = state.phase === "checking"
-    ? "Checking"
-    : resultVisible
-      ? resultPhase === "valid" ? "✓" : "×"
-      : "Check";
+  const isChecking = state.phase === "checking";
   const buttonAriaLabel = state.phase === "checking"
     ? "Checking"
     : resultVisible
@@ -1340,10 +1336,68 @@ function CheckButton({
       disabled={disabled || state.phase === "checking"}
       aria-label={buttonAriaLabel}
       title={resultVisible && state.message ? state.message : buttonAriaLabel}
-      className={`inline-flex h-9 w-20 shrink-0 items-center justify-center rounded-md border px-3 text-xs font-semibold transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50 ${resultClass}`}
+      className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-xs font-semibold transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50 ${resultClass}`}
     >
-      {buttonLabel}
+      {isChecking ? (
+        <SpinnerIcon className="h-4 w-4 animate-spin" />
+      ) : resultVisible ? (
+        <span aria-hidden="true" className="text-base leading-none">{resultPhase === "valid" ? "✓" : "×"}</span>
+      ) : (
+        <ValidateIcon className="h-4 w-4" />
+      )}
     </button>
+  );
+}
+
+function SpinnerIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M12 3a9 9 0 1 0 9 9" />
+    </svg>
+  );
+}
+
+function ValidateIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M9 12.5l2 2 4-5" />
+      <path d="M12 21a9 9 0 1 0-9-9 9 9 0 0 0 9 9Z" />
+    </svg>
+  );
+}
+
+function PreviewIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
+    </svg>
   );
 }
 
@@ -2201,7 +2255,7 @@ export function SO101Client() {
                 ) : null}
               </div>
               <div className="flex flex-wrap items-end gap-2">
-                <label className="min-w-[7rem] flex-[0_0_8rem] text-sm">
+                <label className="min-w-[5rem] flex-[0_0_5.5rem] text-sm">
                   <span className="text-muted">Name</span>
                   <input
                     ref={registerConfigInput(nameField)}
@@ -2213,7 +2267,7 @@ export function SO101Client() {
                   />
                   {renderConfigFieldError(nameField)}
                 </label>
-                <label className="min-w-0 flex-1 text-sm">
+                <label className="min-w-[10rem] flex-[1_1_10rem] text-sm">
                   <span className="text-muted">Camera id/path</span>
                   <input
                     ref={registerConfigInput(idField)}
@@ -2233,9 +2287,11 @@ export function SO101Client() {
                   type="button"
                   onClick={() => previewCamera(index)}
                   disabled={!camera.id.trim() || previewingCamera === index}
-                  className="rounded-md border border-theme px-3 py-2 text-xs font-semibold accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={previewingCamera === index ? "Opening preview" : "Preview"}
+                  title={previewingCamera === index ? "Opening preview" : "Preview"}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-theme accent-text transition hover:accent-bg disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {previewingCamera === index ? "Opening" : "Preview"}
+                  {previewingCamera === index ? <SpinnerIcon className="h-4 w-4 animate-spin" /> : <PreviewIcon className="h-4 w-4" />}
                 </button>
               </div>
               {renderConfigFieldError(idField)}
@@ -2551,13 +2607,13 @@ export function SO101Client() {
   }
 
   return (
-    <main className="flex min-h-[calc(100vh-7rem)] flex-col gap-3">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold text-body">SO101</h1>
-      </header>
+    <main className="grid min-h-[calc(100vh-7rem)] gap-3 xl:grid-cols-[minmax(0,1fr)_25rem] 2xl:grid-cols-[minmax(0,1fr)_28rem]">
+      <div className="flex min-w-0 flex-col gap-3 xl:h-[calc(100vh-7rem)]">
+        <header className="flex min-h-8 flex-wrap items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-body">SO101</h1>
+        </header>
 
-      <section className="grid flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_25rem] 2xl:grid-cols-[minmax(0,1fr)_28rem]">
-      <section className="flex min-h-[36rem] flex-col rounded-lg border border-theme bg-card p-4 xl:sticky xl:top-4 xl:h-[calc(100vh-9rem)] xl:min-h-0">
+        <section className="flex min-h-[36rem] flex-1 flex-col rounded-lg border border-theme bg-card p-4 xl:min-h-0">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-xl font-semibold accent-text">Terminal</h2>
           <div className="flex items-center gap-2">
@@ -2612,9 +2668,10 @@ export function SO101Client() {
           className="mt-4 min-h-[28rem] flex-1 overflow-hidden rounded-md border border-theme bg-[#07111f] p-2 xl:min-h-0"
         />
         {terminalError ? <p className="mt-3 text-xs text-red-400">{terminalError}</p> : null}
-      </section>
+        </section>
+      </div>
 
-      <aside ref={rightPanelRef} onScroll={syncRightPanelCardFromScroll} className="space-y-4 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto xl:pr-1">
+      <div className="min-w-0 space-y-3 xl:flex xl:h-[calc(100vh-7rem)] xl:flex-col">
         <nav ref={rightPanelNavRef} aria-label="SO101 panel sections" className="sticky top-0 z-20 py-1">
           <div className="flex w-full gap-1">
             {rightPanelNavItems.map((item) => (
@@ -2632,6 +2689,7 @@ export function SO101Client() {
           </div>
         </nav>
 
+        <aside ref={rightPanelRef} onScroll={syncRightPanelCardFromScroll} className="space-y-4 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
         <section ref={registerRightPanelCard("commands")} className="scroll-mt-14 rounded-lg border border-theme bg-card p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
@@ -2732,9 +2790,8 @@ export function SO101Client() {
             </dl>
           </div>
         </section>
-      </aside>
-
-      </section>
+        </aside>
+      </div>
     </main>
   );
 }

@@ -779,6 +779,8 @@ describe("SO101 terminal session", () => {
     expect(cameraSectionControls.getByLabelText("Width")).toHaveValue("640");
     expect(cameraSectionControls.getByLabelText("Height")).toHaveValue("480");
     expect(cameraSectionControls.getByLabelText("FPS")).toHaveValue("30");
+    expect(cameraControls.getByRole("button", { name: "Check" }).textContent).toBe("");
+    expect(cameraControls.getByRole("button", { name: "Preview" }).textContent).toBe("");
   });
 
   it("uses a right panel line navigation to jump between cards", async () => {
@@ -1171,6 +1173,7 @@ describe("SO101 terminal session", () => {
         .getAllByRole("button", { name: "Check" })
         .find((button) => !button.hasAttribute("disabled"));
       expect(checkButton).toBeDefined();
+      expect((checkButton as HTMLElement).textContent).toBe("");
 
       await act(async () => {
         fireEvent.click(checkButton as HTMLElement);
@@ -1187,7 +1190,7 @@ describe("SO101 terminal session", () => {
       });
 
       expect(checkButton).toHaveAccessibleName("Check");
-      expect(checkButton).toHaveTextContent("Check");
+      expect((checkButton as HTMLElement).textContent).toBe("");
     } finally {
       jest.useRealTimers();
     }
