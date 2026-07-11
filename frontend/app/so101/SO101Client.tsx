@@ -2154,7 +2154,7 @@ export function SO101Client() {
   };
   const rightPanelNavButtonClass = (card: RightPanelCardId) => {
     const activeClass = activeRightPanelCard === card ? "text-zinc-200" : "text-zinc-500 hover:text-zinc-300";
-    return `group flex h-7 min-w-0 flex-1 items-center px-1 transition ${activeClass}`;
+    return `group relative flex h-7 min-w-0 flex-1 items-center px-1 transition ${activeClass}`;
   };
   const rightPanelNavLineClass = (card: RightPanelCardId) => {
     const activeClass = activeRightPanelCard === card ? "h-1.5" : "h-px group-hover:h-1";
@@ -2607,13 +2607,35 @@ export function SO101Client() {
   }
 
   return (
-    <main className="grid min-h-[calc(100vh-7rem)] gap-3 xl:grid-cols-[minmax(0,1fr)_25rem] 2xl:grid-cols-[minmax(0,1fr)_28rem]">
-      <div className="flex min-w-0 flex-col gap-3 xl:h-[calc(100vh-7rem)]">
-        <header className="flex min-h-8 flex-wrap items-center justify-between gap-3">
-          <h1 className="text-2xl font-bold text-body">SO101</h1>
-        </header>
+    <main className="grid min-h-[calc(100vh-7rem)] gap-3 xl:h-[calc(100vh-7rem)] xl:min-h-0 xl:grid-cols-[minmax(0,1fr)_25rem] xl:grid-rows-[auto_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_28rem]">
+      <header className="flex min-h-8 items-center">
+        <h1 className="text-2xl font-bold text-body">SO101</h1>
+      </header>
 
-        <section className="flex min-h-[36rem] flex-1 flex-col rounded-lg border border-theme bg-card p-4 xl:min-h-0">
+      <nav ref={rightPanelNavRef} aria-label="SO101 panel sections" className="sticky top-0 z-20 flex min-h-8 items-center py-1">
+        <div className="flex w-full gap-1">
+          {rightPanelNavItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => jumpToRightPanelCard(item.id)}
+              aria-label={`Show ${item.label} card`}
+              title={item.label}
+              className={rightPanelNavButtonClass(item.id)}
+            >
+              <span className={rightPanelNavLineClass(item.id)} />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute left-1/2 top-full z-30 mt-1 -translate-x-1/2 whitespace-nowrap rounded border border-theme bg-card px-2 py-1 text-[11px] font-semibold text-body opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+              >
+                {item.label}
+              </span>
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      <section className="flex min-h-[36rem] flex-col rounded-lg border border-theme bg-card p-4 xl:min-h-0">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-xl font-semibold accent-text">Terminal</h2>
           <div className="flex items-center gap-2">
@@ -2668,28 +2690,9 @@ export function SO101Client() {
           className="mt-4 min-h-[28rem] flex-1 overflow-hidden rounded-md border border-theme bg-[#07111f] p-2 xl:min-h-0"
         />
         {terminalError ? <p className="mt-3 text-xs text-red-400">{terminalError}</p> : null}
-        </section>
-      </div>
+      </section>
 
-      <div className="min-w-0 space-y-3 xl:flex xl:h-[calc(100vh-7rem)] xl:flex-col">
-        <nav ref={rightPanelNavRef} aria-label="SO101 panel sections" className="sticky top-0 z-20 py-1">
-          <div className="flex w-full gap-1">
-            {rightPanelNavItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => jumpToRightPanelCard(item.id)}
-                aria-label={`Show ${item.label} card`}
-                title={item.label}
-                className={rightPanelNavButtonClass(item.id)}
-              >
-                <span className={rightPanelNavLineClass(item.id)} />
-              </button>
-            ))}
-          </div>
-        </nav>
-
-        <aside ref={rightPanelRef} onScroll={syncRightPanelCardFromScroll} className="space-y-4 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
+      <aside ref={rightPanelRef} onScroll={syncRightPanelCardFromScroll} className="space-y-4 xl:min-h-0 xl:overflow-y-auto xl:pr-1">
         <section ref={registerRightPanelCard("commands")} className="scroll-mt-14 rounded-lg border border-theme bg-card p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
@@ -2790,8 +2793,7 @@ export function SO101Client() {
             </dl>
           </div>
         </section>
-        </aside>
-      </div>
+      </aside>
     </main>
   );
 }

@@ -803,8 +803,9 @@ describe("SO101 terminal session", () => {
       const commandsLine = within(panelNav).getByRole("button", { name: "Show Commands card" });
       const camerasLine = within(panelNav).getByRole("button", { name: "Show Cameras card" });
       expect(commandsLine).toBeInTheDocument();
-      expect(commandsLine.textContent).toBe("");
-      expect(camerasLine.textContent).toBe("");
+      expect(within(commandsLine).getByText("Commands")).toBeInTheDocument();
+      expect(within(camerasLine).getByText("Cameras")).toBeInTheDocument();
+      expect(commandsLine.querySelector("span.h-1\\.5, span.h-px")).not.toBeNull();
       fireEvent.click(camerasLine);
 
       expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start", inline: "nearest" });
