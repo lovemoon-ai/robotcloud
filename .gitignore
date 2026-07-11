@@ -5,6 +5,7 @@ frontend/.next
 frontend/node_modules
 frontend/tsconfig.tsbuildinfo
 *.tsbuildinfo
+frontend/next-env.d.ts
 *.swp
 *.swo
 .env
