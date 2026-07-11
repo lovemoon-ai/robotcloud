@@ -818,6 +818,65 @@ describe("SO101 terminal session", () => {
     }
   });
 
+  it("updates the right panel line navigation from page scroll", async () => {
+    installDesktopBridge();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    }) as typeof window.requestAnimationFrame;
+
+    try {
+      const view = render(<SO101Client />);
+
+      await waitFor(() => {
+        expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+      });
+
+      const rect = (top: number, height = 40) => ({
+        bottom: top + height,
+        height,
+        left: 0,
+        right: 320,
+        toJSON: () => ({}),
+        top,
+        width: 320,
+        x: 0,
+        y: top
+      });
+      const setRect = (element: Element | null, top: number, height?: number) => {
+        expect(element).not.toBeNull();
+        Object.defineProperty(element, "getBoundingClientRect", {
+          configurable: true,
+          value: () => rect(top, height)
+        });
+      };
+
+      const panelNav = view.getByRole("navigation", { name: "SO101 panel sections" });
+      const commandsLine = within(panelNav).getByRole("button", { name: "Show Commands card" }).querySelector("span");
+      const camerasLine = within(panelNav).getByRole("button", { name: "Show Cameras card" }).querySelector("span");
+
+      setRect(panelNav, 0, 32);
+      setRect(view.getByRole("heading", { name: "Quick Commands" }).closest("section"), -260);
+      setRect(view.getByRole("heading", { name: "Connection" }).closest("section"), -120);
+      setRect(view.getByRole("heading", { name: "Cameras" }).closest("section"), 20);
+      setRect(view.getByRole("heading", { name: "Record" }).closest("section"), 220);
+      setRect(view.getByRole("heading", { name: "Infer" }).closest("section"), 420);
+      setRect(view.getByText("Runtime").closest("section"), 620);
+
+      act(() => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+
+      await waitFor(() => {
+        expect(camerasLine).toHaveClass("h-1.5");
+      });
+      expect(commandsLine).toHaveClass("h-px");
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+    }
+  });
+
   it("writes an infer action command from the current cards", async () => {
     const { terminalWrite } = installDesktopBridge();
     jest.spyOn(robotCloudApi, "fetchInferenceJobs").mockResolvedValue([
@@ -1088,6 +1147,50 @@ describe("SO101 terminal session", () => {
     expect(view.getByLabelText("Width")).toHaveValue("640");
     expect(view.getByLabelText("Height")).toHaveValue("480");
     expect(view.getByLabelText("FPS")).toHaveValue("30");
+  });
+
+  it("shows check results inside the button before restoring the check label", async () => {
+    const { validateCamera } = installDesktopBridge();
+    validateCamera.mockResolvedValue({
+      ok: true,
+      message: "Camera is available: 0",
+      width: 640,
+      height: 480,
+      fps: 30
+    });
+
+    const view = render(<SO101Client />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("mock-xterm")).toHaveTextContent("RobotCloud terminal: /bin/zsh");
+    });
+
+    jest.useFakeTimers();
+    try {
+      const checkButton = view
+        .getAllByRole("button", { name: "Check" })
+        .find((button) => !button.hasAttribute("disabled"));
+      expect(checkButton).toBeDefined();
+
+      await act(async () => {
+        fireEvent.click(checkButton as HTMLElement);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(validateCamera).toHaveBeenCalledWith("0", 640, 480, 30);
+      expect(checkButton).toHaveAccessibleName("Check passed");
+      expect(checkButton).toHaveTextContent("✓");
+
+      act(() => {
+        jest.advanceTimersByTime(3000);
+      });
+
+      expect(checkButton).toHaveAccessibleName("Check");
+      expect(checkButton).toHaveTextContent("Check");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("fills blank camera dimensions from a successful camera check", async () => {
