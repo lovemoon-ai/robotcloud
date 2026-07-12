@@ -114,7 +114,7 @@ import-dataset-h20() {
         --api-base "$ROBOTCLOUD_API_BASE" \
         --token "$ROBOTCLOUD_TOKEN" \
         --target-node h20 \
-        --name so101-demo \
+        --name "$2" \
         --visibility public
     cd -
 }
@@ -122,4 +122,4 @@ import-dataset-h20() {
 echo ">> send-code"
 echo ">> get-token"
 echo ">> upload-dataset [path to dataset zip]"
-echo ">> import-dataset-h20 [local path to dataset zip on h20]"
+echo ">> import-dataset-h20 [local path to dataset zip on h20] [dataset name]"
