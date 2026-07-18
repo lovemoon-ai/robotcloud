@@ -1,0 +1,16 @@
+# RoboCloud tunnel 用户的 authorized_keys 模板（第二层双保险）
+# 由 setup_amd.sh 安装到 ~__TUNNEL_USER__/.ssh/authorized_keys
+#
+# 每条授权都用 restrict 先禁掉一切，再单独放开 port-forwarding，并用 permitopen 限死目标端口。
+# 与 sshd Match 块（PermitOpen）叠加，双保险。
+#
+# 占位符：
+#   __VOLC_PUBKEY__       volc->AMD 隧道公钥内容（控制/数据面，端口 __AGENT_PORT__）
+#   __INFERENCE_NOTE__    推理走 SSH CA 短期证书，无需在此列固定公钥（保留说明）
+
+# ① volc 常驻隧道：只能转发到 Agent HTTP 端口
+restrict,port-forwarding,permitopen="127.0.0.1:__AGENT_PORT__",command="/usr/bin/sleep infinity" __VOLC_PUBKEY__
+
+# ② 机器人推理隧道：由后端用 SSH CA 签发短期证书（force-command + permit-port-forwarding +
+#    source-address），无需在此写死长期公钥。若临时用静态密钥测试，可按下行放开推理端口：
+# restrict,port-forwarding,permitopen="127.0.0.1:__INFERENCE_PORT__",command="/usr/bin/sleep infinity" ssh-ed25519 AAAA...test infer-tunnel@robotcloud

@@ -1,0 +1,15 @@
+# RoboCloud rc-tunnel 账号的 ssh config
+# 由 setup_volc.sh 安装到 /var/lib/rc-tunnel/.ssh/config （权限 600, 属主 rc-tunnel）
+# 占位符由脚本替换：__AMD_HOST__ __AMD_PORT__ __AMD_TUNNEL_USER__
+
+Host amd-gpu
+    HostName __AMD_HOST__
+    Port __AMD_PORT__
+    User __AMD_TUNNEL_USER__
+    IdentityFile /var/lib/rc-tunnel/.ssh/id_amd_tunnel
+    IdentitiesOnly yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /var/lib/rc-tunnel/.ssh/known_hosts
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+    ExitOnForwardFailure yes
