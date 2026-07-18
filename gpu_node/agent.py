@@ -1845,7 +1845,7 @@ class Agent:
 
     def __init__(self, config: AgentConfig, session: Optional[requests.Session] = None) -> None:
         self.config = config
-        self.logger = logging.getLogger("robotcloud.gpu_agent")
+        self.logger = logging.getLogger("robotcloud.gpu_node")
         self.session = session or requests.Session()
         self.agent_token: Optional[str] = None
         self._jobs: Dict[int, TrainingJob] = {}
@@ -2472,7 +2472,7 @@ class Agent:
 
     def dataset_dir(self, task_id: int) -> Path:
         """Return a persistent per-task dataset directory on the agent host."""
-        root = self.config.dataset_cache_dir.parent  # backend_root/storage
+        root = self.config.dataset_cache_dir.parent  # storage_root（gpu_node/storage）
         return (root / "datasets" / f"task_{task_id}").resolve()
 
     def dataset_cache_root(self, md5: str) -> Path:

@@ -11,8 +11,8 @@ from .config import AgentConfig
 
 
 def main() -> None:
-    backend_root = Path(__file__).resolve().parents[1]
-    repo_root = backend_root.parent
+    # __file__ = <repo_root>/gpu_node/__main__.py -> parents[1] 即项目根目录
+    repo_root = Path(__file__).resolve().parents[1]
     env_file = os.getenv("ENV_FILE", ".env")
     load_dotenv(repo_root / env_file)
     

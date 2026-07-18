@@ -15,13 +15,13 @@ from typing import Any, Dict, List, Tuple
 import pytest
 import requests
 
-from gpu_agent.agent import Agent, AgentHTTPRequestHandler, AgentHTTPServer, InferenceJob, TrainingJob
-from gpu_agent.config import AgentConfig
+from gpu_node.agent import Agent, AgentHTTPRequestHandler, AgentHTTPServer, InferenceJob, TrainingJob
+from gpu_node.config import AgentConfig
 
 
 class _StubAgent:
     def __init__(self) -> None:
-        self.logger = logging.getLogger("robotcloud.test.gpu_agent")
+        self.logger = logging.getLogger("robotcloud.test.gpu_node")
         self._notifications: List[Tuple[int, str, float, Dict[str, Any]]] = []
         self.finished: List[int] = []
 

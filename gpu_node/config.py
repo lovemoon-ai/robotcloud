@@ -71,11 +71,15 @@ class AgentConfig:
         heartbeat_interval = max(_int_env("AGENT_HEARTBEAT_INTERVAL", 30), 5)
         version = os.getenv("AGENT_VERSION", "1.0.0")
         step_delay = max(_float_env("AGENT_STEP_DELAY", 0.5), 0.1)
-        backend_root = Path(__file__).resolve().parents[1]
-        repo_root = backend_root.parent
-        log_dir = Path(os.getenv("AGENT_LOG_DIR", backend_root / "storage" / "train_logs")).expanduser().resolve()
+        # gpu_node 已从 backend 解耦并移到项目根目录：
+        #   __file__ = <repo_root>/gpu_node/config.py
+        #   repo_root    -> 项目根目录（work_dir 默认值，供 scripts/lerobot-*.sh 使用）
+        #   storage_root -> gpu_node/storage（本节点自带的日志/数据集缓存，不再落在 backend 下）
+        repo_root = Path(__file__).resolve().parents[1]
+        storage_root = Path(__file__).resolve().parent / "storage"
+        log_dir = Path(os.getenv("AGENT_LOG_DIR", storage_root / "train_logs")).expanduser().resolve()
         work_dir = Path(os.getenv("AGENT_WORK_DIR", repo_root)).expanduser().resolve()
-        dataset_cache_dir = Path(os.getenv("AGENT_DATASET_DIR", backend_root / "storage" / "datasets_cache")).expanduser().resolve()
+        dataset_cache_dir = Path(os.getenv("AGENT_DATASET_DIR", storage_root / "datasets_cache")).expanduser().resolve()
         return cls(
             backend_base_url=backend_base,
             node_name=node_name,

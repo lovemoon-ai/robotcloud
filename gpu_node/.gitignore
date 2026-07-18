@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+*.egg-info/
+storage/
+# uv.lock 随仓库提交（与 backend 一致，保证可复现部署）

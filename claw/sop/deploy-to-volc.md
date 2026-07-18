@@ -474,7 +474,7 @@ ssh -i "$SSH_KEY" "$SERVER" '
 '
 ```
 
-期望至少看到 `robotcloud-backend.service`、`robotcloud-scheduler.service` 和 `127.0.0.1:6150`。如果后端通过 SSH tunnel 访问 GPU Agent，也可能看到类似 `robotcloud-h20-tunnel.service` 和本地 `127.0.0.1:6153` 转发端口。不要在 Volc Web 服务器上看到 `python -m gpu_agent` 这类 GPU Agent 进程。服务器上已有的云厂商监控 agent 或其它项目服务不属于 RobotCloud GPU Agent。
+期望至少看到 `robotcloud-backend.service`、`robotcloud-scheduler.service` 和 `127.0.0.1:6150`。如果后端通过 SSH tunnel 访问 GPU Agent，也可能看到类似 `robotcloud-h20-tunnel.service` 和本地 `127.0.0.1:6153` 转发端口。不要在 Volc Web 服务器上看到 `python -m gpu_node` 这类 GPU Agent 进程。服务器上已有的云厂商监控 agent 或其它项目服务不属于 RobotCloud GPU Agent。
 
 ---
 
@@ -518,7 +518,7 @@ ssh -i "$SSH_KEY" "$SERVER" '
 | `502 Bad Gateway` | `robotcloud-backend.service` 未运行或 gunicorn 没监听 `127.0.0.1:6150`。看 `journalctl -u robotcloud-backend.service`。 |
 | 服务器没有 `python3 -m venv` | 安装 `python3.10-venv`。 |
 | 线上还是旧页面 | 服务器没有 reset 到最新 commit，或前端没有重新 `npm run build`。核对 local/server HEAD。 |
-| 不小心在 Volc Web 服务器上启动了 GPU Agent | 停掉 `python -m gpu_agent` 或对应 systemd。Volc Web 服务器只保留 backend、scheduler，以及可选的 Agent SSH tunnel；GPU Agent 应跑在 GPU 机器。 |
+| 不小心在 Volc Web 服务器上启动了 GPU Agent | 停掉 `python -m gpu_node` 或对应 systemd。Volc Web 服务器只保留 backend、scheduler，以及可选的 Agent SSH tunnel；GPU Agent 应跑在 GPU 机器。 |
 
 ---
 

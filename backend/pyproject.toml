@@ -29,7 +29,6 @@ packages = [
     "robotcloud_backend",
     "robotcloud_backend.api",
     "robotcloud_backend.api.migrations",
-    "gpu_agent",
 ]
 
 [tool.pytest.ini_options]

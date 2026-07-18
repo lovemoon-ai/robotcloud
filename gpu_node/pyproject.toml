@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robotcloud-gpu-node"
+version = "0.1.0"
+description = "RobotCloud GPU node agent —— 独立运行在 GPU 机器上，负责数据接收/训练/推理，与 backend 解耦"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+robotcloud-gpu-node = "gpu_node.__main__:main"
+
+[tool.setuptools]
+# 该 pyproject 位于 gpu_node 包目录内部：把 "gpu_node" 包映射到当前目录 "."，
+# 使 `import gpu_node` 直接加载本目录下的 agent.py / config.py / __main__.py。
+package-dir = { "gpu_node" = "." }
+packages = ["gpu_node"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# rootdir 为本目录（gpu_node/）；".." 指向项目根，使 `import gpu_node` 解析到 <repo>/gpu_node
+pythonpath = [".."]
+addopts = "-q"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.4",
+]
