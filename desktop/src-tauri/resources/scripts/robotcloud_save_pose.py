@@ -13,15 +13,27 @@ from typing import Any
 
 from lerobot.configs import parser
 from lerobot.processor import make_default_processors
-from lerobot.robots import RobotConfig, make_robot_from_config, so_follower  # noqa: F401
-from lerobot.teleoperators import TeleoperatorConfig, make_teleoperator_from_config, so_leader  # noqa: F401
+from lerobot.robots import (  # noqa: F401
+    RobotConfig,
+    bi_so_follower,
+    make_robot_from_config,
+    so_follower,
+)
+from lerobot.teleoperators import (  # noqa: F401
+    TeleoperatorConfig,
+    bi_so_leader,
+    make_teleoperator_from_config,
+    so_leader,
+)
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import init_logging
 
 HOLD_TIME_S = 3.0
 STATIONARY_TOLERANCE = 1.0
-EXPECTED_JOINT_COUNT = 6
+# Single SO arm reports 6 `.pos` joints; a bimanual `bi_so` robot reports a
+# multiple of that (12 for two arms). Accept any positive multiple of 6.
+JOINTS_PER_ARM = 6
 SAVED_POSE_VERSION = 1
 
 
@@ -63,9 +75,9 @@ def numeric_action(action: dict[str, Any]) -> dict[str, float]:
             values[key] = float(value)
         except (TypeError, ValueError):
             continue
-    if len(values) != EXPECTED_JOINT_COUNT:
+    if len(values) == 0 or len(values) % JOINTS_PER_ARM != 0:
         raise RuntimeError(
-            f"Expected {EXPECTED_JOINT_COUNT} numeric '.pos' action fields, got {len(values)}."
+            f"Expected a positive multiple of {JOINTS_PER_ARM} numeric '.pos' action fields, got {len(values)}."
         )
     return values
 

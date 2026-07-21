@@ -775,13 +775,13 @@ describe("SO101 terminal session", () => {
     const camerasSection = view.getByRole("heading", { name: "Cameras" }).closest("section");
     expect(camerasSection).not.toBeNull();
 
-    const cameraLabel = within(camerasSection as HTMLElement).getByText("Head camera");
-    expect(within(camerasSection as HTMLElement).getByText("Wrist camera")).toBeInTheDocument();
+    const nameInputs = within(camerasSection as HTMLElement).getAllByLabelText("Name");
+    expect(nameInputs.length).toBeGreaterThanOrEqual(2);
     const addCameraButton = within(camerasSection as HTMLElement).getByRole("button", { name: "Add camera" });
-    const cameraCard = cameraLabel.closest(".rounded-md") as HTMLElement;
+    const cameraCard = nameInputs[0].closest("div.rounded-md") as HTMLElement;
     const cameraControls = within(cameraCard);
 
-    expect(cameraLabel.compareDocumentPosition(addCameraButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(nameInputs[0].compareDocumentPosition(addCameraButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(cameraControls.getByLabelText("Name")).toHaveValue("head");
     expect(
       cameraControls.getByLabelText("Name").compareDocumentPosition(cameraControls.getByLabelText("Camera id/path")) &
@@ -1455,6 +1455,138 @@ describe("SO101 command generation", () => {
     ).toBe("D:\\robot data\\episodes");
   });
 
+  describe("dual arm", () => {
+    const dualForm = {
+      ...initialForm,
+      dualArm: true,
+      followerPort: "/dev/cu.follower-left",
+      followerPortRight: "/dev/cu.follower-right",
+      leaderPort: "/dev/cu.leader-left",
+      leaderPortRight: "/dev/cu.leader-right",
+      robotId: "bi-follower",
+      teleopId: "bi-leader",
+      task: "Pick the cube"
+    };
+
+    it("teleoperates through the bi_so types with per-arm ports", () => {
+      const command = buildActionCommand("teleop", dualForm, desktopStatus, 2);
+
+      expect(command).toContain("--robot.type=bi_so_follower");
+      expect(command).toContain("--robot.left_arm_config.port='/dev/cu.follower-left'");
+      expect(command).toContain("--robot.right_arm_config.port='/dev/cu.follower-right'");
+      expect(command).toContain("--robot.id='bi-follower'");
+      expect(command).toContain("--teleop.type=bi_so_leader");
+      expect(command).toContain("--teleop.left_arm_config.port='/dev/cu.leader-left'");
+      expect(command).toContain("--teleop.right_arm_config.port='/dev/cu.leader-right'");
+      expect(command).not.toContain("so101_follower");
+      expect(command).not.toContain("--robot.port=");
+    });
+
+    it("splits cameras across arms when recording", () => {
+      const command = buildActionCommand(
+        "record",
+        {
+          ...dualForm,
+          cameras: [
+            { name: "head", id: "0", width: 640, height: 480, fps: 30, view: "head" },
+            { name: "wrist", id: "1", width: 640, height: 480, fps: 30, view: "right_arm" },
+            { name: "z_side", id: "2", width: 640, height: 480, fps: 30, view: "left_arm" }
+          ]
+        },
+        desktopStatus,
+        3
+      );
+
+      expect(command).toContain("--robot.left_arm_config.cameras=");
+      expect(command).toContain("--robot.right_arm_config.cameras=");
+      expect(command).not.toContain("--robot.cameras=");
+      const left = command.match(/--robot\.left_arm_config\.cameras='([^']*)'/)?.[1] ?? "";
+      const right = command.match(/--robot\.right_arm_config\.cameras='([^']*)'/)?.[1] ?? "";
+      // `head` view attaches to the left arm bucket alongside the left-arm camera.
+      expect(left).toContain("head:");
+      expect(left).toContain("z_side:");
+      expect(left).not.toContain("wrist:");
+      expect(right).toContain("wrist:");
+    });
+
+    it("attaches head and others views to the left arm bucket", () => {
+      const command = buildActionCommand(
+        "record",
+        {
+          ...dualForm,
+          cameras: [
+            { name: "head", id: "0", width: 640, height: 480, fps: 30, view: "head" },
+            { name: "wrist", id: "1", width: 640, height: 480, fps: 30, view: "right_arm" },
+            { name: "extra", id: "2", width: 640, height: 480, fps: 30, view: "others" }
+          ]
+        },
+        desktopStatus,
+        3
+      );
+
+      const left = command.match(/--robot\.left_arm_config\.cameras='([^']*)'/)?.[1] ?? "";
+      const right = command.match(/--robot\.right_arm_config\.cameras='([^']*)'/)?.[1] ?? "";
+      expect(left).toContain("head:");
+      expect(left).toContain("extra:");
+      expect(right).toContain("wrist:");
+      expect(right).not.toContain("head:");
+    });
+
+    it("keeps --dataset.root adjacent to the dataset args as arg counts vary", () => {
+      const command = buildActionCommand(
+        "record",
+        { ...dualForm, datasetRoot: "/data/episodes" },
+        desktopStatus,
+        1
+      );
+
+      expect(command).toContain("--dataset.repo_id='local/so101_desktop' --dataset.root='/data/episodes'");
+    });
+
+    it("chains one setup-motors run per arm, since bi types are not supported there", () => {
+      const command = buildActionCommand("setup-follower", dualForm, desktopStatus, 1);
+
+      expect(command).not.toContain("bi_so_follower");
+      expect(command).toContain("--robot.port='/dev/cu.follower-left' --robot.id='bi-follower_left'");
+      expect(command).toContain("--robot.port='/dev/cu.follower-right' --robot.id='bi-follower_right'");
+      expect(command.split("&&")).toHaveLength(2);
+    });
+
+    it("short-circuits the per-arm setup chain on Windows without && ", () => {
+      const windowsStatus: DesktopStatus = { ...desktopStatus, platform: "windows" };
+      const command = buildActionCommand("setup-follower", dualForm, windowsStatus, 1);
+
+      expect(command).not.toContain("&&");
+      // Right arm runs only if the left-arm setup exited 0.
+      expect(command).toContain("; if ($LASTEXITCODE -eq 0) {");
+      expect(command).toContain("--robot.id='bi-follower_left'");
+      expect(command).toContain("--robot.id='bi-follower_right'");
+    });
+
+    it("calibrates both arms in a single bi_so run", () => {
+      const command = buildActionCommand("calibrate-follower", dualForm, desktopStatus, 1);
+
+      expect(command).toContain("python -m lerobot.scripts.lerobot_calibrate");
+      expect(command).toContain("--robot.type=bi_so_follower");
+      expect(command).not.toContain("&&");
+    });
+
+    it("leaves single-arm commands unchanged", () => {
+      const command = buildActionCommand(
+        "teleop",
+        { ...dualForm, dualArm: false },
+        desktopStatus,
+        1
+      );
+
+      expect(command).toContain("--robot.type=so101_follower");
+      expect(command).toContain("--robot.port='/dev/cu.follower-left'");
+      expect(command).toContain("--teleop.type=so101_leader");
+      expect(command).not.toContain("bi_so");
+      expect(command).not.toContain("_arm_config");
+    });
+  });
+
   it("builds record commands with escaped user controlled values", () => {
     const command = buildActionCommand(
       "record",
@@ -1835,6 +1967,24 @@ describe("SO101 command generation", () => {
     expect(saved?.cameras[2].name).toBe("custom_third");
   });
 
+  it("defaults camera view to left arm and migrates the legacy arm field", () => {
+    const saved = parseConnectionSettings(
+      JSON.stringify({
+        storageVersion: 6,
+        cameraCount: 3,
+        cameras: [
+          { name: "head", id: "0", width: 640, height: 480, fps: 30 },
+          { name: "wrist", id: "1", width: 640, height: 480, fps: 30, arm: "right" },
+          { name: "z_side", id: "2", width: 640, height: 480, fps: 30, arm: "left" }
+        ]
+      })
+    );
+
+    expect(saved?.cameras[0].view).toBe("left_arm");
+    expect(saved?.cameras[1].view).toBe("right_arm");
+    expect(saved?.cameras[2].view).toBe("left_arm");
+  });
+
   it("normalizes persisted infer server URLs", () => {
     const serialized = serializeConnectionSettings(
       {
@@ -1929,9 +2079,9 @@ describe("SO101 command generation", () => {
         inferChunkSizeThreshold: "0.25",
         inferAggregateFnName: "mean",
         cameras: [
-          { name: "front", id: "0", width: 1280, height: 720, fps: 30 },
-          { name: "side", id: "2", width: 640, height: 480, fps: 15 },
-          { name: "wrist", id: "3", width: 320, height: 240, fps: 10 }
+          { name: "front", id: "0", width: 1280, height: 720, fps: 30, view: "left_arm" },
+          { name: "side", id: "2", width: 640, height: 480, fps: 15, view: "left_arm" },
+          { name: "wrist", id: "3", width: 320, height: 240, fps: 10, view: "right_arm" }
         ]
       },
       2
@@ -1979,7 +2129,7 @@ describe("SO101 command generation", () => {
     expect(removeCameraAtIndex(cameras, 1)).toEqual([
       { name: "front", id: "0", width: 1280, height: 720, fps: 30 },
       { name: "wrist", id: "2", width: 320, height: 240, fps: 10 },
-      { name: "z_side", id: "2", width: 640, height: 480, fps: 30 }
+      { name: "z_side", id: "2", width: 640, height: 480, fps: 30, view: "left_arm" }
     ]);
   });
 });

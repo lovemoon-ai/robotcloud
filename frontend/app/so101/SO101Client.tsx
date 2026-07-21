@@ -16,17 +16,38 @@ import { useAuthStore } from "@/store/useAuthStore";
 import { useLocaleStore } from "@/store/useLocaleStore";
 import type { InferenceJob } from "@/types";
 
+// Which physical arm bucket a camera lands in (lerobot `bi_so` only has two).
+type ArmSide = "left" | "right";
+// User-facing camera viewpoint, chosen per camera in dual-arm mode. `head` and
+// `others` have no dedicated bucket in lerobot, so they attach to the left arm.
+type CameraView = "left_arm" | "right_arm" | "head" | "others";
+const cameraViewOptions: Array<{ value: CameraView; label: string }> = [
+  { value: "left_arm", label: "Left arm" },
+  { value: "right_arm", label: "Right arm" },
+  { value: "head", label: "Head" },
+  { value: "others", label: "Others" }
+];
+function cameraViewToArm(view: CameraView): ArmSide {
+  return view === "right_arm" ? "right" : "left";
+}
+
 type CameraForm = {
   name: string;
   id: string;
   width: number;
   height: number;
   fps: number;
+  view: CameraView;
 };
 
 type FormState = {
+  // In dual-arm mode `followerPort`/`leaderPort` drive the LEFT arm and the
+  // `*PortRight` fields drive the right one.
+  dualArm: boolean;
   followerPort: string;
   leaderPort: string;
+  followerPortRight: string;
+  leaderPortRight: string;
   cameras: [CameraForm, CameraForm, CameraForm];
   robotId: string;
   teleopId: string;
@@ -64,7 +85,7 @@ type PendingDatasetUpload = DatasetPrepareUploadConfig & {
 type TerminalPhase = "preparing" | "starting" | "ready" | "failed" | "closed";
 type CheckPhase = "idle" | "checking" | "valid" | "invalid";
 type CheckState = { phase: CheckPhase; message: string };
-type PortKey = "followerPort" | "leaderPort";
+type PortKey = "followerPort" | "leaderPort" | "followerPortRight" | "leaderPortRight";
 type CameraConfigFieldId =
   | "camera0Name"
   | "camera0Id"
@@ -145,7 +166,7 @@ type ShellDialect = "posix" | "powershell";
 const CONNECTION_STORAGE_KEY = "robotcloud-so101-connection";
 const DATASET_UPLOAD_PENDING_STORAGE_KEY = "robotcloud:so101-upload-pending";
 const DATASET_UPLOAD_PENDING_TTL_MS = 6 * 60 * 60 * 1000;
-const CONNECTION_STORAGE_VERSION = 5;
+const CONNECTION_STORAGE_VERSION = 7;
 const DEFAULT_CAMERA_COUNT = 2;
 const DEFAULT_MAX_RELATIVE_TARGET = 5;
 const LEGACY_DEFAULT_EPISODES = 1;
@@ -170,7 +191,8 @@ const initialCamera: CameraForm = {
   id: "",
   width: 640,
   height: 480,
-  fps: 30
+  fps: 30,
+  view: "left_arm"
 };
 
 function defaultCameraName(index: number) {
@@ -186,8 +208,11 @@ function defaultCamera(index: number): CameraForm {
 }
 
 const initialForm: FormState = {
+  dualArm: false,
   followerPort: "",
   leaderPort: "",
+  followerPortRight: "",
+  leaderPortRight: "",
   cameras: [
     defaultCamera(0),
     defaultCamera(1),
@@ -553,6 +578,16 @@ function cameraValidationValue(value: number) {
   return toPositiveInteger(value) ?? 0;
 }
 
+// Accept a stored `view`, or migrate the legacy `arm` field ("left"/"right")
+// that a pre-release build persisted before views existed.
+function normalizeCameraView(source: { view?: unknown; arm?: unknown }): CameraView {
+  if (typeof source.view === "string" && cameraViewOptions.some((option) => option.value === source.view)) {
+    return source.view as CameraView;
+  }
+  if (source.arm === "right") return "right_arm";
+  return "left_arm";
+}
+
 function normalizeCamera(
   value: unknown,
   index: number,
@@ -566,7 +601,8 @@ function normalizeCamera(
     id: typeof source.id === "string" ? source.id : fallback.id,
     width: toNumber(source.width, fallback.width),
     height: toNumber(source.height, fallback.height),
-    fps: toNumber(source.fps, fallback.fps)
+    fps: toNumber(source.fps, fallback.fps),
+    view: normalizeCameraView(source)
   };
   if (
     migrateLegacyDefaults &&
@@ -623,8 +659,13 @@ export function parseConnectionSettings(raw: string | null) {
     const migrateLegacyCameraNames = storageVersion < 5;
     const episodes = toFiniteNumber(parsed.episodes, initialForm.episodes);
     return {
+      dualArm: toBoolean(parsed.dualArm, initialForm.dualArm),
       followerPort: typeof parsed.followerPort === "string" ? parsed.followerPort : initialForm.followerPort,
       leaderPort: typeof parsed.leaderPort === "string" ? parsed.leaderPort : initialForm.leaderPort,
+      followerPortRight:
+        typeof parsed.followerPortRight === "string" ? parsed.followerPortRight : initialForm.followerPortRight,
+      leaderPortRight:
+        typeof parsed.leaderPortRight === "string" ? parsed.leaderPortRight : initialForm.leaderPortRight,
       robotId: typeof parsed.robotId === "string" ? parsed.robotId : initialForm.robotId,
       teleopId: typeof parsed.teleopId === "string" ? parsed.teleopId : initialForm.teleopId,
       datasetRepoId: typeof parsed.datasetRepoId === "string" ? parsed.datasetRepoId : initialForm.datasetRepoId,
@@ -664,8 +705,11 @@ export function parseConnectionSettings(raw: string | null) {
 export function serializeConnectionSettings(form: FormState, cameraCount: number) {
   return JSON.stringify({
     storageVersion: CONNECTION_STORAGE_VERSION,
+    dualArm: form.dualArm,
     followerPort: form.followerPort,
     leaderPort: form.leaderPort,
+    followerPortRight: form.followerPortRight,
+    leaderPortRight: form.leaderPortRight,
     robotId: form.robotId,
     teleopId: form.teleopId,
     datasetRepoId: form.datasetRepoId,
@@ -775,10 +819,11 @@ function clearPendingDatasetUpload(): void {
   sessionStorage.removeItem(DATASET_UPLOAD_PENDING_STORAGE_KEY);
 }
 
-function cameraConfigValue(form: FormState, cameraCount: number, required = false) {
+function cameraConfigValue(form: FormState, cameraCount: number, required = false, side?: ArmSide) {
   const entries = form.cameras
     .slice(0, cameraCount)
     .map((camera, index) => ({ camera, index }))
+    .filter(({ camera }) => (side ? cameraViewToArm(camera.view) === side : true))
     .filter(({ camera }) => camera.id.trim())
     .map(({ camera, index }) => {
       const label = cameraLabels[index] ?? "Head camera";
@@ -796,10 +841,26 @@ function cameraConfigValue(form: FormState, cameraCount: number, required = fals
   return `{ ${entries.join(", ")} }`;
 }
 
-function cameraConfigArg(form: FormState, cameraCount: number, quote: (value: string) => string, required = false) {
-  const value = cameraConfigValue(form, cameraCount, required);
-  if (!value) return null;
-  return `--robot.cameras=${quote(value)}`;
+// Single-arm emits one `--robot.cameras`; dual-arm splits the same camera list
+// across `--robot.{left,right}_arm_config.cameras` by each camera's `arm`.
+function cameraConfigArgs(
+  form: FormState,
+  cameraCount: number,
+  quote: (value: string) => string,
+  required = false
+): string[] {
+  if (!form.dualArm) {
+    const value = cameraConfigValue(form, cameraCount, required);
+    return value ? [`--robot.cameras=${quote(value)}`] : [];
+  }
+  // Validate every configured camera, but let either arm be camera-less.
+  const left = cameraConfigValue(form, cameraCount, false, "left");
+  const right = cameraConfigValue(form, cameraCount, false, "right");
+  if (required && !left && !right) throw new ConfigValidationError("Head camera", "camera0Id");
+  const args: string[] = [];
+  if (left) args.push(`--robot.left_arm_config.cameras=${quote(left)}`);
+  if (right) args.push(`--robot.right_arm_config.cameras=${quote(right)}`);
+  return args;
 }
 
 function alignFormWithRunningInferenceJob(form: FormState, job: InferenceJob): FormState {
@@ -854,68 +915,116 @@ function bundledScriptCommand(
 export function buildActionCommand(action: ActionId, form: FormState, status: DesktopStatus | null, cameraCount: number) {
   const dialect = shellDialect(status);
   const quote = (value: string) => shellArg(value, dialect);
-  const followerPort = () => requireValue(form.followerPort, "Follower port");
-  const leaderPort = () => requireValue(form.leaderPort, "Leader port");
+  const dual = form.dualArm;
+  const followerPort = () => requireValue(form.followerPort, dual ? "Left follower port" : "Follower port");
+  const leaderPort = () => requireValue(form.leaderPort, dual ? "Left leader port" : "Leader port");
+  const followerPortRight = () => requireValue(form.followerPortRight, "Right follower port");
+  const leaderPortRight = () => requireValue(form.leaderPortRight, "Right leader port");
   const robotId = () => requireValue(form.robotId, "Robot ID");
   const teleopId = () => requireValue(form.teleopId, "Teleop ID");
+
+  // `bi_so_follower`/`bi_so_leader` derive their per-arm calibration ids as
+  // `<id>_left` / `<id>_right`, so single-arm invocations in dual mode must
+  // use those same suffixed ids to hit the same calibration files.
+  const armId = (id: string, side: ArmSide) => `${id}_${side}`;
+  // Chain commands so each runs only if the previous one succeeded. PowerShell
+  // 5.1 has no `&&`, so short-circuit on the prior native command's exit code.
+  const chain = (commands: string[]) =>
+    dialect === "powershell"
+      ? commands.reduce((acc, cmd) => `${acc}; if ($LASTEXITCODE -eq 0) { ${cmd} }`)
+      : commands.join(" && ");
+
+  const robotArgs = () =>
+    dual
+      ? [
+          "--robot.type=bi_so_follower",
+          `--robot.left_arm_config.port=${quote(followerPort())}`,
+          `--robot.right_arm_config.port=${quote(followerPortRight())}`,
+          `--robot.id=${quote(robotId())}`
+        ]
+      : [
+          "--robot.type=so101_follower",
+          `--robot.port=${quote(followerPort())}`,
+          `--robot.id=${quote(robotId())}`
+        ];
+
+  const teleopArgs = () =>
+    dual
+      ? [
+          "--teleop.type=bi_so_leader",
+          `--teleop.left_arm_config.port=${quote(leaderPort())}`,
+          `--teleop.right_arm_config.port=${quote(leaderPortRight())}`,
+          `--teleop.id=${quote(teleopId())}`
+        ]
+      : [
+          "--teleop.type=so101_leader",
+          `--teleop.port=${quote(leaderPort())}`,
+          `--teleop.id=${quote(teleopId())}`
+        ];
 
   switch (action) {
     case "info":
       return lerobotCommand(status, "lerobot-info");
     case "find-port":
       return lerobotCommand(status, "lerobot-find-port");
-    case "setup-follower":
-      return [
-        lerobotCommand(status, "lerobot-setup-motors"),
-        "--robot.type=so101_follower",
-        `--robot.port=${quote(followerPort())}`,
-        `--robot.id=${quote(robotId())}`
-      ].join(" ");
-    case "setup-leader":
-      return [
-        lerobotCommand(status, "lerobot-setup-motors"),
-        "--teleop.type=so101_leader",
-        `--teleop.port=${quote(leaderPort())}`,
-        `--teleop.id=${quote(teleopId())}`
-      ].join(" ");
+    // `lerobot_setup_motors` rejects the `bi_*` types (its COMPATIBLE_DEVICES
+    // list is single-arm only), so dual mode chains one run per arm instead.
+    case "setup-follower": {
+      const setupMotors = lerobotCommand(status, "lerobot-setup-motors");
+      const armSetup = (port: string, side: ArmSide) =>
+        [
+          setupMotors,
+          "--robot.type=so101_follower",
+          `--robot.port=${quote(port)}`,
+          `--robot.id=${quote(armId(robotId(), side))}`
+        ].join(" ");
+      if (!dual) {
+        return [
+          setupMotors,
+          "--robot.type=so101_follower",
+          `--robot.port=${quote(followerPort())}`,
+          `--robot.id=${quote(robotId())}`
+        ].join(" ");
+      }
+      return chain([armSetup(followerPort(), "left"), armSetup(followerPortRight(), "right")]);
+    }
+    case "setup-leader": {
+      const setupMotors = lerobotCommand(status, "lerobot-setup-motors");
+      const armSetup = (port: string, side: ArmSide) =>
+        [
+          setupMotors,
+          "--teleop.type=so101_leader",
+          `--teleop.port=${quote(port)}`,
+          `--teleop.id=${quote(armId(teleopId(), side))}`
+        ].join(" ");
+      if (!dual) {
+        return [
+          setupMotors,
+          "--teleop.type=so101_leader",
+          `--teleop.port=${quote(leaderPort())}`,
+          `--teleop.id=${quote(teleopId())}`
+        ].join(" ");
+      }
+      return chain([armSetup(leaderPort(), "left"), armSetup(leaderPortRight(), "right")]);
+    }
+    // `lerobot_calibrate` does accept the `bi_*` types and calibrates both arms
+    // in one run, so dual mode uses a single invocation here.
     case "calibrate-follower":
-      return [
-        lerobotCommand(status, "lerobot-calibrate"),
-        "--robot.type=so101_follower",
-        `--robot.port=${quote(followerPort())}`,
-        `--robot.id=${quote(robotId())}`
-      ].join(" ");
+      return [lerobotCommand(status, "lerobot-calibrate"), ...robotArgs()].join(" ");
     case "calibrate-leader":
-      return [
-        lerobotCommand(status, "lerobot-calibrate"),
-        "--teleop.type=so101_leader",
-        `--teleop.port=${quote(leaderPort())}`,
-        `--teleop.id=${quote(teleopId())}`
-      ].join(" ");
+      return [lerobotCommand(status, "lerobot-calibrate"), ...teleopArgs()].join(" ");
     case "teleop": {
       // Minimal teleoperate: robot + teleop type/port/id only. No cameras,
       // max_relative_target, fps, or display_data.
-      const teleopParts = [
-        lerobotCommand(status, "lerobot-teleoperate"),
-        "--robot.type=so101_follower",
-        `--robot.port=${quote(followerPort())}`,
-        `--robot.id=${quote(robotId())}`,
-        "--teleop.type=so101_leader",
-        `--teleop.port=${quote(leaderPort())}`,
-        `--teleop.id=${quote(teleopId())}`
-      ];
+      const teleopParts = [lerobotCommand(status, "lerobot-teleoperate"), ...robotArgs(), ...teleopArgs()];
       return teleopParts.join(" ");
     }
     case "save-pose":
       return [
         bundledScriptCommand(status, "robotcloud_save_pose.py", dialect, quote),
-        "--robot.type=so101_follower",
-        `--robot.port=${quote(followerPort())}`,
-        `--robot.id=${quote(robotId())}`,
+        ...robotArgs(),
         // `--robot.max_relative_target=${DEFAULT_MAX_RELATIVE_TARGET}`,
-        "--teleop.type=so101_leader",
-        `--teleop.port=${quote(leaderPort())}`,
-        `--teleop.id=${quote(teleopId())}`,
+        ...teleopArgs(),
         "--fps=30"
       ].join(" ");
     case "record": {
@@ -929,19 +1038,16 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         const minEpisodeTimeS = requireNumber(form.minEpisodeTimeS, "Min episode seconds", { min: Number.MIN_VALUE });
         const maxEpisodeTimeS = requireNumber(form.maxEpisodeTimeS, "Max episode seconds", { min: Number.MIN_VALUE });
         const stationaryHoldTimeS = requireNumber(form.stationaryHoldTimeS, "Stationary action seconds", { min: Number.MIN_VALUE });
-        const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
-        if (!cameraArg) throw new Error("先配置 Head camera");
+        const cameraArgs = cameraConfigArgs(form, cameraCount, quote, true);
+        if (!cameraArgs.length) throw new Error("先配置 Head camera");
         const parts = [
           bundledScriptCommand(status, "robotcloud_auto_record.py", dialect, quote),
-          "--robot.type=so101_follower",
-          `--robot.port=${quote(followerPort())}`,
-          cameraArg,
-          `--robot.id=${quote(robotId())}`,
+          ...robotArgs(),
+          ...cameraArgs,
           //  `--robot.max_relative_target=${DEFAULT_MAX_RELATIVE_TARGET}`,
-          "--teleop.type=so101_leader",
-          `--teleop.port=${quote(leaderPort())}`,
-          `--teleop.id=${quote(teleopId())}`,
+          ...teleopArgs(),
           `--dataset.repo_id=${quote(repoId)}`,
+          ...(datasetRoot ? [`--dataset.root=${quote(datasetRoot)}`] : []),
           `--dataset.num_episodes=${episodes}`,
           `--dataset.single_task=${quote(requireValue(form.task, "Task label"))}`,
           "--dataset.push_to_hub=false",
@@ -953,27 +1059,23 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
           `--stationary_hold_time_s=${stationaryHoldTimeS}`,
           `--display_data=${form.displayData ? "true" : "false"}`
         ];
-        if (datasetRoot) parts.splice(9, 0, `--dataset.root=${quote(datasetRoot)}`);
         return parts.join(" ");
       }
 
       // LeRobot original recorder (lerobot-record).
       const episodeTimeS = requireNumber(form.episodeTimeS, "Episode seconds", { min: Number.MIN_VALUE });
       const resetTimeS = requireNumber(form.resetTimeS, "Reset seconds", { min: 0 });
-      const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
-      if (!cameraArg) throw new Error("先配置 Head camera");
+      const cameraArgs = cameraConfigArgs(form, cameraCount, quote, true);
+      if (!cameraArgs.length) throw new Error("先配置 Head camera");
       const parts = [
         lerobotCommand(status, "lerobot-record"),
-        "--robot.type=so101_follower",
-        `--robot.port=${quote(followerPort())}`,
-        `--robot.id=${quote(robotId())}`,
+        ...robotArgs(),
         // `--robot.max_relative_target=${DEFAULT_MAX_RELATIVE_TARGET}`,
-        cameraArg,
-        "--teleop.type=so101_leader",
-        `--teleop.port=${quote(leaderPort())}`,
-        `--teleop.id=${quote(teleopId())}`,
+        ...cameraArgs,
+        ...teleopArgs(),
         `--display_data=${form.displayData ? "true" : "false"}`,
         `--dataset.repo_id=${quote(repoId)}`,
+        ...(datasetRoot ? [`--dataset.root=${quote(datasetRoot)}`] : []),
         `--dataset.num_episodes=${episodes}`,
         `--dataset.single_task=${quote(requireValue(form.task, "Task label"))}`,
         "--dataset.push_to_hub=false",
@@ -983,19 +1085,16 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
         `--dataset.episode_time_s=${episodeTimeS}`,
         `--dataset.reset_time_s=${resetTimeS}`,
       ];
-      if (datasetRoot) parts.splice(10, 0, `--dataset.root=${quote(datasetRoot)}`);
       return parts.join(" ");
     }
     case "infer": {
-      const cameraArg = cameraConfigArg(form, cameraCount, quote, true);
-      if (!cameraArg) throw new Error("先配置 Head camera");
+      const cameraArgs = cameraConfigArgs(form, cameraCount, quote, true);
+      if (!cameraArgs.length) throw new Error("先配置 Head camera");
       return [
         lerobotCommand(status, "lerobot-robot-client"),
         `--server_address=${quote(requireInferenceServerAddress(form.inferServerAddress, "Server address"))}`,
-        "--robot.type=so101_follower",
-        `--robot.port=${quote(followerPort())}`,
-        `--robot.id=${quote(robotId())}`,
-        cameraArg,
+        ...robotArgs(),
+        ...cameraArgs,
         `--task=${quote(requireValue(form.task, "Task label"))}`,
         `--policy_type=${quote(requireValue(form.inferPolicyType, "Policy type"))}`,
         `--policy_device=${quote(requireValue(form.inferPolicyDevice, "Policy device"))}`,
@@ -1521,7 +1620,9 @@ export function SO101Client() {
   const uploadCommandPendingRef = useRef(uploadPreparing);
   const [portChecks, setPortChecks] = useState<Record<PortKey, CheckState>>({
     followerPort: idleCheck,
-    leaderPort: idleCheck
+    leaderPort: idleCheck,
+    followerPortRight: idleCheck,
+    leaderPortRight: idleCheck
   });
   const [cameraChecks, setCameraChecks] = useState<[CheckState, CheckState, CheckState]>([
     idleCheck,
@@ -1736,7 +1837,7 @@ export function SO101Client() {
     if (isConfigFieldId(String(key))) {
       clearConfigErrorForField(String(key) as ConfigFieldId);
     }
-    if (key === "followerPort" || key === "leaderPort") {
+    if (key === "followerPort" || key === "leaderPort" || key === "followerPortRight" || key === "leaderPortRight") {
       setPortChecks((current) => ({ ...current, [key]: idleCheck }));
     }
   };
@@ -1748,15 +1849,20 @@ export function SO101Client() {
       cameras[index] = { ...cameras[index], [key]: value };
       return { ...current, cameras };
     });
-    clearConfigErrorForField(cameraConfigField(
-      index,
-      key === "name" ? "Name" : key === "id" ? "Id" : key === "width" ? "Width" : key === "height" ? "Height" : "Fps"
-    ));
-    setCameraChecks((current) => {
-      const next = [...current] as [CheckState, CheckState, CheckState];
-      next[index] = idleCheck;
-      return next;
-    });
+    // `view` only picks which arm bucket the camera lands in; it touches no
+    // config field and does not affect the camera's own validity, so it clears
+    // neither the field error nor the preview/validation check.
+    if (key !== "view") {
+      clearConfigErrorForField(cameraConfigField(
+        index,
+        key === "name" ? "Name" : key === "id" ? "Id" : key === "width" ? "Width" : key === "height" ? "Height" : "Fps"
+      ));
+      setCameraChecks((current) => {
+        const next = [...current] as [CheckState, CheckState, CheckState];
+        next[index] = idleCheck;
+        return next;
+      });
+    }
   };
 
   const addCamera = () => {
@@ -2204,12 +2310,28 @@ export function SO101Client() {
     <section ref={registerRightPanelCard("connection")} className={configCardClass("connection")}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-semibold accent-text">Connection</h2>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={form.dualArm}
+            onChange={(event) => updateField("dualArm", event.target.checked)}
+          />
+          <span className="text-muted">Dual arm</span>
+        </label>
       </div>
       <div className="mt-4 grid gap-4">
-        {([
-          ["followerPort", "Follower port"],
-          ["leaderPort", "Leader port"]
-        ] as Array<[PortKey, string]>).map(([key, label]) => (
+        {(form.dualArm
+          ? ([
+              ["followerPort", "Left follower port"],
+              ["followerPortRight", "Right follower port"],
+              ["leaderPort", "Left leader port"],
+              ["leaderPortRight", "Right leader port"]
+            ] as Array<[PortKey, string]>)
+          : ([
+              ["followerPort", "Follower port"],
+              ["leaderPort", "Leader port"]
+            ] as Array<[PortKey, string]>)
+        ).map(([key, label]) => (
           <div key={key}>
             <div className="flex flex-wrap items-end gap-2">
               <label className="min-w-0 flex-1 text-sm">
@@ -2254,6 +2376,13 @@ export function SO101Client() {
             {renderConfigFieldError("teleopId")}
           </label>
         </div>
+        {form.dualArm ? (
+          <p className="text-xs text-muted">
+            双臂模式下校准文件按 <code>{form.robotId || "<Robot ID>"}_left</code> /{" "}
+            <code>{form.robotId || "<Robot ID>"}_right</code> 命名，Teleop ID 同理。相机的
+            View 为 Head / Others 时挂在左臂（lerobot 仅有左右两个相机分组）。
+          </p>
+        ) : null}
       </div>
     </section>
   );
@@ -2272,9 +2401,8 @@ export function SO101Client() {
           const fpsField = cameraConfigField(index, "Fps");
           return (
             <div key={cameraLabels[index]} className="rounded-md border border-theme bg-surface p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold accent-text">{cameraLabels[index]}</span>
-                {index > 0 ? (
+              {index > 0 ? (
+                <div className="mb-2 flex items-center justify-end">
                   <button
                     type="button"
                     onClick={() => removeCamera(index)}
@@ -2283,8 +2411,8 @@ export function SO101Client() {
                   >
                     -
                   </button>
-                ) : null}
-              </div>
+                </div>
+              ) : null}
               <div className="flex flex-wrap items-end gap-2">
                 <label className="min-w-[5rem] flex-[0_0_5.5rem] text-sm">
                   <span className="text-muted">Name</span>
@@ -2298,6 +2426,23 @@ export function SO101Client() {
                   />
                   {renderConfigFieldError(nameField)}
                 </label>
+                {form.dualArm ? (
+                  <label className="min-w-[6rem] flex-[0_0_7rem] text-sm">
+                    <span className="text-muted">View</span>
+                    <select
+                      value={camera.view}
+                      onChange={(event) => updateCamera(index, "view", event.target.value as CameraView)}
+                      aria-label={`${cameraLabels[index]} view`}
+                      className="mt-1 w-full rounded-md border border-theme bg-card px-2 py-2 text-sm accent-text"
+                    >
+                      {cameraViewOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
                 <label className="min-w-[10rem] flex-[1_1_10rem] text-sm">
                   <span className="text-muted">Camera id/path</span>
                   <input
