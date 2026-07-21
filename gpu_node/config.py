@@ -32,6 +32,34 @@ def _list_env(name: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in raw.split(",") if item.strip())
 
 
+# Origins of the desktop (Tauri) app. The desktop UI is cross-origin to the
+# agent, so browsers send a CORS preflight before every dataset upload; if the
+# agent 403s that preflight the browser aborts with a generic "Load failed" and
+# nothing ever reaches the upload endpoint. These origins are therefore ALWAYS
+# permitted (merged into any restrictive AGENT_UPLOAD_ALLOWED_ORIGINS), so an
+# operator can never accidentally lock the desktop app out. Mirrors the
+# backend's DESKTOP_CORS_ALLOWED_ORIGINS.
+DESKTOP_APP_ORIGINS: tuple[str, ...] = (
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "app://local",
+)
+
+
+def _upload_allowed_origins() -> tuple[str, ...]:
+    configured = _list_env("AGENT_UPLOAD_ALLOWED_ORIGINS")
+    # Empty == allow all origins; the desktop origins are already covered, so
+    # keep the permissive dev default untouched.
+    if not configured:
+        return ()
+    merged = list(configured)
+    for origin in DESKTOP_APP_ORIGINS:
+        if origin not in merged:
+            merged.append(origin)
+    return tuple(merged)
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     """Configuration values for the GPU agent."""
@@ -64,7 +92,7 @@ class AgentConfig:
         api_port = _int_env("AGENT_PORT", 5000)
         public_base_url = os.getenv("AGENT_PUBLIC_BASE_URL", "").strip().rstrip("/")
         upload_enabled = _bool_env("AGENT_UPLOAD_ENABLED", True)
-        upload_allowed_origins = _list_env("AGENT_UPLOAD_ALLOWED_ORIGINS")
+        upload_allowed_origins = _upload_allowed_origins()
         gpu_total = max(_int_env("AGENT_GPU_TOTAL", 1), 1)
         slots_per_gpu = max(_int_env("AGENT_GPU_SLOTS_PER_GPU", 1), 1)
         gpu_slot_total = max(_int_env("AGENT_GPU_SLOT_TOTAL", gpu_total * slots_per_gpu), gpu_total)
