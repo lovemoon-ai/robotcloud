@@ -15,8 +15,10 @@ from typing import Any, Dict, List, Tuple
 import pytest
 import requests
 
+import dataclasses
+
 from gpu_node.agent import Agent, AgentHTTPRequestHandler, AgentHTTPServer, InferenceJob, TrainingJob
-from gpu_node.config import AgentConfig
+from gpu_node.config import DESKTOP_APP_ORIGINS, AgentConfig, _upload_allowed_origins
 
 
 class _StubAgent:
@@ -287,6 +289,60 @@ def test_agent_cancel_resumable_dataset_upload_removes_upload_dir(tmp_path: Path
     assert resp.status_code == 200
     assert resp.json()["removed"] == [str(upload_dir)]
     assert not upload_dir.exists()
+
+
+def test_upload_allowed_origins_always_permits_desktop_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A restrictive allowlist must never lock out the desktop (Tauri) app, whose
+    # cross-origin upload preflight would otherwise 403 -> browser "Load failed".
+    monkeypatch.setenv("AGENT_UPLOAD_ALLOWED_ORIGINS", "https://robotcloud.conductor-ai.top")
+    origins = _upload_allowed_origins()
+    assert "https://robotcloud.conductor-ai.top" in origins
+    for desktop_origin in DESKTOP_APP_ORIGINS:
+        assert desktop_origin in origins
+    # No duplicates when a desktop origin is already listed explicitly.
+    monkeypatch.setenv("AGENT_UPLOAD_ALLOWED_ORIGINS", "tauri://localhost")
+    assert _upload_allowed_origins().count("tauri://localhost") == 1
+    # Unset keeps the permissive "allow all" default (empty tuple).
+    monkeypatch.delenv("AGENT_UPLOAD_ALLOWED_ORIGINS", raising=False)
+    assert _upload_allowed_origins() == ()
+
+
+def test_agent_preflight_allows_desktop_origin_under_restrictive_allowlist(tmp_path: Path) -> None:
+    config = dataclasses.replace(
+        _agent_config(tmp_path),
+        upload_allowed_origins=("https://robotcloud.conductor-ai.top", *DESKTOP_APP_ORIGINS),
+    )
+    agent = Agent(config, session=_BackendSession())  # type: ignore[arg-type]
+    agent.agent_token = "agent-token"
+    server = AgentHTTPServer(("127.0.0.1", 0), AgentHTTPRequestHandler, agent)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    status_url = f"{base_url}/api/v1/agent/datasets/upload/status"
+
+    try:
+        allowed = requests.options(
+            status_url,
+            headers={
+                "Origin": "tauri://localhost",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization,x-dataset-id,x-filename",
+            },
+            timeout=5,
+        )
+        rejected = requests.options(
+            status_url,
+            headers={"Origin": "https://evil.example.test", "Access-Control-Request-Method": "GET"},
+            timeout=5,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert allowed.status_code == 204
+    assert allowed.headers.get("Access-Control-Allow-Origin") == "tauri://localhost"
+    assert rejected.status_code == 403
 
 
 def test_training_job_builds_command_with_dataset_arg(tmp_path: Path) -> None:
