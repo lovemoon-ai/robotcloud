@@ -5,7 +5,8 @@ use std::{
     collections::HashMap,
     env,
     fs::{self, File},
-    io::{BufReader, Read, Seek, Write},
+    io::{BufRead, BufReader, Read, Seek, Write},
+    net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
     path::{Path, PathBuf},
     process::{Child as StdChild, Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
@@ -28,7 +29,8 @@ const MIN_DATASET_UPLOAD_EPISODES: u64 = 1;
 const MIN_DATASET_UPLOAD_DURATION_SECONDS: f64 = 1.0;
 const TERMINAL_REPLAY_LIMIT_BYTES: usize = 200_000;
 const RUNTIME_PROGRESS_OUTPUT_LIMIT_BYTES: usize = 120_000;
-const RUNTIME_READY_MARKER_VERSION: &str = "5";
+// 6: runtime now bundles the vr_operator teleop plugin (placo/pin kinematics).
+const RUNTIME_READY_MARKER_VERSION: &str = "6";
 #[cfg(target_os = "windows")]
 const WINDOWS_SHIMS_MARKER_VERSION: &str = "3";
 const RUNTIME_IMPORT_CHECK: &str = "import datasets, deepdiff, lerobot, rerun, serial, scservo_sdk";
@@ -98,6 +100,14 @@ const DEFAULT_BRIDGE_SCRIPT: &str = r#"
         prepare: function () { return core.invoke("runtime_prepare"); },
         update: function () { return core.invoke("runtime_update"); },
         onProgress: function (callback) { return listen("runtime-progress", callback); }
+      },
+      vrTeleop: {
+        start: function (config) { return core.invoke("vr_teleop_start", { config: config || null }); },
+        stop: function () { return core.invoke("vr_teleop_stop"); },
+        status: function () { return core.invoke("vr_teleop_status"); },
+        onStatus: function (callback) { return listen("vr-status", callback); },
+        onOutput: function (callback) { return listen("vr-service-output", callback); },
+        onExit: function (callback) { return listen("vr-service-exit", callback); }
       },
       terminal: {
         current: function () { return core.invoke("terminal_current"); },
@@ -226,6 +236,14 @@ const WINDOWS_BRIDGE_SCRIPT: &str = r#"
         update: function () { return invoke("runtime_update"); },
         onProgress: function (callback) { return listen("runtime-progress", callback); }
       },
+      vrTeleop: {
+        start: function (config) { return invoke("vr_teleop_start", { config: config || null }); },
+        stop: function () { return invoke("vr_teleop_stop"); },
+        status: function () { return invoke("vr_teleop_status"); },
+        onStatus: function (callback) { return listen("vr-status", callback); },
+        onOutput: function (callback) { return listen("vr-service-output", callback); },
+        onExit: function (callback) { return listen("vr-service-exit", callback); }
+      },
       terminal: {
         current: function () { return invoke("terminal_current"); },
         start: function () { return invoke("terminal_start"); },
@@ -253,6 +271,7 @@ struct AppState {
     processes: Arc<Mutex<HashMap<String, Arc<Mutex<StdChild>>>>>,
     terminals: Arc<Mutex<HashMap<String, TerminalSession>>>,
     current_terminal: Arc<Mutex<Option<String>>>,
+    vr_service: Arc<Mutex<Option<VrServiceHandle>>>,
 }
 
 #[derive(Clone)]
@@ -272,6 +291,7 @@ impl Default for AppState {
             processes: Arc::new(Mutex::new(HashMap::new())),
             terminals: Arc::new(Mutex::new(HashMap::new())),
             current_terminal: Arc::new(Mutex::new(None)),
+            vr_service: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -3858,6 +3878,625 @@ fn so101_stop(state: State<AppState>, run_id: String) -> Result<serde_json::Valu
     }
 }
 
+// --- VR teleoperation (operator robot-service integration) -------------------
+//
+// The Quest headset drives the SO-101 through two cooperating processes:
+//   1. robot-service (Rust, built from third_party/operator, bundled as a
+//      Tauri external binary). Owns headset discovery (UDP 63900), the pose /
+//      command channel (TCP 63901), telemetry (63903), and pose retargeting.
+//      Managed here as infrastructure — spawned/killed by these commands.
+//   2. `python -m lerobot.scripts.lerobot_teleoperate --teleop.type=vr_operator`
+//      — run by the user in the persistent PTY terminal, per the RobotCloud
+//      convention that actions stay plain terminal commands. It dials
+//      robot-service on the lerobot link endpoint returned by vr_teleop_start.
+//
+// robot-service exposes no status API; connection state is derived from its
+// tracing log lines (vr_apply_log_line). Structured state is pushed to the
+// frontend via the "vr-status" event; raw log lines via "vr-service-output".
+
+const VR_RUN_ID: &str = "vr-service";
+const VR_DESCRIPTOR_SINGLE: &str = "so101_real_descriptor.yaml";
+const VR_DESCRIPTOR_DUAL: &str = "so101_dual_real_descriptor.yaml";
+
+#[derive(Debug, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct VrStatus {
+    service_running: bool,
+    discovery_active: bool,
+    headset_connected: bool,
+    headset_addr: Option<String>,
+    handshake_done: bool,
+    plugin_connected: bool,
+    /// How many lerobot_link arms this session drives (1 or 2).
+    arm_count: u32,
+    /// How many vr_operator plugin processes are currently connected.
+    plugin_count: u32,
+    last_event: Option<String>,
+}
+
+struct VrServiceHandle {
+    child: Arc<Mutex<StdChild>>,
+    status: Arc<Mutex<VrStatus>>,
+    endpoints: Vec<VrArmEndpoint>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct VrArmEndpoint {
+    name: String,
+    endpoint: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct VrTeleopStartConfig {
+    quest_ip: Option<String>,
+    dual: Option<bool>,
+}
+
+fn vr_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("vr-teleop");
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    Ok(dir)
+}
+
+fn vr_lerobot_endpoints(dual: bool) -> Vec<VrArmEndpoint> {
+    // Short /tmp paths on purpose: AF_UNIX paths are capped at ~104 bytes on
+    // macOS and app-data paths are too long. Windows has no AF_UNIX on the
+    // plugin side; both ends support tcp:.
+    if dual {
+        if cfg!(target_os = "windows") {
+            vec![
+                VrArmEndpoint {
+                    name: "left".to_string(),
+                    endpoint: "tcp:127.0.0.1:63920".to_string(),
+                },
+                VrArmEndpoint {
+                    name: "right".to_string(),
+                    endpoint: "tcp:127.0.0.1:63921".to_string(),
+                },
+            ]
+        } else {
+            vec![
+                VrArmEndpoint {
+                    name: "left".to_string(),
+                    endpoint: "uds:/tmp/robotcloud-lerobot-vr-left.sock".to_string(),
+                },
+                VrArmEndpoint {
+                    name: "right".to_string(),
+                    endpoint: "uds:/tmp/robotcloud-lerobot-vr-right.sock".to_string(),
+                },
+            ]
+        }
+    } else if cfg!(target_os = "windows") {
+        vec![VrArmEndpoint {
+            name: "arm".to_string(),
+            endpoint: "tcp:127.0.0.1:63920".to_string(),
+        }]
+    } else {
+        vec![VrArmEndpoint {
+            name: "arm".to_string(),
+            endpoint: "uds:/tmp/robotcloud-lerobot-vr.sock".to_string(),
+        }]
+    }
+}
+
+fn vr_resource_file(app: &AppHandle, relative: &str) -> Result<PathBuf, String> {
+    for root in resource_candidates(app) {
+        let candidate = root.join(relative);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!(
+        "bundled resource not found: {relative}; re-run desktop/scripts/build-robot-service.sh"
+    ))
+}
+
+fn robot_service_binary() -> Result<PathBuf, String> {
+    let name = if cfg!(target_os = "windows") {
+        "robot-service.exe"
+    } else {
+        "robot-service"
+    };
+    // Bundled: Tauri drops external binaries next to the app executable,
+    // stripped of the target-triple suffix.
+    if let Some(dir) = exe_dir() {
+        let candidate = dir.join(name);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    // Dev: staged by desktop/scripts/build-robot-service.sh with the target
+    // triple suffix (robot-service-<triple>[.exe]).
+    let staged = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+    if let Ok(entries) = fs::read_dir(&staged) {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.starts_with("robot-service-") && entry.path().is_file() {
+                return Ok(entry.path());
+            }
+        }
+    }
+    Err("robot-service binary not found; run desktop/scripts/build-robot-service.sh".to_string())
+}
+
+/// One lerobot_link arm block. `indent` is the indentation of the block's
+/// first key (e.g. "  " under `arm:`, "    " under `dual_arm.left:`).
+fn vr_arm_yaml(indent: &str, endpoint: &str) -> String {
+    let lines = [
+        "driver: \"lerobot_link\"".to_string(),
+        "servo_ids: [1, 2, 3, 4, 5, 6]".to_string(),
+        String::new(),
+        "lerobot:".to_string(),
+        format!("  # Must match the plugin's --teleop.endpoint."),
+        format!("  endpoint: \"{endpoint}\""),
+        "  hello_timeout_ms: 60000".to_string(),
+        String::new(),
+        "safety:".to_string(),
+        "  joint_limits_deg:".to_string(),
+        "    - [-105.0,  105.0]    # shoulder_pan".to_string(),
+        "    - [ -95.0,   95.0]    # shoulder_lift".to_string(),
+        "    - [ -92.0,   92.0]    # elbow_flex".to_string(),
+        "    - [ -90.0,   90.0]    # wrist_flex".to_string(),
+        "    - [-150.0,  155.0]    # wrist_roll".to_string(),
+        "    - [   0.0,  100.0]    # gripper - RANGE_0_100 on the LeRobot side".to_string(),
+        "  max_velocity_deg_s: 90.0".to_string(),
+        "  max_acceleration_deg_s2: 180.0".to_string(),
+        String::new(),
+        "pose_mapping:".to_string(),
+        "  mode: \"ik\"".to_string(),
+        "  scale: 0.5".to_string(),
+        "  mirror: true".to_string(),
+        String::new(),
+        "driver_write_timeout_ms: 20".to_string(),
+    ];
+    lines
+        .iter()
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{indent}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn vr_write_runtime_config(
+    dir: &Path,
+    endpoints: &[VrArmEndpoint],
+    quest_ip: Option<&str>,
+) -> Result<PathBuf, String> {
+    let dual = endpoints.len() > 1;
+    let unicast = match quest_ip {
+        Some(ip) if !ip.trim().is_empty() => format!(
+            "\n  # Unicast beacon for networks that drop UDP broadcast (client isolation).\n  discovery_unicast_targets:\n    - {}\n",
+            ip.trim()
+        ),
+        _ => String::new(),
+    };
+    // Mirrors third_party/operator/robot/configs/so101_real.yaml (single) /
+    // so101_dual_real.yaml (dual). descriptor_file resolves against the
+    // robot-service CWD, which vr_teleop_start sets to `dir`.
+    let (device_type, descriptor, bridge_name, arms_yaml) = if dual {
+        let arms = format!(
+            "  dual_arm:\n    left:\n{}\n\n    right:\n{}\n",
+            vr_arm_yaml("      ", &endpoints[0].endpoint),
+            vr_arm_yaml("      ", &endpoints[1].endpoint),
+        );
+        (
+            "so101_dual_real",
+            VR_DESCRIPTOR_DUAL,
+            "robotcloud-so101-dual",
+            arms,
+        )
+    } else {
+        let arms = format!("  arm:\n{}\n", vr_arm_yaml("    ", &endpoints[0].endpoint));
+        (
+            "so101_real",
+            VR_DESCRIPTOR_SINGLE,
+            "robotcloud-so101",
+            arms,
+        )
+    };
+    let config = format!(
+        r#"# Generated by RobotCloud desktop for VR teleop; rewritten on every start.
+adapter_link:
+  endpoint: "tcp:127.0.0.1:63910"
+
+adapter:
+  device_type: "{device_type}"
+  descriptor_file: "{descriptor}"
+
+{arms_yaml}
+bridge:
+  name: "{bridge_name}"
+  pose_port: 63901
+  video_port: 12345
+  discovery_port: 63900
+  pose_udp_port: 63902
+  telemetry_port: 63903
+{unicast}"#,
+    );
+    let path = dir.join("so101_vr.yaml");
+    fs::write(&path, config).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn vr_preflight_ports(endpoints: &[VrArmEndpoint]) -> Result<(), String> {
+    let mut tcp_ports: Vec<u16> = vec![63910, 63901, 63903];
+    for arm in endpoints {
+        if let Some(rest) = arm.endpoint.strip_prefix("tcp:") {
+            if let Some(port) = rest.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) {
+                tcp_ports.push(port);
+            }
+        }
+    }
+    for port in tcp_ports {
+        TcpListener::bind(("0.0.0.0", port)).map(drop).map_err(|_| {
+            format!(
+                "TCP port {port} is already in use — a previous robot-service is likely still running"
+            )
+        })?;
+    }
+    for port in [63900u16, 63902] {
+        UdpSocket::bind(("0.0.0.0", port)).map(drop).map_err(|_| {
+            format!(
+                "UDP port {port} is already in use — a previous robot-service is likely still running"
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn vr_endpoint_bound(endpoint: &str) -> bool {
+    if let Some(path) = endpoint.strip_prefix("uds:") {
+        return Path::new(path).exists();
+    }
+    if let Some(rest) = endpoint.strip_prefix("tcp:") {
+        if let Ok(addr) = rest.parse::<SocketAddr>() {
+            return TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok();
+        }
+    }
+    false
+}
+
+/// Update the shared VR status from one robot-service log line. Returns a
+/// snapshot when the line changed anything. The matched substrings come from
+/// operator's xr-bridge/pose_server.rs, discovery.rs and lerobot_link.rs —
+/// bump third_party/operator with care.
+fn vr_apply_log_line(line: &str, status: &Arc<Mutex<VrStatus>>) -> Option<VrStatus> {
+    let mut guard = status.lock().ok()?;
+    let mut changed = true;
+    if line.contains("UDP discovery: sending") || line.contains("advertising '") {
+        changed = !guard.discovery_active;
+        guard.discovery_active = true;
+    } else if line.contains("Headset connected from") {
+        guard.headset_connected = true;
+        guard.headset_addr = line
+            .split("Headset connected from")
+            .nth(1)
+            .map(|s| s.trim().to_string());
+        guard.last_event = Some("headset connected".to_string());
+    } else if line.contains("Headset disconnected") {
+        guard.headset_connected = false;
+        guard.handshake_done = false;
+        guard.headset_addr = None;
+        guard.last_event = Some("headset disconnected".to_string());
+    } else if line.contains("Hello received from") || line.contains("Sent DeviceDescriptor") {
+        guard.handshake_done = true;
+        guard.last_event = Some("headset handshake done".to_string());
+    } else if line.contains("LeRobot link: plugin connected") {
+        // The connected/disconnected lines carry no per-arm context, so dual
+        // rigs are tracked by count: all arms connected <=> count == arm_count.
+        guard.plugin_count = (guard.plugin_count + 1).min(guard.arm_count.max(1));
+        guard.plugin_connected = guard.plugin_count >= guard.arm_count.max(1);
+        guard.last_event = Some(format!(
+            "lerobot plugin connected ({}/{})",
+            guard.plugin_count,
+            guard.arm_count.max(1)
+        ));
+    } else if line.contains("LeRobot link: plugin Hello") {
+        guard.last_event = Some("lerobot plugin handshake done".to_string());
+    } else if line.contains("LeRobot link: plugin disconnected") {
+        guard.plugin_count = guard.plugin_count.saturating_sub(1);
+        guard.plugin_connected = guard.plugin_count >= guard.arm_count.max(1);
+        guard.last_event = Some(format!(
+            "lerobot plugin disconnected ({}/{})",
+            guard.plugin_count,
+            guard.arm_count.max(1)
+        ));
+    } else {
+        changed = false;
+    }
+    changed.then(|| guard.clone())
+}
+
+fn spawn_vr_reader<R: Read + Send + 'static>(
+    app: AppHandle,
+    stream: &'static str,
+    status: Arc<Mutex<VrStatus>>,
+    reader: R,
+) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let _ = app.emit(
+                        "vr-service-output",
+                        ProcessOutputEvent {
+                            run_id: VR_RUN_ID.to_string(),
+                            stream: stream.to_string(),
+                            data: line.clone(),
+                        },
+                    );
+                    if let Some(snapshot) = vr_apply_log_line(&line, &status) {
+                        let _ = app.emit("vr-status", snapshot);
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn kill_vr_service(slot: &Arc<Mutex<Option<VrServiceHandle>>>) {
+    let handle = slot.lock().ok().and_then(|mut guard| guard.take());
+    if let Some(handle) = handle {
+        if let Ok(mut child) = handle.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        for arm in &handle.endpoints {
+            if let Some(path) = arm.endpoint.strip_prefix("uds:") {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn vr_teleop_start(
+    app: AppHandle,
+    state: State<AppState>,
+    config: Option<VrTeleopStartConfig>,
+) -> Result<serde_json::Value, String> {
+    {
+        let mut guard = state.vr_service.lock().map_err(|error| error.to_string())?;
+        if let Some(handle) = guard.as_ref() {
+            let running = handle
+                .child
+                .lock()
+                .map_err(|error| error.to_string())?
+                .try_wait()
+                .map_err(|error| error.to_string())?
+                .is_none();
+            if running {
+                let requested_dual = config
+                    .as_ref()
+                    .and_then(|c| c.dual)
+                    .unwrap_or(handle.endpoints.len() > 1);
+                if requested_dual != (handle.endpoints.len() > 1) {
+                    return Err(
+                        "VR 服务正以另一种臂型运行；请先 Stop 再切换单臂/双臂".to_string()
+                    );
+                }
+                // Idempotent: reuse the live service (e.g. after a page
+                // reload) instead of failing — the caller only needs the
+                // endpoints and URDF path to build the teleop command.
+                let urdf = vr_resource_file(&app, "assets/so101_new_calib.urdf")?;
+                let all_bound = handle
+                    .endpoints
+                    .iter()
+                    .all(|arm| vr_endpoint_bound(&arm.endpoint));
+                return Ok(serde_json::json!({
+                    "runId": VR_RUN_ID,
+                    "arms": handle.endpoints,
+                    "urdfPath": urdf.to_string_lossy(),
+                    "socketReady": all_bound,
+                    "alreadyRunning": true,
+                }));
+            }
+            *guard = None;
+        }
+    }
+
+    let dual = config.as_ref().and_then(|c| c.dual).unwrap_or(false);
+    let binary = robot_service_binary()?;
+    let descriptor_name = if dual {
+        VR_DESCRIPTOR_DUAL
+    } else {
+        VR_DESCRIPTOR_SINGLE
+    };
+    let descriptor_src = vr_resource_file(&app, &format!("vr/{descriptor_name}"))?;
+    let urdf = vr_resource_file(&app, "assets/so101_new_calib.urdf")?;
+    let dir = vr_dir(&app)?;
+    fs::copy(&descriptor_src, dir.join(descriptor_name))
+        .map_err(|error| format!("failed to stage descriptor: {error}"))?;
+
+    let endpoints = vr_lerobot_endpoints(dual);
+    let quest_ip = config.as_ref().and_then(|c| c.quest_ip.as_deref());
+    let config_path = vr_write_runtime_config(&dir, &endpoints, quest_ip)?;
+
+    vr_preflight_ports(&endpoints)?;
+    for arm in &endpoints {
+        if let Some(path) = arm.endpoint.strip_prefix("uds:") {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    let status = Arc::new(Mutex::new(VrStatus {
+        arm_count: endpoints.len() as u32,
+        ..VrStatus::default()
+    }));
+    let mut child = Command::new(&binary)
+        .arg("--config")
+        .arg(&config_path)
+        .current_dir(&dir)
+        .env("RUST_LOG", "info")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to start robot-service: {error}"))?;
+
+    let _ = app.emit(
+        "vr-service-output",
+        ProcessOutputEvent {
+            run_id: VR_RUN_ID.to_string(),
+            stream: "system".to_string(),
+            data: format!("> {} --config {}\n", binary.display(), config_path.display()),
+        },
+    );
+
+    if let Some(stdout) = child.stdout.take() {
+        spawn_vr_reader(app.clone(), "stdout", status.clone(), stdout);
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_vr_reader(app.clone(), "stderr", status.clone(), stderr);
+    }
+
+    let child_arc = Arc::new(Mutex::new(child));
+
+    // Wait for every lerobot link to come up so the teleop command(s) the user
+    // runs next have something to dial. robot-service binds its sockets up front.
+    let mut socket_ready = false;
+    for _ in 0..75 {
+        if endpoints.iter().all(|arm| vr_endpoint_bound(&arm.endpoint)) {
+            socket_ready = true;
+            break;
+        }
+        let exited = child_arc
+            .lock()
+            .map_err(|error| error.to_string())?
+            .try_wait()
+            .map_err(|error| error.to_string())?;
+        if exited.is_some() {
+            return Err(
+                "robot-service exited during startup; see the VR service log for details"
+                    .to_string(),
+            );
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    if let Ok(mut snapshot) = status.lock() {
+        snapshot.service_running = true;
+        let _ = app.emit("vr-status", snapshot.clone());
+    }
+
+    *state.vr_service.lock().map_err(|error| error.to_string())? = Some(VrServiceHandle {
+        child: child_arc.clone(),
+        status: status.clone(),
+        endpoints: endpoints.clone(),
+    });
+
+    // Exit watcher: when robot-service dies (crash or stop), reset the status
+    // shown in the UI and release the slot — but only if the slot still holds
+    // THIS child (a restart may have replaced it already).
+    let vr_slot = state.vr_service.clone();
+    let watcher_app = app.clone();
+    let watcher_child = child_arc.clone();
+    let watcher_status = status;
+    thread::spawn(move || loop {
+        let waited = {
+            let Ok(mut child) = watcher_child.lock() else {
+                return;
+            };
+            child.try_wait()
+        };
+        match waited {
+            Ok(Some(exit_status)) => {
+                if let Ok(mut slot) = vr_slot.lock() {
+                    let same = slot
+                        .as_ref()
+                        .is_some_and(|handle| Arc::ptr_eq(&handle.child, &watcher_child));
+                    if same {
+                        *slot = None;
+                    }
+                }
+                if let Ok(mut snapshot) = watcher_status.lock() {
+                    *snapshot = VrStatus::default();
+                    let _ = watcher_app.emit("vr-status", snapshot.clone());
+                }
+                let _ = watcher_app.emit(
+                    "vr-service-exit",
+                    ProcessExitEvent {
+                        run_id: VR_RUN_ID.to_string(),
+                        code: exit_status.code(),
+                        signal: None,
+                    },
+                );
+                return;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(200)),
+            Err(_) => return,
+        }
+    });
+
+    Ok(serde_json::json!({
+        "runId": VR_RUN_ID,
+        "arms": endpoints,
+        "urdfPath": urdf.to_string_lossy(),
+        "socketReady": socket_ready,
+    }))
+}
+
+#[tauri::command]
+fn vr_teleop_stop(app: AppHandle, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let handle = state
+        .vr_service
+        .lock()
+        .map_err(|error| error.to_string())?
+        .take();
+    if let Some(handle) = handle {
+        {
+            let mut child = handle.child.lock().map_err(|error| error.to_string())?;
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        for arm in &handle.endpoints {
+            if let Some(path) = arm.endpoint.strip_prefix("uds:") {
+                let _ = fs::remove_file(path);
+            }
+        }
+        let _ = app.emit(
+            "vr-service-output",
+            ProcessOutputEvent {
+                run_id: VR_RUN_ID.to_string(),
+                stream: "system".to_string(),
+                data: "robot-service stopped\n".to_string(),
+            },
+        );
+        Ok(serde_json::json!({ "stopped": true }))
+    } else {
+        Ok(serde_json::json!({ "stopped": false }))
+    }
+}
+
+#[tauri::command]
+fn vr_teleop_status(state: State<AppState>) -> Result<VrStatus, String> {
+    let guard = state.vr_service.lock().map_err(|error| error.to_string())?;
+    match guard.as_ref() {
+        Some(handle) => handle
+            .status
+            .lock()
+            .map(|snapshot| snapshot.clone())
+            .map_err(|error| error.to_string()),
+        None => Ok(VrStatus::default()),
+    }
+}
+
 #[tauri::command]
 fn so101_validate_port(value: String) -> ValidationResult {
     let value = match trim_required(&value, "port") {
@@ -4150,6 +4789,9 @@ pub fn run() {
             so101_validate_port,
             so101_validate_camera,
             so101_preview_camera,
+            vr_teleop_start,
+            vr_teleop_stop,
+            vr_teleop_status,
             terminal_current,
             terminal_start,
             terminal_write,
@@ -4160,6 +4802,8 @@ pub fn run() {
             WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
                 let state = window.state::<AppState>();
                 kill_all_terminals(&state.terminals);
+                // Never leave robot-service orphaned holding its ports.
+                kill_vr_service(&state.vr_service);
             }
             _ => {}
         })

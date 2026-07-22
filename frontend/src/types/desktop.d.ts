@@ -140,6 +140,36 @@ type TerminalExitEvent = {
   signal: string | null;
 };
 
+type VrTeleopStartConfig = {
+  questIp?: string;
+  dual?: boolean;
+};
+
+type VrArmEndpoint = {
+  name: string;
+  endpoint: string;
+};
+
+type VrTeleopStarted = {
+  runId: string;
+  arms: VrArmEndpoint[];
+  urdfPath: string;
+  socketReady: boolean;
+  alreadyRunning?: boolean;
+};
+
+type VrStatus = {
+  serviceRunning: boolean;
+  discoveryActive: boolean;
+  headsetConnected: boolean;
+  headsetAddr?: string | null;
+  handshakeDone: boolean;
+  pluginConnected: boolean;
+  armCount: number;
+  pluginCount: number;
+  lastEvent?: string | null;
+};
+
 type DesktopBridge = {
   isDesktop: true;
   status: () => Promise<DesktopStatus>;
@@ -173,6 +203,14 @@ type DesktopBridge = {
     prepare: () => Promise<RuntimePrepared>;
     update?: () => Promise<RuntimePrepared>;
     onProgress: (callback: (event: RuntimeProgressEvent) => void) => () => void;
+  };
+  vrTeleop?: {
+    start: (config?: VrTeleopStartConfig | null) => Promise<VrTeleopStarted>;
+    stop: () => Promise<{ stopped: boolean }>;
+    status: () => Promise<VrStatus>;
+    onStatus: (callback: (status: VrStatus) => void) => () => void;
+    onOutput: (callback: (event: ProcessOutputEvent) => void) => () => void;
+    onExit: (callback: (event: ProcessExitEvent) => void) => () => void;
   };
   terminal: {
     current?: () => Promise<TerminalStarted | null>;

@@ -149,11 +149,12 @@ type ActionId =
   | "calibrate-follower"
   | "calibrate-leader"
   | "teleop"
+  | "vr-teleop"
   | "save-pose"
   | "record"
   | "infer";
 type ConfigSectionId = "connection" | "cameras" | "record" | "infer";
-type RightPanelCardId = "commands" | ConfigSectionId | "status";
+type RightPanelCardId = "commands" | ConfigSectionId | "vr" | "status";
 type ActionDefinition = {
   id: ActionId;
   label: string;
@@ -251,6 +252,7 @@ const actionDefinitions: ActionDefinition[] = [
   { id: "calibrate-follower", label: "Calibrate follower", group: "Setup", sections: ["connection"] },
   { id: "calibrate-leader", label: "Calibrate leader", group: "Setup", sections: ["connection"] },
   { id: "teleop", label: "Teleoperate", group: "Operate", sections: ["connection"] },
+  { id: "vr-teleop", label: "VR teleoperate", group: "Operate", sections: ["connection"] },
   { id: "save-pose", label: "Save pose", group: "Operate", sections: ["connection"] },
   { id: "record", label: "Record", group: "Data", sections: ["connection", "cameras", "record"] },
   { id: "infer", label: "Infer", group: "Inference", sections: ["connection", "cameras", "infer"] }
@@ -258,7 +260,7 @@ const actionDefinitions: ActionDefinition[] = [
 const actionGroups: Array<{ label: ActionDefinition["group"]; actionIds: ActionId[] }> = [
   { label: "Diagnose", actionIds: ["info", "find-port"] },
   { label: "Setup", actionIds: ["setup-follower", "setup-leader", "calibrate-follower", "calibrate-leader"] },
-  { label: "Operate", actionIds: ["teleop", "save-pose"] },
+  { label: "Operate", actionIds: ["teleop", "vr-teleop", "save-pose"] },
   { label: "Data", actionIds: ["record"] },
   { label: "Inference", actionIds: ["infer"] }
 ];
@@ -268,6 +270,7 @@ const rightPanelNavItems: Array<{ id: RightPanelCardId; label: string }> = [
   { id: "cameras", label: "Cameras" },
   { id: "record", label: "Record" },
   { id: "infer", label: "Infer" },
+  { id: "vr", label: "VR" },
   { id: "status", label: "Status" }
 ];
 const actionDefinitionById = Object.fromEntries(
@@ -912,7 +915,13 @@ function bundledScriptCommand(
   return `python ${quote(`${dir}${sep}${scriptName}`)}`;
 }
 
-export function buildActionCommand(action: ActionId, form: FormState, status: DesktopStatus | null, cameraCount: number) {
+export function buildActionCommand(
+  action: ActionId,
+  form: FormState,
+  status: DesktopStatus | null,
+  cameraCount: number,
+  vrInfo?: { urdfPath: string; arms: VrArmEndpoint[] } | null
+) {
   const dialect = shellDialect(status);
   const quote = (value: string) => shellArg(value, dialect);
   const dual = form.dualArm;
@@ -1018,6 +1027,47 @@ export function buildActionCommand(action: ActionId, form: FormState, status: De
       // max_relative_target, fps, or display_data.
       const teleopParts = [lerobotCommand(status, "lerobot-teleoperate"), ...robotArgs(), ...teleopArgs()];
       return teleopParts.join(" ");
+    }
+    case "vr-teleop": {
+      // Quest headset teleop: the desktop app spawns operator's robot-service
+      // (VR bridge) and this terminal command runs the LeRobot side against it.
+      // arms/urdfPath come from vr_teleop_start. A dual rig needs one
+      // lerobot-teleoperate per arm (each on its own endpoint), so dual mode
+      // runs both in one subshell whose trap tears both down on Ctrl-C.
+      if (!vrInfo) throw new Error("VR 服务未启动，请点击 VR teleoperate 按钮启动");
+      const vrTeleopCmd = (endpoint: string, port: string, id: string) =>
+        [
+          lerobotCommand(status, "lerobot-teleoperate"),
+          "--teleop.type=vr_operator",
+          `--teleop.endpoint=${quote(endpoint)}`,
+          `--teleop.urdf_path=${quote(vrInfo.urdfPath)}`,
+          "--robot.type=so101_follower",
+          `--robot.port=${quote(port)}`,
+          `--robot.id=${quote(id)}`,
+          `--robot.max_relative_target=${DEFAULT_MAX_RELATIVE_TARGET}`,
+          "--fps=60"
+        ].join(" ");
+      if (!dual) {
+        const arm = vrInfo.arms[0];
+        if (!arm) throw new Error("VR 服务未返回 endpoint，请重新启动 VR 服务");
+        return vrTeleopCmd(arm.endpoint, followerPort(), robotId());
+      }
+      if (dialect === "powershell") {
+        throw new Error("双臂 VR 遥操暂不支持 Windows 终端");
+      }
+      const endpointFor = (name: string) => vrInfo.arms.find((arm) => arm.name === name)?.endpoint;
+      const leftEndpoint = endpointFor("left");
+      const rightEndpoint = endpointFor("right");
+      if (!leftEndpoint || !rightEndpoint) {
+        throw new Error("VR 服务当前为单臂模式，请先 Stop 再以双臂启动");
+      }
+      // `<robot id>_left` / `_right`: same per-arm calibration ids the other
+      // dual-arm actions use (bi_so_follower derives them the same way).
+      const left = vrTeleopCmd(leftEndpoint, followerPort(), armId(robotId(), "left"));
+      const right = vrTeleopCmd(rightEndpoint, followerPortRight(), armId(robotId(), "right"));
+      // kill -INT, NOT plain kill: lerobot only releases the serial bus and
+      // de-energises inside its SIGINT unwinding; SIGTERM skips its `finally`.
+      return `(trap 'kill -INT 0' INT; ${left} & ${right} & wait)`;
     }
     case "save-pose":
       return [
@@ -1630,6 +1680,9 @@ export function SO101Client() {
     idleCheck
   ]);
   const [previewingCamera, setPreviewingCamera] = useState<number | null>(null);
+  const [vrStatus, setVrStatus] = useState<VrStatus | null>(null);
+  const [vrStarting, setVrStarting] = useState(false);
+  const vrInfoRef = useRef<{ urdfPath: string; arms: VrArmEndpoint[] } | null>(null);
   const lastWrittenActionCommandRef = useRef<string | null>(null);
   const connectionDirtyRef = useRef(false);
   const terminalPhase = terminalState.phase;
@@ -2072,12 +2125,46 @@ export function SO101Client() {
     };
   }, [bridgeReady, finishPreparedDatasetUpload, token]);
 
+  useEffect(() => {
+    if (!bridgeReady) return;
+    const vrBridge = window.robotcloudDesktop?.vrTeleop;
+    if (!vrBridge) return;
+    let cancelled = false;
+    vrBridge
+      .status()
+      .then((snapshot) => {
+        if (!cancelled) setVrStatus(snapshot);
+      })
+      .catch(() => {});
+    const offStatus = vrBridge.onStatus((snapshot) => setVrStatus(snapshot));
+    const offExit = vrBridge.onExit(() => {
+      vrInfoRef.current = null;
+      // Deselect the VR action, or the command-rewrite effect re-runs on any
+      // form edit and throws "VR 服务未启动" as a spurious error banner.
+      setSelectedAction((current) => (current === "vr-teleop" ? null : current));
+    });
+    return () => {
+      cancelled = true;
+      offStatus();
+      offExit();
+    };
+  }, [bridgeReady]);
+
+  const stopVrTeleop = async () => {
+    try {
+      await window.robotcloudDesktop?.vrTeleop?.stop();
+      vrInfoRef.current = null;
+    } catch (error) {
+      setPersistentTerminalError(messageFromUnknownError(error));
+    }
+  };
+
   const writeActionCommand = useCallback(async (
     action: ActionId,
     options: { force?: boolean; formOverride?: FormState; submit?: boolean } = {}
   ) => {
     const commandForm = options.formOverride ?? form;
-    const command = buildActionCommand(action, commandForm, status, cameraCount);
+    const command = buildActionCommand(action, commandForm, status, cameraCount, vrInfoRef.current);
     if (!options.force && command === lastWrittenActionCommandRef.current) return;
     lastWrittenActionCommandRef.current = command;
     try {
@@ -2109,6 +2196,22 @@ export function SO101Client() {
     try {
       setPersistentTerminalError(null);
       setActionConfigError(null);
+      if (action === "vr-teleop") {
+        const vrBridge = window.robotcloudDesktop?.vrTeleop;
+        if (!vrBridge) throw new Error("桌面应用版本过旧，请更新后再使用 VR 遥操");
+        setVrStarting(true);
+        try {
+          // Idempotent: reuses a live robot-service and just returns its info.
+          const started = await vrBridge.start({ dual: form.dualArm });
+          vrInfoRef.current = { urdfPath: started.urdfPath, arms: started.arms };
+        } finally {
+          setVrStarting(false);
+        }
+        setSelectedAction(action);
+        jumpToRightPanelCard("vr");
+        await writeActionCommand(action, { force: true, submit: options.submit });
+        return;
+      }
       if (action === "infer") {
         const alignedForm = await resolveInferActionForm();
         connectionDirtyRef.current = true;
@@ -2895,20 +2998,22 @@ export function SO101Client() {
                   <div className="grid gap-2">
                     {group.actionIds.map((actionId) => {
                       const action = actionDefinitionById[actionId];
+                      const actionDisabled =
+                        terminalPhase !== "ready" || (action.id === "vr-teleop" && vrStarting);
                       return (
                         <div key={action.id} className="flex items-center gap-2">
                           <button
                             type="button"
                             onClick={() => runAction(action.id)}
-                            disabled={terminalPhase !== "ready"}
+                            disabled={actionDisabled}
                             className={actionButtonClass(action.id)}
                           >
-                            {action.label}
+                            {action.id === "vr-teleop" && vrStarting ? "Starting VR..." : action.label}
                           </button>
                           <button
                             type="button"
                             onClick={() => runAction(action.id, { submit: true })}
-                            disabled={terminalPhase !== "ready"}
+                            disabled={actionDisabled}
                             aria-label={`Run ${action.label}`}
                             title={`Run ${action.label}`}
                             className={actionRunButtonClass(action.id)}
@@ -2929,6 +3034,74 @@ export function SO101Client() {
         {renderCamerasCard()}
         {renderRecordCard()}
         {renderInferCard()}
+
+        <section ref={registerRightPanelCard("vr")} className="scroll-mt-14">
+          <div className="rounded-lg border border-theme bg-card p-4">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs uppercase tracking-wide text-muted">VR teleop</span>
+              <div className="flex items-center gap-2">
+                <span className="rounded border border-theme px-2 py-0.5 text-xs accent-text">
+                  {vrStarting ? "starting" : vrStatus?.serviceRunning ? "running" : "stopped"}
+                </span>
+                {vrStatus?.serviceRunning ? (
+                  <button
+                    type="button"
+                    onClick={stopVrTeleop}
+                    className="inline-flex h-7 items-center justify-center rounded-md border border-theme px-2 text-xs accent-text transition hover:accent-bg"
+                  >
+                    Stop
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <dl className="mt-3 grid gap-1.5 text-xs text-muted">
+              {[
+                {
+                  label: "robot-service",
+                  ok: Boolean(vrStatus?.serviceRunning),
+                  detail: vrStatus?.serviceRunning ? "running" : "stopped"
+                },
+                {
+                  label: "Discovery",
+                  ok: Boolean(vrStatus?.discoveryActive),
+                  detail: vrStatus?.discoveryActive ? "broadcasting" : "-"
+                },
+                {
+                  label: "Headset",
+                  ok: Boolean(vrStatus?.headsetConnected),
+                  detail: vrStatus?.headsetConnected
+                    ? `${vrStatus?.headsetAddr ?? "connected"}${vrStatus?.handshakeDone ? "" : " · handshaking"}`
+                    : "not connected"
+                },
+                {
+                  label: "LeRobot plugin",
+                  ok: Boolean(vrStatus?.pluginConnected),
+                  detail:
+                    (vrStatus?.armCount ?? 1) > 1
+                      ? `${vrStatus?.pluginCount ?? 0}/${vrStatus?.armCount} connected`
+                      : vrStatus?.pluginConnected
+                        ? "connected"
+                        : "not connected"
+                }
+              ].map((row) => (
+                <div key={row.label} className="flex items-center justify-between gap-3">
+                  <dt className="flex items-center gap-2">
+                    <span
+                      className={`inline-block h-2 w-2 rounded-full ${row.ok ? "bg-emerald-500" : "bg-zinc-600"}`}
+                    />
+                    {row.label}
+                  </dt>
+                  <dd className="break-all text-right">{row.detail}</dd>
+                </div>
+              ))}
+            </dl>
+            {vrStatus?.serviceRunning ? (
+              <p className="mt-2 text-xs text-muted">
+                头显与主机需在同一 WiFi。Stop 只停 VR 服务；终端里的 lerobot 命令用 Ctrl-C 退出。
+              </p>
+            ) : null}
+          </div>
+        </section>
 
         <section ref={registerRightPanelCard("status")} className="grid scroll-mt-14 gap-3">
           {runtimeStatusCards.map((card) => (

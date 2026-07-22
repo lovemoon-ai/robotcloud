@@ -51,5 +51,9 @@ if [[ ! -f "${RUNTIME_ZIP}" ]]; then
   fi
 fi
 
+# Stage VR-teleop artifacts (robot-service sidecar, meshes, descriptor) from
+# the operator submodule; tauri.conf.json's externalBin/resources expect them.
+bash "${ROOT}/scripts/build-robot-service.sh"
+
 pnpm install
 pnpm tauri build --bundles dmg --verbose

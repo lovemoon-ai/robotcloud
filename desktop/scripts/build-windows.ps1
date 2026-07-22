@@ -212,5 +212,9 @@ if (-not (Test-Path $RuntimeZip)) {
 Repair-RuntimeZipPortable -ZipPath $RuntimeZip
 Assert-RuntimeZipPortable -ZipPath $RuntimeZip
 
+# Stage VR-teleop artifacts (robot-service sidecar, meshes, descriptor) from
+# the operator submodule; tauri.conf.json's externalBin/resources expect them.
+& (Join-Path $PSScriptRoot "build-robot-service.ps1")
+
 Invoke-CheckedNative pnpm install
 Invoke-CheckedNative pnpm tauri build --bundles msi

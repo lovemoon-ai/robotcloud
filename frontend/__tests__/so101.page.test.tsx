@@ -877,6 +877,7 @@ describe("SO101 terminal session", () => {
       setRect(view.getByRole("heading", { name: "Cameras" }).closest("section"), 20);
       setRect(view.getByRole("heading", { name: "Record" }).closest("section"), 220);
       setRect(view.getByRole("heading", { name: "Infer" }).closest("section"), 420);
+      setRect(view.getByText("VR teleop").closest("section"), 520);
       setRect(view.getByText("Runtime").closest("section"), 620);
 
       act(() => {
@@ -1453,6 +1454,77 @@ describe("SO101 command generation", () => {
         { ...desktopStatus, platform: "windows" }
       )
     ).toBe("D:\\robot data\\episodes");
+  });
+
+  describe("vr teleop", () => {
+    const vrInfo = {
+      urdfPath: "/res/assets/so101_new_calib.urdf",
+      arms: [{ name: "arm", endpoint: "uds:/tmp/robotcloud-lerobot-vr.sock" }]
+    };
+    const dualVrInfo = {
+      urdfPath: "/res/assets/so101_new_calib.urdf",
+      arms: [
+        { name: "left", endpoint: "uds:/tmp/robotcloud-lerobot-vr-left.sock" },
+        { name: "right", endpoint: "uds:/tmp/robotcloud-lerobot-vr-right.sock" }
+      ]
+    };
+    const vrForm = { ...initialForm, followerPort: "/dev/cu.follower", robotId: "so101_follower" };
+    const dualVrForm = {
+      ...vrForm,
+      dualArm: true,
+      followerPortRight: "/dev/cu.follower-right"
+    };
+
+    it("builds the vr_operator teleoperate command from the started service info", () => {
+      const command = buildActionCommand("vr-teleop", vrForm, desktopStatus, 1, vrInfo);
+
+      expect(command).toContain("python -m lerobot.scripts.lerobot_teleoperate");
+      expect(command).toContain("--teleop.type=vr_operator");
+      expect(command).toContain("--teleop.endpoint='uds:/tmp/robotcloud-lerobot-vr.sock'");
+      expect(command).toContain("--teleop.urdf_path='/res/assets/so101_new_calib.urdf'");
+      expect(command).toContain("--robot.type=so101_follower");
+      expect(command).toContain("--robot.port='/dev/cu.follower'");
+      expect(command).toContain("--robot.id='so101_follower'");
+      expect(command).toContain("--robot.max_relative_target=5");
+      expect(command).toContain("--fps=60");
+    });
+
+    it("requires the VR service to be started first", () => {
+      expect(() => buildActionCommand("vr-teleop", vrForm, desktopStatus, 1)).toThrow(/VR 服务未启动/);
+    });
+
+    it("runs one teleoperate per arm in dual mode, torn down together on Ctrl-C", () => {
+      const command = buildActionCommand("vr-teleop", dualVrForm, desktopStatus, 1, dualVrInfo);
+
+      expect(command.startsWith("(trap 'kill -INT 0' INT; ")).toBe(true);
+      expect(command.endsWith("wait)")).toBe(true);
+      expect(command).toContain("--teleop.endpoint='uds:/tmp/robotcloud-lerobot-vr-left.sock'");
+      expect(command).toContain("--robot.port='/dev/cu.follower'");
+      expect(command).toContain("--robot.id='so101_follower_left'");
+      expect(command).toContain("--teleop.endpoint='uds:/tmp/robotcloud-lerobot-vr-right.sock'");
+      expect(command).toContain("--robot.port='/dev/cu.follower-right'");
+      expect(command).toContain("--robot.id='so101_follower_right'");
+      // Per-arm processes, not the bi_so aggregate robot type.
+      expect(command).not.toContain("bi_so_follower");
+    });
+
+    it("rejects dual mode while the service runs single-arm", () => {
+      expect(() =>
+        buildActionCommand("vr-teleop", dualVrForm, desktopStatus, 1, vrInfo)
+      ).toThrow(/单臂模式/);
+    });
+
+    it("rejects dual mode on Windows terminals", () => {
+      expect(() =>
+        buildActionCommand(
+          "vr-teleop",
+          dualVrForm,
+          { ...desktopStatus, platform: "windows" },
+          1,
+          dualVrInfo
+        )
+      ).toThrow(/Windows/);
+    });
   });
 
   describe("dual arm", () => {

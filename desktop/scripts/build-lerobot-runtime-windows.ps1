@@ -10,6 +10,8 @@ param(
     [string] $TorchVisionSpec = "torchvision==0.25.0",
     [string] $TorchIndexUrl = "https://download.pytorch.org/whl/cpu",
     [string[]] $ExtraPipPackages = @("feetech-servo-sdk>=1.0.0,<2.0.0", "deepdiff>=7.0.1,<9.0.0", "torchcodec>=0.10.0,<0.11.0"),
+    [string] $VrPluginDir = "",
+    [switch] $NoVrPlugin,
     [switch] $Force,
     [switch] $SkipSmokeTest
 )
@@ -34,6 +36,10 @@ if ([string]::IsNullOrWhiteSpace($MicromambaExe)) {
 }
 if ([string]::IsNullOrWhiteSpace($MicromambaExe)) {
     $MicromambaExe = Join-Path $WorkDir "micromamba.exe"
+}
+if ([string]::IsNullOrWhiteSpace($VrPluginDir)) {
+    # VR teleop: vr_operator LeRobot teleoperator plugin from the operator submodule.
+    $VrPluginDir = Join-Path (Split-Path -Parent $Root) "third_party\operator\plugins\lerobot-teleop\python"
 }
 
 $WorkDir = [System.IO.Path]::GetFullPath($WorkDir)
@@ -87,6 +93,13 @@ function Install-LeRobotPackages {
         $lerobotArgs += $ExtraPipPackages
     }
     Invoke-Checked $Python $lerobotArgs
+
+    if (-not $NoVrPlugin) {
+        if (-not (Test-Path -LiteralPath (Join-Path $VrPluginDir "pyproject.toml"))) {
+            throw "vr_operator plugin not found at $VrPluginDir. Run: git submodule update --init third_party/operator (or pass -NoVrPlugin)."
+        }
+        Invoke-Checked $Python @("-m", "pip", "install", $VrPluginDir)
+    }
 }
 
 function Install-Micromamba {
@@ -342,6 +355,9 @@ function Test-RuntimeEnv {
 
     if (-not $SkipSmokeTest) {
         Invoke-Checked $python @("-c", "import datasets, deepdiff, lerobot, rerun, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')")
+        if (-not $NoVrPlugin) {
+            Invoke-Checked $python @("-c", "import placo, lerobot_teleoperator_vr_operator; from lerobot.utils.import_utils import register_third_party_plugins; register_third_party_plugins(); print('vr teleop plugin ok')")
+        }
         Invoke-Checked $lerobotInfo @()
     }
 }

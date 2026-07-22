@@ -1,0 +1,3 @@
+[submodule "third_party/operator"]
+	path = third_party/operator
+	url = git@github.com:lovemoon-ai/operator.git

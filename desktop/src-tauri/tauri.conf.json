@@ -18,11 +18,15 @@
     "targets": ["msi"],
     "category": "DeveloperTool",
     "icon": ["icons/icon.png", "icons/icon.ico"],
+    "externalBin": ["binaries/robot-service"],
     "resources": [
       "resources/scripts/robotcloud_auto_record.py",
       "resources/scripts/robotcloud_save_pose.py",
       "resources/scripts/robotcloud_draw_circle.py",
       "resources/assets/so101_new_calib.urdf",
+      "resources/assets/assets/*.stl",
+      "resources/vr/so101_real_descriptor.yaml",
+      "resources/vr/so101_dual_real_descriptor.yaml",
       "resources/runtime/*/lerobot-env-*.zip"
     ],
     "macOS": {

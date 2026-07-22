@@ -11,6 +11,12 @@ src-tauri/frontend-dist/
 src-tauri/resources/runtime/*/lerobot-env/
 src-tauri/resources/runtime/*/lerobot-env-*.zip
 
+# VR teleop artifacts staged from third_party/operator by
+# scripts/build-robot-service.sh; the submodule is the source of truth.
+src-tauri/binaries/
+src-tauri/resources/assets/assets/
+src-tauri/resources/vr/
+
 test-install/
 bridge-smoke-result.json
 bridge-smoke-server*.log

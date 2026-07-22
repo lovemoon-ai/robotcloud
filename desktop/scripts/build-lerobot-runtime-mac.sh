@@ -15,6 +15,12 @@ TORCHVISION_SPEC="torchvision==0.25.0"
 TORCH_INDEX_URL=""
 EXTRA_PIP_PACKAGES=("feetech-servo-sdk>=1.0.0,<2.0.0" "deepdiff>=7.0.1,<9.0.0" "torchcodec>=0.10.0,<0.11.0")
 CONDA_PACK_SPEC="conda-pack>=0.8.1,<1.0.0"
+# VR teleop: the vr_operator LeRobot teleoperator plugin from the operator
+# submodule. Pulls in lerobot[kinematics] (placo IK). Set --no-vr-plugin to
+# build a runtime without VR teleop support.
+VR_PLUGIN_DIR_DEFAULT="$(cd "${ROOT}/.." && pwd)/third_party/operator/plugins/lerobot-teleop/python"
+VR_PLUGIN_DIR="${VR_PLUGIN_DIR_DEFAULT}"
+INCLUDE_VR_PLUGIN=1
 FORCE=0
 SKIP_SMOKE_TEST=0
 
@@ -35,6 +41,8 @@ Options:
   --torch-index-url URL       Optional pip index URL for Torch/TorchVision. Defaults to PyPI on macOS.
   --extra-pip-package SPEC    Additional pip requirement. Can be repeated.
   --conda-pack-spec SPEC      Conda-pack pip requirement. Defaults to conda-pack>=0.8.1,<1.0.0.
+  --vr-plugin-dir PATH        vr_operator plugin source dir. Defaults to third_party/operator/plugins/lerobot-teleop/python.
+  --no-vr-plugin              Build without the VR teleop plugin.
   --force                     Rebuild env and overwrite output zip.
   --skip-smoke-test           Skip import and lerobot-info checks.
   -h, --help                  Show this help.
@@ -55,6 +63,8 @@ while [[ $# -gt 0 ]]; do
     --torch-index-url) TORCH_INDEX_URL="$2"; shift 2 ;;
     --extra-pip-package) EXTRA_PIP_PACKAGES+=("$2"); shift 2 ;;
     --conda-pack-spec) CONDA_PACK_SPEC="$2"; shift 2 ;;
+    --vr-plugin-dir) VR_PLUGIN_DIR="$2"; shift 2 ;;
+    --no-vr-plugin) INCLUDE_VR_PLUGIN=0; shift ;;
     --force) FORCE=1; shift ;;
     --skip-smoke-test) SKIP_SMOKE_TEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -123,6 +133,21 @@ install_lerobot_packages() {
     lerobot_args+=("${EXTRA_PIP_PACKAGES[@]}")
   fi
   run_checked "${python}" "${lerobot_args[@]}"
+  install_vr_plugin
+}
+
+install_vr_plugin() {
+  if [[ "${INCLUDE_VR_PLUGIN}" -ne 1 ]]; then
+    echo "Skipping VR teleop plugin (--no-vr-plugin)"
+    return
+  fi
+  if [[ ! -f "${VR_PLUGIN_DIR}/pyproject.toml" ]]; then
+    echo "vr_operator plugin not found at ${VR_PLUGIN_DIR}." >&2
+    echo "Run: git submodule update --init third_party/operator (or pass --no-vr-plugin)." >&2
+    exit 1
+  fi
+  local python="${ENV_PATH}/bin/python"
+  run_checked "${python}" -m pip install "${VR_PLUGIN_DIR}"
 }
 
 assert_child_path() {
@@ -263,6 +288,9 @@ test_runtime_env() {
 
   if [[ "${SKIP_SMOKE_TEST}" -ne 1 ]]; then
     run_checked "${python}" -c "import datasets, deepdiff, lerobot, rerun, torch, torchvision, serial, scservo_sdk; print('runtime imports ok')"
+    if [[ "${INCLUDE_VR_PLUGIN}" -eq 1 ]]; then
+      run_checked "${python}" -c "import placo, lerobot_teleoperator_vr_operator; from lerobot.utils.import_utils import register_third_party_plugins; register_third_party_plugins(); print('vr teleop plugin ok')"
+    fi
     PATH="/usr/bin:/bin" run_checked "${lerobot_info}"
   fi
 }
@@ -277,6 +305,7 @@ write_runtime_manifest() {
   MANIFEST_TORCH_SPEC="${TORCH_SPEC}" \
   MANIFEST_TORCHVISION_SPEC="${TORCHVISION_SPEC}" \
   MANIFEST_TORCH_INDEX_URL="${TORCH_INDEX_URL}" \
+  MANIFEST_VR_PLUGIN="${INCLUDE_VR_PLUGIN}" \
   "${python}" - <<'PY'
 import datetime
 import json
@@ -296,6 +325,7 @@ manifest = {
     "torchSpec": os.environ["MANIFEST_TORCH_SPEC"],
     "torchVisionSpec": os.environ["MANIFEST_TORCHVISION_SPEC"],
     "torchIndexUrl": os.environ["MANIFEST_TORCH_INDEX_URL"],
+    "vrTeleopPlugin": os.environ.get("MANIFEST_VR_PLUGIN") == "1",
     "packages": packages,
 }
 with open(os.environ["MANIFEST_PATH"], "w", encoding="utf-8") as handle:
@@ -370,7 +400,11 @@ run_conda_unpack() {
 
 runtime_smoke_test() {
   local runtime="$1"
-  PATH="/usr/bin:/bin" "${runtime}/bin/python" -c "import datasets, deepdiff, lerobot, rerun, torch, torchvision, serial, scservo_sdk; print('relocated runtime imports ok')" &&
+  local imports="import datasets, deepdiff, lerobot, rerun, torch, torchvision, serial, scservo_sdk"
+  if [[ "${INCLUDE_VR_PLUGIN}" -eq 1 ]]; then
+    imports="${imports}, placo, lerobot_teleoperator_vr_operator"
+  fi
+  PATH="/usr/bin:/bin" "${runtime}/bin/python" -c "${imports}; print('relocated runtime imports ok')" &&
     PATH="/usr/bin:/bin" "${runtime}/bin/lerobot-info"
 }
 
